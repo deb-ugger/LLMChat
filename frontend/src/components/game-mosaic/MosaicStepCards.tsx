@@ -21,6 +21,7 @@ type Props = {
   detectorLabels: Record<MosaicSettings["detector"], string>;
   reviewModels: string[];
   testing: boolean;
+  parametersLocked: boolean;
   testTitle?: string;
   benchmarkProgress?: BenchmarkState;
   measurements: Record<MosaicStep, { formalMeasurement: StepPerformance; measured: StepPerformance }>;
@@ -72,7 +73,7 @@ type Props = {
 };
 
 export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, actionsDisabled,
-  onStop, preferences, changePreferences, detectorLabels, reviewModels, testing, testTitle, benchmarkProgress,
+  onStop, preferences, changePreferences, detectorLabels, reviewModels, testing, parametersLocked, testTitle, benchmarkProgress,
   measurements, now, progress, error, screen, refine, redraw, unresolvedRefineFailures, retryCount }: Props) {
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
   const benchmarkSteps = { screen: "mosaicScreen", refine: "mosaicRefine", redraw: "mosaicRedraw" } as const;
@@ -102,9 +103,10 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
       progress={{ current: processed, total: status?.total || undefined, percent }}
+      runningParameters={status?.parameters} parametersLocked={busy || testing || parametersLocked}
       performance={expanded &&
         <GameFlowPerformance measured={benchmark ? benchmark.performance : measured} />}
-      details={<small className="game-flow-model-rates">
+      details={!benchmark && <small className="game-flow-model-rates">
         {id === "screen" && <span data-tooltip={status?.device?.reason}>{summary}{status?.device &&
           (status.device.kind === "gpu" ? " · GPU（WebGPU）" : " · CPU")}</span>}
         {screeningMethodChanged && <span>其他筛选方式已有 {screen.otherDetectorCount} 张</span>}

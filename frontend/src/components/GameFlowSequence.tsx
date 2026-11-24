@@ -378,7 +378,7 @@ export function StepRunningMetrics({ measured = emptyPerformance, models = [], p
 
 export type GameStepConfigurationCommit = (step: string) => Promise<boolean>;
 
-export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision }: {
+export function GameFlowSequence({ configurationCommit, steps, configured, onConfigure, onRun, actions, activity, children, onSaveConfiguration, configurationScope, configuration, restoreConfiguration, testConfigurations, testConfigurationDisabled, configurationRevision, runningParameters }: {
   configurationCommit?: RefObject<GameStepConfigurationCommit | null>;
   steps: GameFlowStep[];
   configured: string | null;
@@ -453,8 +453,17 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const optionsChanged = (step: string) => configuration[step] !== saved.values[step];
   const changed = (step: string) => !!configurationScope && saved.scope === configurationScope &&
     (optionsChanged(step) || !!concurrencyDrafts[step]?.length || !!Object.keys(filterDrafts[step] || {}).length);
-  const configurationLocked = (step: GameFlowStep) => activity?.state === "running" &&
-    (activity.step === step.id || step.state === "done");
+  const formalStep = activity?.state === "running" ? activity.step : undefined;
+  const configurationLocked = testing || formalStep !== undefined;
+  const [formalSnapshot, setFormalSnapshot] = useState<{
+    scope: string; step: string; parameters?: readonly BenchmarkParameter[];
+  }>();
+  if (formalStep && (formalSnapshot?.scope !== performanceScope || formalSnapshot?.step !== formalStep)) {
+    setFormalSnapshot({ scope: performanceScope, step: formalStep,
+      parameters: steps.find(step => step.id === formalStep)?.runningParameters ?? runningParameters });
+  } else if (!formalStep && formalSnapshot) {
+    setFormalSnapshot(undefined);
+  }
   const withConfiguration = async (action?: () => void, stepId?: string, announce = false) => {
     if (pendingSave.current && !await pendingSave.current) return false;
     const draftSteps = (stepId ? [stepId] : steps.map(step => step.id)).filter(changed);
@@ -530,12 +539,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const editorStep = steps.find(step => step.id === configured && isExpanded(step)) ?? steps.find(isExpanded);
   const editorId = editorStep?.id ?? null;
   useLayoutEffect(() => {
-    if (configured !== editorId) onConfigure(editorId);
-  }, [configured, editorId, onConfigure]);
+    if (!configurationLocked && configured !== editorId) onConfigure(editorId);
+  }, [configurationLocked, configured, editorId, onConfigure]);
   return <div className="game-flow">
     <div className="game-flow-list">
       {(onRun || actions || testConfigurations) && <div className="game-flow-run">
-        {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || savingConfiguration} onClick={openTestConfiguration}>应用测试配置</button>}
+        {testConfigurations && <button type="button" className="unity-btn" disabled={testConfigurationDisabled || configurationLocked || savingConfiguration} onClick={openTestConfiguration}>应用测试配置</button>}
         {onRun && <button type="button" className="unity-btn unity-btn-primary" disabled={testing || savingConfiguration} title={testTitle} onClick={() => runConfigured(onRun)}>运行流程</button>}
         {actions}
       </div>}
@@ -561,7 +570,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const expanded = isExpanded(step);
         const openConfiguration = () => {
           if (!expanded) expansion.setExpanded(expansionId(step), true);
-          onConfigure(step.id);
+          if (!configurationLocked) onConfigure(step.id);
         };
         const clearAllowed = !!step.clear && step.state !== "waiting" && state !== "running";
         const hasConfiguration = expanded && configured === step.id && !!children;
@@ -574,8 +583,10 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
           elapsed={elapsed}
           progress={liveActivity?.progress}
-          details={liveActivity?.details ?? (!Object.keys(measured.models).length && !configuredModels.length && step.summary &&
-            <small className="game-flow-model-rates">{step.summary}</small>)}
+          parametersLocked={configurationLocked}
+          runningParameters={formalSnapshot?.step === step.id ? formalSnapshot.parameters : undefined}
+          details={!testMetrics && (liveActivity?.details ?? (!Object.keys(measured.models).length && !configuredModels.length && step.summary &&
+            <small className="game-flow-model-rates">{step.summary}</small>))}
           performance={(expanded || state === "running" || formalPaused || testMetrics) &&
             <GameFlowPerformance measured={measured} models={configuredModels} />}
           actions={<>
@@ -584,17 +595,17 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
                 aria-label={`${pausedResume ? "继续" : actionLabel}${step.title}`} disabled={step.stop ? step.stopDisabled : testing || step.runDisabled || savingConfiguration}
                 title={step.stop ? undefined : pausedResume ? "从中止处继续这次测试" : testTitle}
                 onClick={step.stop || (pausedResume ? () => { resumeBenchmarkJob(pausedResume); } : () => runConfigured(step.run, step.id))}>{pausedResume ? "继续" : actionLabel}</button>}
-              <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed||savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
+              <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed || configurationLocked || savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
           </>}
           saveConfiguration={hasConfiguration && onSaveConfiguration ? {
-            disabled: savingConfiguration || configurationLocked(step) || !changed(step.id),
+            disabled: savingConfiguration || configurationLocked || !changed(step.id),
             saving: savingConfiguration,
             run: () => void withConfiguration(undefined, step.id, true),
           } : undefined}
           configuration={hasConfiguration ? <div className="game-flow-field-wide game-flow-config-content">
             <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
             {onSaveConfiguration && <div className="game-flow-config-save">
-              <button type="button" className="unity-btn" disabled={savingConfiguration || configurationLocked(step)}
+              <button type="button" className="unity-btn" disabled={savingConfiguration || configurationLocked}
                 onClick={() => cancelConfiguration(step.id)}>取消</button>
             </div>}
           </div> : expanded && children && <button type="button" className="unity-btn game-flow-field-wide"

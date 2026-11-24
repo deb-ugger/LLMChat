@@ -1,3 +1,4 @@
+import { formatMosaicParameters, type BenchmarkParameter } from "../benchmark/benchmarkParameters";
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
 import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
@@ -23,7 +24,7 @@ import { getFixedMenuPoint } from "../viewportLayout";
 import { MosaicGroupTree, mosaicStatusPageSize } from "./game-mosaic/MosaicGroupTree";
 import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/MosaicOriginalGallery";
 import { canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
-  restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
+  mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
@@ -196,7 +197,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
   const [preferences, setPreferences] = useState(() => readMosaicSettings(gamePath));
   const { scope, detector: detectorKind, model, steps, protect } = preferences;
-  const changePreferences = (patch: Partial<typeof preferences>) => saveMosaicSettings(gamePath, { ...preferences, ...patch });
+  const changePreferences = (patch: Partial<typeof preferences>) => {
+    if (task.current || disabled || isBenchmarkRunning()) return;
+    saveMosaicSettings(gamePath, { ...preferences, ...patch });
+  };
   useEffect(() => {
     const refresh = () => setPreferences(readMosaicSettings(gamePath));
     refresh(); window.addEventListener("game-mosaic-settings", refresh);
@@ -688,7 +692,9 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       replaceRows, clearReviews, resetRedraw, performReviews, setProgress, setError,
       trackReview: session => { lastReview.current = session; },
     }), {id:"refine",total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
-      resume: !restart});
+      parameters: formatMosaicParameters("mosaicRefine", {
+        ...preferences, refineConcurrency: Math.min(targets.length, Math.max(1, Math.min(2, preferences.refineConcurrency ?? 1))),
+      }), resume: !restart});
   }
   const lastScreen = useRef<{ scope: readonly UnityImage[]; detector: string } | null>(null);
   const screenTargets: UnityImage[] = [];
@@ -720,7 +726,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }, signal, report, usage, {
       replaceRows, setRows, clearReviews, resetRedraw, read, prepareSources, loadMosaicDetector, createMosaicGridScanner, setProgress,
       onDevice: device => setStepRuns(previous => previous.screen ? { ...previous, screen: { ...previous.screen, device } } : previous),
-    }), { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind], resume: !restart });
+    }), { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind],
+      parameters: [
+        { scope: "config", label: "筛选范围", value: scope === "scenes" ? "场景图片" : "全部图片" },
+        ...formatMosaicParameters("mosaicScreen", preferences).map(parameter =>
+          detectorKind !== "grid" && detectorFile && parameter.label === "定位模型"
+            ? { ...parameter, value: detectorFile.name } : parameter),
+      ],
+      resume: !restart });
   }
   function commitMaskEdits(edits: MosaicMaskCommit) {
     const nextRows = edits.rows;
@@ -757,7 +770,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         });
         if (isPreviewing(image)) setPreferredResult(engine);
       },
-    }), { id: "redraw", total, completed: initial, summary, resume });
+    }), { id: "redraw", total, completed: initial, summary, parameters: [
+      ...plan.models.map((engine): BenchmarkParameter => ({
+        scope: "config", label: mosaicModelLabels[engine], value: mosaicRedrawStepCount(plan, engine) + " 步",
+      })),
+      { scope: "config", label: "保护已识别文字", value: protect ? "开启" : "关闭" },
+      ...(plan.reference ? [{ scope: "config" as const, label: "画风参考", value: plan.reference.name }] : []),
+    ], resume });
   }
   function generate(targets: UnityImage[], models: MosaicModel[]) {
     const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
@@ -1032,15 +1051,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     {confirmation.dialog}
     {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle}
       busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason} onStop={id => stopMosaicBatch(task.current, id, setProgress)} preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
-      testing={testing} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
+      testing={testing} parametersLocked={disabled} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
         screen: cardMeasurement("screen"), refine: cardMeasurement("refine"), redraw: cardMeasurement("redraw"),
       }} now={performance.now()} progress={progress} error={error}
       screen={{
         status: screenStatus, summary: screenSummary, action: screenAction, targetCount: screenTargets.length, screenedCount,
         remainingCount: remaining.length, otherDetectorCount, canClear, detectorFile,
         changeScope: scope => { changePreferences({ scope }); setGroupPages({}); },
-        chooseDetectorFile: file => setDetectorFile(gameDetectorFile(gamePath, file)),
-        useBuiltInDetector: () => { clearGameDetectorFile(gamePath); setDetectorFile(undefined); },
+        chooseDetectorFile: file => {
+          if (!task.current && !disabled && !isBenchmarkRunning()) setDetectorFile(gameDetectorFile(gamePath, file));
+        },
+        useBuiltInDetector: () => {
+          if (task.current || disabled || isBenchmarkRunning()) return;
+          clearGameDetectorFile(gamePath);
+          setDetectorFile(undefined);
+        },
         start: screen, clear: clearTask,
       }} refine={{
         status: refineStatus, targetCount: checkedReviewScope.length, pendingCount: pendingReview.length, reviewedCount,

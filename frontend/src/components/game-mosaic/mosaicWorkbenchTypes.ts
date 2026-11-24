@@ -1,3 +1,4 @@
+import type { BenchmarkParameter } from "../../benchmark/benchmarkParameters";
 import type { ReactNode } from "react";
 import type { Settings } from "../../api";
 import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
@@ -34,7 +35,7 @@ export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 export type MosaicStep = "screen" | "refine" | "redraw";
 export type StepRun = {
   state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number;
-  summary?: string; device?: MosaicDevice; prepared?: number; models?: StepPerformance["models"];
+  summary?: string; parameters?: readonly BenchmarkParameter[]; device?: MosaicDevice; prepared?: number; models?: StepPerformance["models"];
   batchStarted?: number; batchElapsed?: number; processed?: number; failed?: number;
 } & Partial<StepPerformance>;
 export type StepReport = number | Partial<Pick<StepRun, "completed" | "prepared" | "processed" | "failed">>;
@@ -75,7 +76,7 @@ export type MosaicStepUsage = {
   finish: (completed: boolean) => void;
 };
 
-export type MosaicBatchStep = { id: MosaicStep; total: number; completed?: number; summary: string; resume?: boolean };
+export type MosaicBatchStep = { id: MosaicStep; total: number; completed?: number; summary: string; parameters?: readonly BenchmarkParameter[]; resume?: boolean };
 export type MosaicBatchWork = (signal: AbortSignal, report: (progress: StepReport) => void, usage?: MosaicStepUsage) => Promise<void | boolean>;
 
 export type MosaicBatchPorts = {

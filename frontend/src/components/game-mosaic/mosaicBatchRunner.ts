@@ -95,7 +95,7 @@ export async function runMosaicBatch(label: string, work: MosaicBatchWork, step:
   const started = batchStarted - elapsedBefore;
   setProgressStep(step?.id);
   if (step) setStepRuns(previous => ({ ...previous, [step.id]: {
-    state: "running", completed: step.completed ?? 0, total: step.total, summary: step.summary, started, batchStarted,
+    state: "running", completed: step.completed ?? 0, total: step.total, summary: step.summary, parameters: step.parameters, started, batchStarted,
   } }));
   ports.setRunning(label);
   const updateStep = (edit: Partial<StepRun>) => {
@@ -337,6 +337,10 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
   });
 }
 
+export function mosaicRedrawStepCount(plan: Pick<RedrawPlan, "models" | "steps">, engine: RedrawPlan["models"][number]) {
+  return plan.models.length === 1 ? plan.steps : engine === "turbo" ? 8 : 20;
+}
+
 export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal: AbortSignal, report: (progress: StepReport) => void,
   usage: MosaicStepUsage | undefined, ports: MosaicRedrawPorts) {
   const { read, readSaved, mosaicInputKey, redrawMosaic, recordGameCacheHit, update, setProgress, setError, setPending, onCandidate } = ports;
@@ -362,7 +366,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
         signal.throwIfAborted();
         const title = image.name + " · " + mosaicModelLabels[engine];
         setProgress(title);
-        const stepCount = plan.models.length === 1 ? plan.steps : engine === "turbo" ? 8 : 20;
+        const stepCount = mosaicRedrawStepCount(plan, engine);
         const reference = image.id === plan.reference?.id ? undefined : plan.referenceBlob;
         const key = JSON.stringify([engine, stepCount, input, keep, !!reference]);
         let outcome = cache.get(key);

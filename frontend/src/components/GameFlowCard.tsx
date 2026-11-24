@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type { BenchmarkState } from "../benchmark/benchmarkRunner";
+import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
 import { gameDuration } from "../gameModelPerformance";
 import { GameProgressBar } from "./GameStepProgress";
 
@@ -69,6 +70,8 @@ type CardProps = GameFlowActivity & {
   onConfigure?: () => void;
   body?: ReactNode;
   configuration?: ReactNode;
+  runningParameters?: readonly BenchmarkParameter[];
+  parametersLocked?: boolean;
   saveConfiguration?: { run: () => void; disabled: boolean; saving?: boolean };
   disclosure?: { expanded: boolean; toggle: () => void };
 };
@@ -80,12 +83,17 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 }
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, performance,
-  actions, onConfigure, body, configuration, saveConfiguration, disclosure }: CardProps) {
+  actions, onConfigure, body, configuration, runningParameters, parametersLocked, saveConfiguration, disclosure }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
   const expanded = disclosure?.expanded ?? true;
-  const configured = expanded && !!configuration;
+  const benchmarkActive = benchmark?.state === "running";
+  const active = state === "running" || benchmarkActive;
+  const locked = active || parametersLocked;
+  const configured = expanded && !locked && !!configuration;
+  const actualParameters = benchmarkActive ? (benchmark.phase === "prepare" ? undefined : benchmark.parameters) : runningParameters;
+  const showActualParameters = active && (benchmarkActive || !!(runningParameters || configuration || onConfigure));
   const position = benchmark && benchmark.round != null && benchmark.rounds != null &&
     benchmark.configIndex != null && benchmark.configCount != null
     ? `第 ${benchmark.round}/${benchmark.rounds} 轮 · 配置 ${benchmark.configIndex}/${benchmark.configCount}` : undefined;
@@ -116,7 +124,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           aria-label={(expanded ? "折叠" : "展开") + title + "详情"} aria-expanded={expanded} aria-controls={detailsId}
           data-tooltip={expanded ? "折叠详情" : "展开详情"} />}
         <span className="game-flow-dot" aria-hidden="true" />
-        {!disclosure && onConfigure ? <button type="button" className="game-flow-title" aria-expanded={configured}
+        {!disclosure && onConfigure && !locked ? <button type="button" className="game-flow-title" aria-expanded={configured}
           aria-controls={settingsId} aria-describedby={statusId}
           style={{ background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
           onClick={onConfigure}>{title}</button> : <strong className="game-flow-title">{title}</strong>}
@@ -154,7 +162,15 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {details}
         {performance}
         {body}
-        {(onConfigure || configuration) && <section id={settingsId} className="game-flow-editable" role="region"
+        {showActualParameters && <section id={settingsId} className="game-step-metrics-group game-flow-performance" role="region"
+          aria-label={title + "运行参数"}>
+          <h5 className="game-step-metrics-label">运行参数 <small>只读</small></h5>
+          {actualParameters?.length ? <div className="game-benchmark-running-params">
+            {actualParameters.map(({ label, value, scope }, index) =>
+              <span className="kv" key={scope + ":" + label + ":" + index}><span>{label}</span><b data-tooltip={value}>{value}</b></span>)}
+          </div> : <p className="hint">{benchmarkActive && benchmark.phase === "prepare" ? "正在准备本配置参数…" : "暂无本次运行参数"}</p>}
+        </section>}
+        {!locked && (onConfigure || configuration) && <section id={settingsId} className="game-flow-editable" role="region"
           aria-label={`${title}运行参数`} hidden={!configured}>
           <h5 className="game-flow-editable-title">运行参数<span className="game-flow-tag">可改</span>
             {saveConfiguration && <button type="button" disabled={saveConfiguration.disabled}
