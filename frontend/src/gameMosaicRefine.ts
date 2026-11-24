@@ -201,11 +201,12 @@ async function sha256(bytes: BufferSource) {
 function parseRegionReview(value: unknown): RegionReview {
   const result = value as Partial<RegionReview> | null;
   if (typeof result?.pixelation !== "boolean" || typeof result.confidence !== "number" ||
-      !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1 ||
+      // Some constrained decoders emit 1.000000000000001 for the upper boundary.
+      !Number.isFinite(result.confidence) || result.confidence < -1e-12 || result.confidence > 1 + 1e-12 ||
       !Array.isArray(result.boxes) || result.boxes.length > 3 || !result.boxes.every(box =>
         Array.isArray(box) && box.length === 4 && box.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000)))
     throw new Error("复筛模型未返回有效的判断、置信度和坐标数组");
-  return { pixelation: result.pixelation, confidence: result.confidence, boxes: result.boxes };
+  return { pixelation: result.pixelation, confidence: Math.max(0, Math.min(1, result.confidence)), boxes: result.boxes };
 }
 
 function localizedReviewBoxes(values: MosaicBox[], area: MosaicBox, content: MosaicBox, pixels: ImageData, candidate?: MosaicBox): MosaicBox[] {
