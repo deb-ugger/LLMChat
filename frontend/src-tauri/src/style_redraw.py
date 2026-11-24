@@ -319,20 +319,51 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
         raise TimeoutError("等待 ComfyUI 结果超时")
 
 
-def mosaic_mask(original, regions, protected):
-    mask = np.zeros((original.height, original.width), dtype=np.uint8)
-    for region in regions:
-        left, top, right, bottom = region["box"]
+def mosaic_redraw_area(original, regions, protected):
+    from scipy import ndimage
+
+    boxes = [region["box"] for region in regions]
+    if not boxes:
+        raise ValueError("去码蒙版没有覆盖可编辑像素")
+    for left, top, right, bottom in boxes:
         if not (0 <= left < right <= original.width and 0 <= top < bottom <= original.height):
             raise ValueError("请检查去码蒙版坐标")
-        mask[top:bottom, left:right] = 255
+
+    left = min(box[0] for box in boxes)
+    top = min(box[1] for box in boxes)
+    right = max(box[2] for box in boxes)
+    bottom = max(box[3] for box in boxes)
+    mask_span = max(min(right - left, bottom - top) for left, top, right, bottom in boxes)
+    expansion = max(4, min(24, round(mask_span * .15)))
+    feather = round(expansion * 2 / 3)
+    padding = expansion + max(48, round(max(right - left, bottom - top) * .25))
+    bounds = (max(0, left - padding), max(0, top - padding),
+              min(original.width, right + padding), min(original.height, bottom + padding))
+    crop = original.crop(bounds)
+    alpha = np.asarray(crop.getchannel("A"))
+    editable = alpha > 0
+    user_mask = np.zeros(alpha.shape, dtype=bool)
+    x0, y0, x1, y1 = bounds
+    for left, top, right, bottom in boxes:
+        user_mask[top - y0:bottom - y0, left - x0:right - x0] = True
     for left, top, right, bottom in protected:
-        mask[max(0, top):min(original.height, bottom), max(0, left):min(original.width, right)] = 0
-    mask[np.asarray(original.getchannel("A")) == 0] = 0
-    image = Image.fromarray(mask)
-    if image.getbbox() is None:
+        left, top = max(left, x0), max(top, y0)
+        right, bottom = min(right, x1), min(bottom, y1)
+        if left < right and top < bottom:
+            editable[top - y0:bottom - y0, left - x0:right - x0] = False
+
+    core = user_mask & editable
+    if not core.any():
         raise ValueError("去码蒙版没有覆盖可编辑像素")
-    return image
+    distance = ndimage.distance_transform_edt(~core)
+    generation = editable & (distance <= expansion)
+    blend = np.clip(1 - distance / feather, 0, 1)
+    blend = blend * blend * (3 - 2 * blend)
+    blend[~editable] = 0
+    # Sample intact, nearly opaque pixels within the generated border.
+    sample_limit = expansion - max(1, expansion // 6)
+    samples = generation & ~user_mask & (alpha >= 224) & (distance >= feather / 2) & (distance <= sample_limit)
+    return bounds, crop, generation, Image.fromarray(np.rint(blend * 255).astype(np.uint8)), samples
 
 
 def benchmark_storage_paths(root, argv):
@@ -396,43 +427,47 @@ async def benchmark_redraw_storage(session, root, argv, enabled):
                 remove_benchmark_directory(output, subfolder)
 
 
-def mosaic_blend_mask(mask):
+def match_mosaic_colors(crop, restored, generation, samples):
     from scipy import ndimage
 
-    edited = np.asarray(mask) > 0
-    if edited.all():
-        return mask
-    distance = ndimage.distance_transform_edt(edited)
-    labels, count = ndimage.label(edited)
-    # Scale the transition for each region so narrow masks still have a fully edited core.
-    peaks = ndimage.maximum(distance, labels, index=np.arange(count + 1))
-    width = np.clip(peaks * 0.5, 1, 8)
-    opacity = np.minimum(distance / width[labels], 1)
-    opacity = opacity * opacity * (3 - 2 * opacity)
-    return Image.fromarray(np.rint(opacity * 255).astype(np.uint8))
+    original_rgb = np.asarray(crop.convert("RGB"))
+    matched = np.array(restored)
+    groups, _ = ndimage.label(generation)
+    for label, region in enumerate(ndimage.find_objects(groups), 1):
+        in_region = groups[region] == label
+        sample = samples[region] & in_region
+        if np.count_nonzero(sample) < 32:
+            continue
+        generated = matched[region]
+        difference = original_rgb[region][sample].astype(np.int16) - generated[sample]
+        bias = np.median(difference, axis=0)
+        variation = np.median(np.abs(difference - bias), axis=0)
+        # Inconsistent differences likely describe changed details rather than a color cast.
+        reliability = np.clip((24 - variation) / 18, 0, 1)
+        correction = np.rint(np.clip(bias, -24, 24) * reliability).astype(np.int16)
+        if correction.any():
+            generated[in_region] = np.clip(generated[in_region].astype(np.int16) + correction, 0, 255)
+    return Image.fromarray(matched)
 
 
 async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in ("2511", "turbo"):
         raise ValueError("请选择可用的去码重绘模型")
-    mask = mosaic_mask(original, data["regions"], profile.get("keep", []))
-    left, top, right, bottom = mask.getbbox()
-    padding = max(48, round(max(right - left, bottom - top) * .25))
-    bounds = (max(0, left - padding), max(0, top - padding),
-              min(original.width, right + padding), min(original.height, bottom + padding))
-    crop = original.crop(bounds)
-    source_mask = mask.crop(bounds)
+    bounds, crop, generation, blend, samples = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])
         argv = await ready(session, root)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
-            resume_id = profile.get("promptId")
+            prompt_id = profile.get("promptId")
+            # The expanded crop cannot reuse a ComfyUI output from the original-mask workflow.
+            resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:llmchat:mosaic:expanded:" + prompt_id)) if prompt_id else None
             raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times)
             if raw is None:
                 source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
-                mask_name = await upload_image(session, source_mask.convert("RGB"), subfolder=subfolder)
+                noise_mask = Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB")
+                mask_name = await upload_image(session, noise_mask, subfolder=subfolder)
                 reference_name = None
                 if reference:
                     with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
@@ -441,9 +476,10 @@ async def repair_mosaic(original, data, steps, workflow_times):
                         reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
                 prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
                           "Preserve the pose, composition, outline, palette and the existing illustration style. "
+                          "Match the colors, shading and brightness immediately around the repaired area in image 1. "
                           "Keep everything outside the mask unchanged.")
                 if reference_name:
-                    prompt += " Use image 2 as a visual style reference."
+                    prompt += " Use image 2 for style and retain the local colors of image 1."
                 graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
                 sampler = graph["13"]["inputs"]
                 latent_key = "latent_image"
@@ -457,10 +493,11 @@ async def repair_mosaic(original, data, steps, workflow_times):
                 raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids,
                                             resume_id=resume_id, old_history=old_history)
     with Image.open(io.BytesIO(raw)) as output:
-        restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
+        restored = output.convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
+    restored = match_mosaic_colors(crop, restored, generation, samples)
     restored.putalpha(crop.getchannel("A"))
     result = original.copy()
-    result.paste(restored, bounds, mosaic_blend_mask(source_mask))
+    result.paste(Image.composite(restored, crop, blend), bounds)
     return result
 
 
