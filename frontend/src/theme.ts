@@ -41,14 +41,23 @@ export function applyTheme(id: ThemeId): void {
   root.style.colorScheme = id === "ink" ? "dark" : "light";
 }
 
-export function setTheme(id: ThemeId): void {
+function updateTheme(id: ThemeId): void {
+  if (document.documentElement.dataset.theme === id) return;
   applyTheme(id);
+  window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: id }));
+}
+
+function syncTheme(event: StorageEvent): void {
+  if (event.key === STORAGE_KEY && isThemeId(event.newValue)) updateTheme(event.newValue);
+}
+
+export function setTheme(id: ThemeId): void {
+  updateTheme(id);
   try {
     localStorage.setItem(STORAGE_KEY, id);
   } catch {
     // 存不下也不影响本次会话的显示。
   }
-  window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: id }));
 }
 
 export function onThemeChange(listener: (id: ThemeId) => void): () => void {
@@ -62,4 +71,5 @@ export function onThemeChange(listener: (id: ThemeId) => void): () => void {
 
 export function initTheme(): void {
   applyTheme(getTheme());
+  window.addEventListener("storage", syncTheme);
 }

@@ -1,14 +1,13 @@
-import { positionWindowPopover, WindowControls } from "./components/WindowControls";
+import { WindowControls } from "./components/WindowControls";
 import { FeatureIcon } from "./components/FeatureIcon";
 import { SystemPerfBar } from "./components/SystemPerfBar";
 import { attachBenchmarkRunner } from "./benchmark/benchmarkRunner";
 import { openProjectBenchmark } from "./gameBenchmarkWindow";
 import { ApplicationHelpPage } from "./components/GameWorkflowHelp";
 import { openGameTextBenchmark } from "./components/GameTextBenchmarkDialog";
-import { AppDownloadsButton } from "./components/AppDownloadsButton";
 import { GlobalOutputView, OutputBadge } from "./components/GlobalOutputView";
 import { initializeAppOutput, writeOutput } from "./appOutput";
-import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type Conversation,
@@ -37,7 +36,6 @@ import { toFriendlyError } from "./friendlyError";
 import { stringifyLiteraturePromptCatalog } from "./literaturePrompt";
 import { defaultSettings, withDefaults } from "./settingsDefaults";
 import { resolveFeatureLlm, setVendorModelsOverrideCache } from "./modelPresets";
-import { THEMES, getTheme, onThemeChange, setTheme } from "./theme";
 
 const pageLabels = {
   chat: "对话",
@@ -48,16 +46,14 @@ const pageLabels = {
   text: "文本翻译工程",
   unity: "游戏翻译",
   output: "输出",
-  downloads: "下载",
   stats: "统计",
   help: "帮助",
   benchmark: "记录与测试",
-  appearance: "外观",
   settings: "设置",
 } as const;
 type NavigationItem = keyof typeof pageLabels;
-type Page = Exclude<NavigationItem, "output" | "downloads" | "appearance" | "benchmark">;
-const navigation: readonly Exclude<NavigationItem, "downloads" | "help" | "appearance">[][] = [
+type Page = Exclude<NavigationItem, "output" | "benchmark">;
+const navigation: readonly Exclude<NavigationItem, "help">[][] = [
   ["chat", "literature", "image", "redraw", "speech", "text", "unity"],
   ["output", "stats", "benchmark", "settings"],
 ];
@@ -67,41 +63,6 @@ function PagePanel({ feature, active, children }: { feature: Page; active: boole
   return <div className={active ? "literature-host" : "literature-host is-hidden"} aria-hidden={!active} inert={!active}>
     <DeferredPanel active={active} label={pageLabels[feature]}>{children}</DeferredPanel>
   </div>;
-}
-
-function AppearanceButton() {
-  const id = useId();
-  const panel = useRef<HTMLDivElement>(null);
-  const [theme, setSelectedTheme] = useState(getTheme);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => onThemeChange(setSelectedTheme), []);
-
-  return <>
-    <button type="button" className="window-action" popoverTarget={id}
-      aria-haspopup="dialog" aria-controls={id} aria-expanded={open} aria-label={pageLabels.appearance}
-      data-tooltip={pageLabels.appearance} onClick={event => positionWindowPopover(event.currentTarget, panel.current)}>
-      <span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-        <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.3 0 2.1-.9 2.1-1.9 0-1.5-1.6-1.7-1.6-3 0-.9.7-1.6 1.7-1.6H16a4.5 4.5 0 0 0 4.5-4.5c0-3.3-3.8-6-8.5-6Z" />
-        <circle cx="8" cy="9.2" r="1.1" fill="currentColor" stroke="none" />
-        <circle cx="12" cy="7.4" r="1.1" fill="currentColor" stroke="none" />
-        <circle cx="15.8" cy="9.4" r="1.1" fill="currentColor" stroke="none" />
-      </svg></span>
-    </button>
-    <div ref={panel} id={id} popover="auto" className="nav-appearance-popover window-action-popover" role="dialog"
-      aria-label={pageLabels.appearance} onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
-      {THEMES.map(option => <button key={option.id} type="button" className="nav-appearance-option"
-        aria-pressed={theme === option.id} onClick={() => setTheme(option.id)}>
-        <span className="nav-appearance-swatch" aria-hidden="true" style={{
-          "--swatch-base": option.swatch[0],
-          "--swatch-panel": option.swatch[1],
-          "--swatch-accent": option.swatch[2],
-        } as CSSProperties} />
-        <span>{option.label}</span>
-        {theme === option.id && <span aria-hidden="true">✓</span>}
-      </button>)}
-    </div>
-  </>;
 }
 
 export default function App() {
@@ -390,6 +351,16 @@ export default function App() {
     return saveSettingsPatch(patch);
   };
 
+  const toggleHelp = () => {
+    startupInteracted.current = true;
+    if (page === "help") {
+      setPage(helpReturnPage.current);
+      return;
+    }
+    helpReturnPage.current = page;
+    setPage("help");
+  };
+
   if (!backendReady) {
     if (backendError) {
       return <>
@@ -415,17 +386,7 @@ export default function App() {
   }
 
   return <>
-    <WindowControls actions={<>
-      <AppearanceButton />
-      <button type="button" className="window-action" aria-label={pageLabels.help} data-tooltip={pageLabels.help}
-        aria-current={page === "help" ? "page" : undefined} onClick={() => {
-          startupInteracted.current = true;
-          if (page === "help") return;
-          helpReturnPage.current = page;
-          setPage("help");
-        }}><span><FeatureIcon feature="help" /></span></button>
-      <AppDownloadsButton />
-    </>} />
+    <WindowControls help={{ open: page === "help", toggle: toggleHelp }} />
     <div className="app-shell" onPointerDownCapture={() => { startupInteracted.current = true; }} onKeyDownCapture={() => { startupInteracted.current = true; }}>
       <nav aria-label="主导航" className={`nav-rail${navRailHidden ? " is-collapsed" : ""}`}>
         {navigation.map((group, index) => <div key={group[0]} className={index === 0 ? "nav-links" : "nav-utilities"}>

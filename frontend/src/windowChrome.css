@@ -21,10 +21,13 @@
 }
 
 .window-bar-title {
-  display: flex;
-  align-items: center;
+  display: block;
+  box-sizing: border-box;
   inline-size: fit-content;
-  max-inline-size: calc(100% - 3 * var(--window-control-width));
+  max-inline-size: calc(100% - 3 * var(--window-control-width) - 3 * var(--window-action-width) - 8px);
+  line-height: var(--window-bar-height);
+  overflow: hidden;
+  text-overflow: ellipsis;
   block-size: 100%;
   padding-inline: var(--space-3);
   color: var(--text);

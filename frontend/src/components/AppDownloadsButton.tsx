@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from "react";
-import { positionWindowPopover } from "./WindowControls";
+import { positionWindowPopover } from "../viewportLayout";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { downloadFinished, getDownloadActions, removeDownload, useAppDownloads, type AppDownload, type DownloadStatus } from "../appDownloads";
@@ -21,7 +21,7 @@ const statusLabels: Record<DownloadStatus, string> = {
 
 function DownloadRow({ task }: { task: AppDownload }) {
   const { id, name, source, path, status, detail, progress, error } = task;
-  const controls = getDownloadActions(id);
+  const controls = getDownloadActions(task);
   const pause = status === "running" ? controls?.pause : undefined;
   const resume = status === "paused" ? controls?.resume : undefined;
   const cancel = status === "running" || status === "paused" || status === "queued" ? controls?.cancel : undefined;

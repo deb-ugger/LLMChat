@@ -11,8 +11,17 @@ export type AppDownload = {
   detail?: string;
   progress?: { value: number; max: number };
   error?: string;
+  availableActions?: DownloadAction[];
 };
-type DownloadActions = Partial<Record<"pause" | "resume" | "cancel", (id: string) => void>>;
+type DownloadAction = "pause" | "resume" | "cancel";
+type DownloadActions = Partial<Record<DownloadAction, (id: string) => void>>;
+type DownloadPatch = Partial<Omit<AppDownload, "id">>;
+type DownloadMessage =
+  | { kind: "add"; task: AppDownload }
+  | { kind: "update"; id: string; patch: DownloadPatch }
+  | { kind: "recover"; tasks: AppDownload[] }
+  | { kind: "remove"; id: string }
+  | { kind: "control"; id: string; action: DownloadAction };
 const historyKey = "llmchat-downloads";
 const legacyKey = "llmchat-game-image-downloads";
 
@@ -23,21 +32,20 @@ export const downloadFinished = ({ status }: AppDownload) =>
 function readHistory(): AppDownload[] {
   try {
     const saved = localStorage.getItem(historyKey);
-    const history: AppDownload[] = saved ? JSON.parse(saved) :
+    const history = saved ? JSON.parse(saved) :
       (JSON.parse(localStorage.getItem(legacyKey) || "[]") as Array<Pick<AppDownload, "id" | "status" | "error"> & { path: string; total: number }>)
         .map(({ id, path, status, error, total }) => ({
           id, name: downloadFileName(path), source: "游戏图片", status, path, error,
           detail: status === "completed" ? `${total} 张图片` : undefined,
         }));
-    return history.map(task => downloadFinished(task) ? task : {
-      ...task, status: "failed", progress: undefined, error: "应用关闭前未完成下载",
-    });
+    return Array.isArray(history) ? history : [];
   } catch {
     return [];
   }
 }
 
 let downloads = readHistory();
+let channel: BroadcastChannel | undefined;
 const actions = new Map<string, DownloadActions>();
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
@@ -46,37 +54,108 @@ const subscribe = (listener: () => void) => {
 };
 export const getAppDownloads = () => downloads;
 export const useAppDownloads = () => useSyncExternalStore(subscribe, getAppDownloads);
-export const getDownloadActions = (id: string) => actions.get(id);
-
-function publish(next: AppDownload[], persist: boolean) {
-  downloads = next;
-  if (persist) {
-    try { localStorage.setItem(historyKey, JSON.stringify(downloads)); }
-    catch { showAppNotice("下载记录保存失败", "error"); }
+export function getDownloadActions(task: AppDownload): DownloadActions | undefined {
+  const local = actions.get(task.id);
+  if (local || !channel || !task.availableActions?.length) return local;
+  const remote: DownloadActions = {};
+  for (const action of task.availableActions) {
+    remote[action] = id => broadcast({ kind: "control", id, action });
   }
+  return remote;
+}
+
+function publish(next: AppDownload[]) {
+  downloads = next;
   for (const listener of listeners) listener();
+}
+
+function saveHistory(history: AppDownload[]) {
+  try { localStorage.setItem(historyKey, JSON.stringify(history)); }
+  catch { showAppNotice("下载记录保存失败", "error"); }
+}
+
+function broadcast(message: DownloadMessage) {
+  channel?.postMessage(message);
+}
+
+function replaceTask(tasks: AppDownload[], next: AppDownload) {
+  return tasks.map(task => task.id === next.id ? next : task);
+}
+
+export function initAppDownloads(mainWindow: boolean) {
+  if (channel) return;
+  channel = new BroadcastChannel(historyKey);
+  channel.onmessage = ({ data }: MessageEvent<DownloadMessage>) => {
+    switch (data.kind) {
+      case "add":
+        if (!downloads.some(task => task.id === data.task.id)) publish([data.task, ...downloads]);
+        break;
+      case "update": {
+        const current = downloads.find(task => task.id === data.id);
+        if (current && !downloadFinished(current)) publish(replaceTask(downloads, { ...current, ...data.patch }));
+        break;
+      }
+      case "recover": {
+        const recovered = new Set(data.tasks.map(task => task.id));
+        publish([...data.tasks, ...downloads.filter(task => !recovered.has(task.id))]);
+        break;
+      }
+      case "remove":
+        publish(downloads.filter(task => task.id !== data.id));
+        break;
+      case "control":
+        actions.get(data.id)?.[data.action]?.(data.id);
+        break;
+    }
+  };
+
+  const history = readHistory();
+  if (!mainWindow || history.every(downloadFinished)) {
+    publish(history);
+    return;
+  }
+  const recovered = history.map<AppDownload>(task => downloadFinished(task) ? task : {
+    ...task, status: "failed", progress: undefined, availableActions: undefined, error: "应用关闭前未完成下载",
+  });
+  saveHistory(recovered);
+  publish(recovered);
+  broadcast({ kind: "recover", tasks: recovered });
 }
 
 export function addDownload(task: Omit<AppDownload, "id">, controls?: DownloadActions) {
   const id = crypto.randomUUID();
-  if (controls) actions.set(id, controls);
-  publish([{ ...task, id }, ...downloads], true);
+  const next = { ...task, id };
+  if (controls) {
+    actions.set(id, controls);
+    next.availableActions = (Object.keys(controls) as DownloadAction[]).filter(action => controls[action]);
+  }
+  saveHistory([next, ...readHistory()]);
+  publish([next, ...downloads]);
+  broadcast({ kind: "add", task: next });
   return id;
 }
 
-export function updateDownload(id: string, patch: Partial<Omit<AppDownload, "id">>) {
+export function updateDownload(id: string, patch: DownloadPatch) {
   const current = downloads.find(task => task.id === id);
   if (!current || downloadFinished(current)) return;
   const next = { ...current, ...patch };
   if (downloadFinished(next)) {
     next.progress = undefined;
+    next.availableActions = undefined;
     actions.delete(id);
   }
-  publish(downloads.map(task => task.id === id ? next : task), patch.status !== undefined);
+  if (patch.status !== undefined) saveHistory(replaceTask(readHistory(), next));
+  publish(replaceTask(downloads, next));
+  broadcast({ kind: "update", id, patch: {
+    ...patch, progress: next.progress, availableActions: next.availableActions,
+  } });
 }
 
 export function removeDownload(id: string) {
-  publish(downloads.filter(task => task.id !== id || !downloadFinished(task)), true);
+  if (!downloads.some(task => task.id === id && downloadFinished(task))) return;
+  saveHistory(readHistory().filter(task => task.id !== id));
+  publish(downloads.filter(task => task.id !== id));
+  broadcast({ kind: "remove", id });
 }
 
 export async function trackDownload<T>(

@@ -5,6 +5,7 @@ import { GameTextBenchmarkHost, GameTextBenchmarkWindow } from "./components/Gam
 import { recoverGamePerformanceArchives } from "./gameModelPerformance";
 import { refreshSavedGameTestConfigurations } from "./gameModelPreset";
 import { AppNotice } from "./components/AppNotice";
+import { initAppDownloads } from "./appDownloads";
 import { initializeAppClose } from "./appClose";
 import { installControlLabelBehavior } from "./controlLabels";
 import { installRuntimeLogging, logRuntimeError } from "./runtimeLog";
@@ -27,6 +28,7 @@ document.addEventListener("contextmenu", (e) => {
 installRuntimeLogging();
 initTheme();
 const auxiliary = currentGameAuxWindow();
+initAppDownloads(!auxiliary && !isGameBenchmarkWindow);
 if (!auxiliary) recoverGamePerformanceArchives();
 if (!auxiliary && !isGameBenchmarkWindow) {
   try { refreshSavedGameTestConfigurations(); }

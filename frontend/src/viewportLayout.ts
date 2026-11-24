@@ -15,3 +15,11 @@ export function getFixedMenuPoint(x: number, y: number, rightSpace: number, bott
     y: Math.max(inset, Math.min(y / viewport.scale, viewport.height - bottomSpace)),
   };
 }
+
+export function positionWindowPopover(anchor: HTMLElement, panel: HTMLElement | null) {
+  if (!panel) return;
+  const { scale, width } = getLayoutViewport();
+  const bounds = getLayoutRect(anchor.getBoundingClientRect(), scale);
+  panel.style.setProperty("--window-popover-top", (bounds.bottom + 6) + "px");
+  panel.style.setProperty("--window-popover-right", Math.max(8, width - bounds.right) + "px");
+}
