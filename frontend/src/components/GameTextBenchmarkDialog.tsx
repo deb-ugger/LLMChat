@@ -853,6 +853,8 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
           <span className="game-benchmark-item-badge">Q{itemIndex + 1}</span>
           <span className="game-benchmark-config-name">{name}</span>
           <span className="game-benchmark-config-state">{runStateText[state]}</span>
+          <span className={"game-benchmark-config-enabled" + (item.enabled === false ? " is-off" : "")}
+            aria-hidden="true" title={item.enabled === false ? "未启用" : "已启用"} />
         </button></li>;
       })}
     </ul>
@@ -860,7 +862,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
       aria-label="拖动调整配置列表宽度" aria-valuenow={listWidth} aria-valuemin={200} aria-valuemax={460}
       onPointerDown={resizeStart} onPointerMove={resizeMove} onPointerUp={resizeEnd} onPointerCancel={resizeEnd}
       onKeyDown={resizeKey} onDoubleClick={() => setListWidth(248)} />
-    {config ? <div className="game-benchmark-editor">
+    {config ? <div className="game-benchmark-editor" data-run={runStateOf(config.id)}>
         <fieldset key={config.id + (locked ? ":read" : ":edit")} disabled={locked} className="game-benchmark-item-fields">
         <div className="game-benchmark-editor-head">
           <label className="game-benchmark-switch">
