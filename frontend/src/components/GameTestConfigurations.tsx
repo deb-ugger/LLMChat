@@ -1,3 +1,4 @@
+import { MosaicScreeningFields } from "./game-mosaic/MosaicScreeningFields";
 import { normalizeMosaicSettings } from "../gameMosaic";
 import { useMemo, useState, type ReactNode } from "react";
 import type { GameConfigurationSetup } from "../gameAuxWindows";
@@ -207,6 +208,8 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
         {mosaic && <Group title="图片去码">
           <Select label="筛选范围" value={mosaic.scope} choices={[{value:"scenes",label:"场景图片"},{value:"all",label:"全部图片"}]} change={scope=>updateMosaic({scope})}/>
           <Select label="筛选方式" value={mosaic.detector} choices={[{value:"grid",label:"方格规则"},{value:"anime",label:"高召回初筛（分类＋定位）"}]} change={detector=>updateMosaic({detector})}/>
+          {mosaic.detector !== "grid" && <MosaicScreeningFields value={mosaic.screening} disabled={working}
+            onChange={screening => updateMosaic({ screening })} />}
           <Count label="筛选并发" value={mosaic.concurrency ?? 2} choices={[1,2,4]} change={concurrency=>updateMosaic({concurrency})}/>
           <Flag label="自动流程执行视觉复筛" value={mosaic.refine!==false} change={refine=>updateMosaic({refine})}/>
           <Flag label="自动流程使用大模型补查未发现" value={!!mosaic.refineIncludeMissed} change={refineIncludeMissed=>updateMosaic({refineIncludeMissed})}/>

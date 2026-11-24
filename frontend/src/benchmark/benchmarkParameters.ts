@@ -3,6 +3,7 @@ import type { BenchmarkTarget } from "./benchmarkRunner";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { imageBenchmarkSteps, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { defaultMosaicSettings, mosaicModelLabels } from "../gameMosaic";
+import { normalizeMosaicScreening } from "../gameMosaicScreening";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { benchmarkRoles, type BenchmarkConfig } from "../gameTextBenchmark";
 import { labelForModelId } from "../modelPresets";
@@ -111,6 +112,12 @@ export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Par
     } else if (step === "mosaicScreen") {
       add("筛选方式", mosaic.detector === "grid" ? "方格规则" : "分类＋定位");
       add("筛选并发", mosaic.concurrency ?? 2);
+      if (mosaic.detector !== "grid") {
+        const screening = normalizeMosaicScreening(mosaic.screening);
+        add("分类阈值", screening.presenceThreshold);
+        add("定位阈值", screening.boxThreshold);
+        add("疑难图片局部放大", switchLabel(screening.localZoom));
+      }
       if (settings?.screenVisionModel) add("视觉补检模型", labelForModelId(settings.screenVisionModel));
     } else {
       add("重绘模型", mosaicModelLabels[mosaic.model]);

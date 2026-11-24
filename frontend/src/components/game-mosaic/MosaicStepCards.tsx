@@ -1,3 +1,4 @@
+import { MosaicScreeningFields } from "./MosaicScreeningFields";
 import type { CSSProperties, ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
 import { mosaicModelLabels, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
@@ -138,6 +139,8 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         <label>筛选方式<select aria-label="打码筛选方式" value={detectorKind} disabled={busy} onChange={event => changePreferences({ detector: event.target.value as typeof detectorKind })}>
           <option value="grid">{detectorLabels.grid}</option><option value="anime">{detectorLabels.anime}</option>
         </select></label>
+        {detectorKind !== "grid" && <MosaicScreeningFields value={preferences.screening} disabled={busy}
+          onChange={screening => changePreferences({ screening })} />}
         {detectorKind !== "grid" && <label>自定义定位 ONNX（可选）
           <input type="file" accept=".onnx" disabled={busy} onChange={event => screen.chooseDetectorFile(event.target.files?.[0])} />
           {screen.detectorFile && <button type="button" className="unity-btn" disabled={busy} onClick={screen.useBuiltInDetector}>使用内置模型</button>}

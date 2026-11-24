@@ -106,6 +106,7 @@ export type MosaicScreenPlan = {
   usable: readonly UnityImage[];
   rows: Results;
   initial: number;
+  screening?: MosaicSettings["screening"];
   detectorKind: MosaicSettings["detector"];
   detectorKey: string;
   detectorFile?: File;

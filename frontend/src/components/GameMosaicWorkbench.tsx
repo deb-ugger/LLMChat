@@ -632,7 +632,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   const clearReviews = (ids: string[]) => clearMosaicReviews(gamePath, ids);
 
-  const detectorKey = mosaicDetectorKey(detectorKind, detectorFile);
+  const detectorKey = mosaicDetectorKey(detectorKind, detectorFile, preferences.screening);
   const reviewKey = mosaicReviewKey(preferences, detectorFile);
   const reviewModels = settings ? gameAvailableModels(settings) : ["qwen3-vl:8b-instruct"];
   const [refineModelFilter, setRefineModelFilter] = usePersistedModelFilter("mosaic:refineModel");
@@ -716,7 +716,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     void run("筛选打码区域", (signal, report, usage) => runMosaicScreen({
       targets, usable, rows, initial, detectorKind, detectorKey, detectorFile,
       modelName: detectorKind !== "grid" && detectorFile ? detectorFile.name : detectorLabels[detectorKind],
-      concurrency: preferences.concurrency,
+      concurrency: preferences.concurrency, screening: preferences.screening,
     }, signal, report, usage, {
       replaceRows, setRows, clearReviews, resetRedraw, read, prepareSources, loadMosaicDetector, createMosaicGridScanner, setProgress,
       onDevice: device => setStepRuns(previous => previous.screen ? { ...previous, screen: { ...previous.screen, device } } : previous),

@@ -1697,7 +1697,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   async function performDeploymentMosaic(current: UnityProject, signal: AbortSignal, report: (value: UnityProgress) => void) {
     let { candidates } = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-status", { root });
     const preferences = readMosaicSettings(root), modelFile = gameDetectorFile(root);
-    const detectorKey = mosaicDetectorKey(preferences.detector, modelFile);
+    const detectorKey = mosaicDetectorKey(preferences.detector, modelFile, preferences.screening);
     const rows = readMosaicRows(root);
     const savedRow = (image: UnityImage) => rows[image.id]?.source === image.sourceHash ? rows[image.id] : undefined;
     const usable = (current.images || []).filter(image => image.sourceFile && image.width > 0 && image.height > 0);

@@ -242,7 +242,7 @@ async function reviewImage(blob: Blob, proposed: MosaicScan, signal: AbortSignal
   appendBoxes(regions, proposed.modelBoxes || []);
   appendBoxes(regions, proposed.reviewBoxes || []);
   const confirmations: MosaicBox[]=[],uncertain: MosaicBox[]=[];
-  const classifierPositive = (proposed.presenceScore ?? 0) >= mosaicPresenceThreshold;
+  const classifierPositive = (proposed.presenceScore ?? 0) >= (proposed.presenceThreshold ?? mosaicPresenceThreshold);
   let unlocalizedReview: string | undefined;
   let firstFailure: Error | undefined;
   const views: (MosaicBox | undefined)[]=regions.length?regions:[undefined];

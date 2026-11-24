@@ -1,4 +1,6 @@
 import { scanMosaicPixels, sceneSignature } from "./gameMosaicGrid";
+import { defaultMosaicScreening, normalizeMosaicScreening, mosaicZoomRegions, mergeMosaicDetections,
+  mosaicBoxOverlap as overlap, type MosaicScreening, type MosaicDetection } from "./gameMosaicScreening";
 export { scanMosaicPixels } from "./gameMosaicGrid";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { runtimeAssetBase } from "./runtimeAssets";
@@ -10,7 +12,7 @@ export type MosaicModel = "2511" | "turbo";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
 };
-export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number };
+export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
 async function bitmapPixels(blob: Blob) {
@@ -46,10 +48,11 @@ export function createMosaicGridScanner() {
 }
 
 export type MosaicSettings = {
+  screening?: Partial<MosaicScreening>;
   concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number; refineIncludeMissed?: boolean;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
 const detectorFiles = new Map<string, File>();
 export function clearGameDetectorFile(root: string) { detectorFiles.delete(root); }
 export function gameDetectorFile(root: string, file?: File) {
@@ -59,6 +62,7 @@ export function gameDetectorFile(root: string, file?: File) {
 export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
   const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
   return { ...defaultMosaicSettings, ...value, detector: value?.detector === "grid" ? "grid" : "anime",
+    screening: normalizeMosaicScreening(value?.screening),
     concurrency: legacy ? 2 : value?.concurrency ?? 2,
     refineScope: "selected" };
 }
@@ -70,9 +74,13 @@ export function saveMosaicSettings(root: string, settings: MosaicSettings) {
   localStorage.setItem("llmchat-mosaic-settings:" + root, JSON.stringify(normalizeMosaicSettings(settings)));
   window.dispatchEvent(new CustomEvent("game-mosaic-settings", { detail: root }));
 }
-export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File) {
+export function mosaicDetectorKey(kind: MosaicSettings["detector"], file?: File, options?: Partial<MosaicScreening>) {
   if (kind === "grid") return "grid-v2";
-  return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : kind + "-2d-presence-v2";
+  const screening = normalizeMosaicScreening(options);
+  if (!screening.localZoom && screening.presenceThreshold === 0.47 && screening.boxThreshold === 0.25)
+    return file ? JSON.stringify(["custom-yolo-presence-v2", file.name, file.size, file.lastModified]) : "anime-2d-presence-v2";
+  const model = file ? [file.name, file.size, file.lastModified] : "anime-640";
+  return JSON.stringify(["mosaic-screen-v3", model, screening]);
 }
 
 export function matchesMosaicDetectorKey(recorded: string | undefined, current: string) {
@@ -85,16 +93,11 @@ export function matchesMosaicDetectorKey(recorded: string | undefined, current: 
 
 export async function openDeploymentDetector(root: string, settings: MosaicSettings, signal: AbortSignal, timingScope?: string) {
   if (settings.detector === "grid") return { scan: scanMosaic, release: async () => {} };
-  return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope, initialScreening: true });
+  return loadMosaicDetector(gameDetectorFile(root), { signal, timingScope, initialScreening: true, screening: settings.screening });
 }
 
 const threshold = 0.25;
 export const mosaicPresenceThreshold = 0.47;
-function overlap(a: MosaicBox, b: MosaicBox) {
-  const area = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *
-    Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
-  return area / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - area);
-}
 
 function screeningBounds(image: ImageData): MosaicBox {
   const { width, height, data } = image;
@@ -167,6 +170,7 @@ export type MosaicDevice = { kind: "gpu" | "cpu"; reason?: string };
 
 export async function loadMosaicDetector(model: File | undefined, options: {
   signal?: AbortSignal; onDevice?: (device: MosaicDevice) => void; timingScope?: string; initialScreening?: boolean;
+  screening?: Partial<MosaicScreening>;
 } = {}) {
   const ort = await import("onnxruntime-web/webgpu");
   const assets = runtimeAssetBase();
@@ -176,6 +180,9 @@ export async function loadMosaicDetector(model: File | undefined, options: {
   };
   ort.env.wasm.numThreads = 1;
   const { signal, onDevice, timingScope } = options;
+  const screening = normalizeMosaicScreening(options.screening);
+  const presenceThreshold = options.initialScreening ? screening.presenceThreshold : mosaicPresenceThreshold;
+  const boxThreshold = options.initialScreening ? screening.boxThreshold : threshold;
   const readModel = async (name: string) => {
     const response=await fetch(new URL("./mosaic-detector/"+name,assets),{signal});
     if(!response.ok)throw new Error("检测模型资源读取失败："+name);
@@ -317,59 +324,70 @@ export async function loadMosaicDetector(model: File | undefined, options: {
     const bounds: MosaicBox = options.initialScreening ? screeningBounds(full) : [0, 0, full.width, full.height];
     const [x, y, right, bottom] = bounds;
     const viewWidth = right - x, viewHeight = bottom - y;
-    const scale = Math.min(size / viewWidth, size / viewHeight);
-    const width = Math.max(1, Math.round(scale * viewWidth)), height = Math.max(1, Math.round(scale * viewHeight));
-    const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
-    context.fillStyle = "#727272";
-    context.fillRect(0, 0, size, size);
-    context.drawImage(original, x, y, viewWidth, viewHeight, left, top, width, height);
-    const { data } = context.getImageData(0, 0, size, size);
-    const plane = size * size;
-    const values = new Float32Array(3 * plane);
-    for (let index = 0; index < plane; index++) {
-      values[index] = data[4 * index] / 255;
-      values[index + plane] = data[4 * index + 1] / 255;
-      values[index + 2 * plane] = data[4 * index + 2] / 255;
-    }
-    const presenceScore=await classify(original, bounds);
-    const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
-    let tensors: Awaited<ReturnType<typeof infer>> | undefined;
-    try {
-      tensors = await infer(feeds);
-      const result = tensors[outputName];
-      const data = result.data;
-      if (!(data instanceof Float32Array)) throw new Error("请选择输出为 FP32 的检测 ONNX");
-      const geometry = { left, top, scaleX: width / viewWidth, scaleY: height / viewHeight, width: viewWidth, height: viewHeight };
-      const onOriginal = ([x0, y0, x1, y1]: MosaicBox): MosaicBox => [x0 + x, y0 + y, x1 + x, y1 + y];
-      const boxes: MosaicBox[] = [];
-      const candidates = mosaicBoxes(data, result.dims, channels - 36, geometry, (relative, score) => {
-        const box = onOriginal(relative);
-        if (!mosaicVisibleBox(full, box)) return false;
-        if (score >= threshold) boxes.push(box);
-        return true;
-      }, 0.05).map(onOriginal);
-      const classifierPositive = presenceScore >= mosaicPresenceThreshold;
-      let reviewBoxes = candidates;
-      if (!options.initialScreening || (!boxes.length && (candidates.length || classifierPositive))) {
-        const view = viewWidth === full.width && viewHeight === full.height ? full : originalContext.getImageData(x, y, viewWidth, viewHeight);
-        const grid = scanMosaicPixels(view.data, viewWidth, viewHeight, signature).boxes.map(onOriginal);
-        if (options.initialScreening && !classifierPositive) {
-          reviewBoxes = candidates.filter(box => grid.some(tile => overlap(tile, box) > 0.2));
-        } else {
-          reviewBoxes = [...candidates];
-          for (const box of grid)
-            if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
-        }
+    const detect = async ([x, y, right, bottom]: MosaicBox): Promise<MosaicDetection[]> => {
+      signal?.throwIfAborted();
+      const viewWidth = right - x, viewHeight = bottom - y;
+      const scale = Math.min(size / viewWidth, size / viewHeight);
+      const width = Math.max(1, Math.round(scale * viewWidth)), height = Math.max(1, Math.round(scale * viewHeight));
+      const left = Math.floor((size - width) / 2), top = Math.floor((size - height) / 2);
+      context.fillStyle = "#727272";
+      context.fillRect(0, 0, size, size);
+      context.drawImage(original, x, y, viewWidth, viewHeight, left, top, width, height);
+      const { data } = context.getImageData(0, 0, size, size);
+      const plane = size * size;
+      const values = new Float32Array(3 * plane);
+      for (let index = 0; index < plane; index++) {
+        values[index] = data[4 * index] / 255;
+        values[index + plane] = data[4 * index + 1] / 255;
+        values[index + 2 * plane] = data[4 * index + 2] / 255;
       }
-      return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore,
-        review: boxes.length && presenceScore<mosaicPresenceThreshold ? "图片分类与区域定位模型存在分歧，请复核"
-          : !boxes.length && (reviewBoxes.length || presenceScore>=mosaicPresenceThreshold)
-            ? reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : "图片分类提示疑似遮挡，定位模型尚未给出区域"
-            : undefined };
-    } finally {
-      feeds.dispose();
-      for (const value of Object.values(tensors || {})) value.dispose();
+      const feeds = new ort.Tensor("float32", values, [1, 3, size, size]);
+      let tensors: Awaited<ReturnType<typeof infer>> | undefined;
+      try {
+        tensors = await infer(feeds);
+        const result = tensors[outputName], data = result.data;
+        if (!(data instanceof Float32Array)) throw new Error("请选择输出为 FP32 的检测 ONNX");
+        const geometry = { left, top, scaleX: width / viewWidth, scaleY: height / viewHeight, width: viewWidth, height: viewHeight };
+        const detections: MosaicDetection[] = [];
+        mosaicBoxes(data, result.dims, channels - 36, geometry, (relative, score) => {
+          const box: MosaicBox = [relative[0] + x, relative[1] + y, relative[2] + x, relative[3] + y];
+          if (!mosaicVisibleBox(full, box)) return false;
+          detections.push({ box, score });
+          return true;
+        }, 0.05);
+        return detections;
+      } finally {
+        feeds.dispose();
+        for (const value of Object.values(tensors || {})) value.dispose();
+      }
+    };
+    const presenceScore = await classify(original, bounds);
+    let detections = await detect(bounds);
+    if (options.initialScreening) {
+      const regions = mosaicZoomRegions(bounds, detections, presenceScore, screening);
+      for (const region of regions) detections = mergeMosaicDetections(detections, await detect(region));
     }
+    const candidates = detections.map(item => item.box);
+    const boxes = detections.filter(item => item.score >= boxThreshold).map(item => item.box);
+    const onOriginal = ([x0, y0, x1, y1]: MosaicBox): MosaicBox => [x0 + x, y0 + y, x1 + x, y1 + y];
+    const classifierPositive = presenceScore >= presenceThreshold;
+    let reviewBoxes = candidates;
+    if (!options.initialScreening || (!boxes.length && (candidates.length || classifierPositive))) {
+      const view = viewWidth === full.width && viewHeight === full.height ? full : originalContext.getImageData(x, y, viewWidth, viewHeight);
+      const grid = scanMosaicPixels(view.data, viewWidth, viewHeight, signature).boxes.map(onOriginal);
+      if (options.initialScreening && !classifierPositive) {
+        reviewBoxes = candidates.filter(box => grid.some(tile => overlap(tile, box) > 0.2));
+      } else {
+        reviewBoxes = [...candidates];
+        for (const box of grid)
+          if (!reviewBoxes.some(previous => overlap(previous, box) > 0.2)) reviewBoxes.push(box);
+      }
+    }
+    return { signature, boxes, modelBoxes: candidates, reviewBoxes, presenceScore, presenceThreshold,
+      review: boxes.length && presenceScore<presenceThreshold ? "图片分类与区域定位模型存在分歧，请复核"
+        : !boxes.length && (reviewBoxes.length || presenceScore>=presenceThreshold)
+          ? reviewBoxes.length ? "候选区域需要视觉模型复筛确认" : "图片分类提示疑似遮挡，定位模型尚未给出区域"
+          : undefined };
   };
   const cache = new Map<string, Promise<MosaicScan>>();
   let reused = 0;
