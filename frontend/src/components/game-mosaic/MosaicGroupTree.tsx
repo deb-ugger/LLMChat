@@ -8,7 +8,12 @@ import { SearchHighlight } from "../SearchHighlight";
 import { MosaicOriginalSelectionTarget } from "./MosaicOriginalGallery";
 import type { MosaicGroupMenu, RefineMovement, Result } from "./mosaicWorkbenchTypes";
 
-export const mosaicStatusPageSize = 40;
+export const mosaicGroupPageSize = 40;
+export type MosaicListView = "status" | "picture" | "browse";
+export type MosaicListGroup = { items: UnityImage[]; label: string; status?: MosaicStatus; pictureGroup?: string };
+const viewLabels = { status: "状态分组", picture: "图片分组", browse: "浏览" } as const;
+export const mosaicGroupCollapsed = (collapsed: Partial<Record<string, boolean>>, key: string) =>
+  collapsed[key] ?? key.startsWith("picture:");
 
 type Props = {
   listId: string;
@@ -19,15 +24,15 @@ type Props = {
   onToggleFailureFilter: () => void;
   counts: { visible: number; checked: number; saved: number; failed: number };
   active?: UnityImage;
-  groups: ReadonlyMap<MosaicStatus, readonly UnityImage[]>;
-  ordered: readonly { id: MosaicStatus; image: UnityImage }[];
+  groups: ReadonlyMap<string, MosaicListGroup>;
+  ordered: readonly { id: string; image: UnityImage }[];
   refineChanges: ReadonlyMap<MosaicStatus, { added: number; removed: number }>;
-  groupPages: Partial<Record<MosaicStatus, number>>;
-  setGroupPages: Dispatch<SetStateAction<Partial<Record<MosaicStatus, number>>>>;
-  collapsed: Partial<Record<MosaicStatus, boolean>>;
-  setCollapsed: Dispatch<SetStateAction<Partial<Record<MosaicStatus, boolean>>>>;
-  browseOriginals: boolean;
-  setBrowseOriginals: (browse: boolean) => void;
+  groupPages: Partial<Record<string, number>>;
+  setGroupPages: Dispatch<SetStateAction<Partial<Record<string, number>>>>;
+  collapsed: Partial<Record<string, boolean>>;
+  setCollapsed: Dispatch<SetStateAction<Partial<Record<string, boolean>>>>;
+  listView: MosaicListView;
+  setListView: (view: MosaicListView) => void;
   originalGallery: ReactNode;
   onBrowsePreviewKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   actionsDisabled: boolean;
@@ -47,9 +52,10 @@ type Props = {
 
 export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
-  browseOriginals, setBrowseOriginals, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
+  listView, setListView, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, draftChanges, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
   const { query, needle, scope, imageFilters, failuresOnly } = filters;
+  const browseOriginals = listView === "browse";
   const listRef = useRef<HTMLUListElement>(null);
   const [keyboardTarget, setKeyboardTarget] = useState<string>();
   const [selectionTarget, setSelectionTarget] = useState<HTMLDivElement | null>(null);
@@ -57,7 +63,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
 
   useLayoutEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [needle, scope, imageFilters]);
+  }, [needle, scope, imageFilters, listView]);
   useLayoutEffect(() => {
     if (!keyboardTarget) return;
     const button = listRef.current?.querySelector<HTMLButtonElement>(
@@ -96,14 +102,14 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
         !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const element = event.target as HTMLElement;
     if (element.matches("input:not([type=checkbox]), select, textarea")) return;
-    const summary = element.closest<HTMLElement>("summary[data-mosaic-status]");
+    const summary = element.closest<HTMLElement>("summary[data-mosaic-group]");
     if (summary) {
-      const status = summary.dataset.mosaicStatus as MosaicStatus;
+      const key = summary.dataset.mosaicGroup!;
       event.preventDefault();
       if (event.key === "ArrowLeft" || event.key === "ArrowRight")
-        setCollapsed(previous => ({ ...previous, [status]: event.key === "ArrowLeft" }));
+        setCollapsed(previous => ({ ...previous, [key]: event.key === "ArrowLeft" }));
       else {
-        const headings = [...listRef.current!.querySelectorAll<HTMLElement>("summary[data-mosaic-status]")];
+        const headings = [...listRef.current!.querySelectorAll<HTMLElement>("summary[data-mosaic-group]")];
         headings[Math.max(0, Math.min(headings.length - 1, headings.indexOf(summary) + (event.key === "ArrowUp" ? -1 : 1)))]?.focus();
       }
       return;
@@ -116,19 +122,19 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
     if (index >= 0 && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       next = Math.max(0, Math.min(ordered.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
     } else if (index >= 0) {
-      const status = ordered[index].id;
-      const images = groups.get(status)!;
+      const key = ordered[index].id;
+      const images = groups.get(key)!.items;
       const local = images.findIndex(image => image.id === ordered[index].image.id);
-      const page = Math.min(groupPages[status] || 0, Math.ceil(images.length / mosaicStatusPageSize) - 1);
+      const page = Math.min(groupPages[key] || 0, Math.ceil(images.length / mosaicGroupPageSize) - 1);
       const destination = page + (event.key === "ArrowLeft" ? -1 : 1);
-      if (destination < 0 || destination * mosaicStatusPageSize >= images.length) return;
-      const image = images[Math.min(images.length - 1, destination * mosaicStatusPageSize + local % mosaicStatusPageSize)];
+      if (destination < 0 || destination * mosaicGroupPageSize >= images.length) return;
+      const image = images[Math.min(images.length - 1, destination * mosaicGroupPageSize + local % mosaicGroupPageSize)];
       next = ordered.findIndex(item => item.image.id === image.id);
     }
-    const { id: status, image } = ordered[next];
+    const { id: key, image } = ordered[next];
     const id = image.id;
-    const local = groups.get(status)!.findIndex(item => item.id === id);
-    setGroupPages(previous => ({ ...previous, [status]: Math.floor(local / mosaicStatusPageSize) }));
+    const local = groups.get(key)!.items.findIndex(item => item.id === id);
+    setGroupPages(previous => ({ ...previous, [key]: Math.floor(local / mosaicGroupPageSize) }));
     selectPreview(id);
     setKeyboardTarget(id);
   }
@@ -146,9 +152,10 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
         <input type="search" aria-label="搜索去码图片" data-tooltip="搜索文件名和路径" placeholder="搜索" value={query}
           onChange={event => onQueryChange(event.target.value)} />
         <div className="game-mosaic-list-views" role="group" aria-label="左侧图片列表视图">
-          <button type="button" aria-pressed={!browseOriginals} onClick={() => setBrowseOriginals(false)}>分组</button>
-          <button type="button" aria-pressed={browseOriginals} onClick={() => setBrowseOriginals(true)}
-            data-tooltip="浏览原图缩略图；Ctrl 或 Command 点击多选">浏览</button>
+          {(Object.keys(viewLabels) as MosaicListView[]).map(view => <button key={view} type="button"
+            aria-pressed={listView === view} onClick={() => setListView(view)}
+            data-tooltip={view === "browse" ? "浏览原图缩略图；Ctrl 或 Command 点击多选" :
+              view === "picture" ? "查看重绘时使用的图片组" : undefined}>{viewLabels[view]}</button>)}
         </div>
       </div>
       <div className="game-mosaic-selection-slot" ref={setSelectionTarget} />
@@ -156,19 +163,20 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={browseOriginals ? undefined : navigateList}
       onPreviewKeyDown={browseOriginals ? onBrowsePreviewKeyDown : navigateList}
       list={browseOriginals ? <MosaicOriginalSelectionTarget.Provider value={selectionTarget}>{originalGallery}</MosaicOriginalSelectionTarget.Provider>
-        : <ul ref={listRef}>{[...groups].map(([id, items]) => {
+        : <ul ref={listRef}>{[...groups].map(([id, { items, label, status, pictureGroup }]) => {
           if (!items.length) return null;
-          const label = mosaicStatusLabels[id];
-          const pages = Math.ceil(items.length / mosaicStatusPageSize);
+          const pages = Math.ceil(items.length / mosaicGroupPageSize);
           const page = Math.min(groupPages[id] || 0, pages - 1);
           const checked = items.filter(image => getRow(image).checked).length;
-          const delta = refineChanges.get(id);
-          return <li key={id} className={`game-mosaic-status-group${id === "failed" ? " has-error" : ""}`}>
-            <details className="unity-image-result-group" open={!collapsed[id]} onToggle={event => {
-              const closed = !event.currentTarget.open;
-              setCollapsed(previous => previous[id] === closed ? previous : { ...previous, [id]: closed });
+          const closed = mosaicGroupCollapsed(collapsed, id);
+          const delta = status && refineChanges.get(status);
+          return <li key={id} className={`game-mosaic-status-group${status === "failed" ? " has-error" : ""}`}>
+            <details className="unity-image-result-group" open={!closed} onToggle={event => {
+              const next = !event.currentTarget.open;
+              setCollapsed(previous => mosaicGroupCollapsed(previous, id) === next ? previous : { ...previous, [id]: next });
             }}>
-              <summary tabIndex={0} data-mosaic-status={id}><span>{label} · {items.length}</span>
+              <summary tabIndex={0} data-mosaic-group={id} onContextMenu={event => openGroupMenu(event, pictureGroup)}>
+                <span>{label} · {items.length}</span>
                 {delta && <span className="unity-image-change-counts">
                   {delta.added > 0 && <span className="is-added" title="复筛移入">+{delta.added}</span>}
                   {delta.removed > 0 && <span className="is-removed" title="复筛移出">−{delta.removed}</span>}
@@ -178,7 +186,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                   ref={node => { if (node) node.indeterminate = checked > 0 && checked < items.length; }}
                   onClick={event => event.stopPropagation()} onChange={event => setMosaicChecked(items, event.target.checked)} />
               </summary>
-            <ul>{!collapsed[id] && items.slice(page*mosaicStatusPageSize,(page+1)*mosaicStatusPageSize).map(image => {
+            <ul>{!closed && items.slice(page*mosaicGroupPageSize,(page+1)*mosaicGroupPageSize).map(image => {
                 const row = getRow(image);
                 const edited = draftChanges(image);
                 const state = imageStatus(image);
@@ -201,7 +209,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
                   </button>
                 </li>;
             })}</ul>
-            {!collapsed[id] && <GameImageListPagination label={label+"列表分页"} page={page} pages={pages} onPage={page => setGroupPages(previous => ({...previous,[id]:page}))}/>}
+            {!closed && <GameImageListPagination label={label+"列表分页"} page={page} pages={pages} onPage={page => setGroupPages(previous => ({...previous,[id]:page}))}/>}
             </details></li>;
         })}</ul>}>
       {children}

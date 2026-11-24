@@ -190,11 +190,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   function previewViews(image: NonNullable<typeof active>, version?: "saved" | MosaicModel): GameImageViews {
     const dimensions = { width: image.width, height: image.height };
     const makeView = (label: string, blob?: Blob, error?: string): GameImageView => ({
-      ...dimensions, label, ...(blob ? { src: blob } : {
-        render: () => <GameImagePreviewFrame caption={label} fallback={error
-          ? <p className="game-mosaic-error" role="alert">{error}</p>
-          : <p className="hint">正在读取图片…</p>} />,
-      }),
+      ...dimensions, label, src: blob, error,
     });
     const originalView = makeView("原图", original?.blob, original?.error);
     const saved = activeSaved && (version === "saved" || !version && showSaved);

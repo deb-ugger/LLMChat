@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getFixedMenuPoint } from "../viewportLayout";
-import { GameImagePreviewFrame } from "./GameImageBrowserLayout";
 
 export type GameImageView = {
   label: string;
   width: number;
   height: number;
-} & ({ src: string | Blob } | { render: (zoom: number) => ReactNode });
+} & ({ src?: string | Blob; error?: string } | { render: (zoom: number) => ReactNode });
 
 export type GameImageViews = readonly [GameImageView, ...GameImageView[]];
 
@@ -22,18 +21,17 @@ export function useImageBlobUrl(blob?: Blob) {
   return preview && preview.blob === blob ? preview.url : "";
 }
 
-export function unityImageFit(width: number, height: number, availableWidth: number, availableHeight: number) {
-  return Math.min(1, Math.max(1, availableWidth - 24) / Math.max(1, width), Math.max(1, availableHeight - 52) / Math.max(1, height));
+export function unityImageFit(width: number, height: number, availableWidth: number, availableHeight: number, verticalInset = 24) {
+  return Math.min(1, Math.max(1, availableWidth - 24) / Math.max(1, width), Math.max(1, availableHeight - verticalInset) / Math.max(1, height));
 }
 
-function BitmapPreview({ view, title, zoom }: { view: GameImageView & { src: string | Blob }; title: string; zoom: number }) {
+function BitmapPreview({ view, title, zoom }: { view: GameImageView & { src?: string | Blob; error?: string }; title: string; zoom: number }) {
   const url = useImageBlobUrl(typeof view.src === "string" ? undefined : view.src);
   const src = typeof view.src === "string" ? view.src : url;
-  return <GameImagePreviewFrame caption={view.label} fallback={<p className="hint">正在读取图片…</p>}>
-    {src && <div className="unity-image-stage" style={{ width: view.width * zoom }}>
-      <img src={src} alt={title + " " + view.label} draggable={false} />
-    </div>}
-  </GameImagePreviewFrame>;
+  return <div className="unity-image-stage unity-image-preview-surface unity-viewer-bitmap" style={{ width: view.width * zoom, height: view.height * zoom }}>
+    {src ? <img src={src} alt={title + " " + view.label} draggable={false} /> : view.error
+      ? <p className="game-mosaic-error" role="alert">{view.error}</p> : <p className="hint">正在读取图片…</p>}
+  </div>;
 }
 
 export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, onPrevious, onNext, onClose, onDetails }: {
@@ -47,7 +45,9 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
   onDetails?: () => void;
 }) {
   const [index, setIndex] = useState(initialIndex);
-  const [zoom, setZoom] = useState(1);
+  const [fit, setFit] = useState(1);
+  const [chosenZoom, setChosenZoom] = useState<number>();
+  const zoom = chosenZoom ?? fit;
   const [panning, setPanning] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -66,8 +66,14 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
 
   useLayoutEffect(() => {
     const element = body.current;
-    if (element) setZoom(unityImageFit(width, height, element.clientWidth, element.clientHeight));
-  }, [width, height]);
+    if (!element) return;
+    const measure = () => setFit(unityImageFit(width, height, element.offsetWidth, element.offsetHeight, resultLabel === "译图" ? 52 : 24));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [width, height, resultLabel]);
+  useLayoutEffect(() => { setChosenZoom(undefined); }, [title, width, height]);
 
   useLayoutEffect(() => { scrollAnchor.current = { x: .5, y: .5 }; }, [title, width, height, index]);
 
@@ -76,18 +82,18 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
     if (!element) return;
     element.scrollLeft = (element.scrollWidth - element.clientWidth) * scrollAnchor.current.x;
     element.scrollTop = (element.scrollHeight - element.clientHeight) * scrollAnchor.current.y;
-  }, [title, width, height, zoom, index]);
+  }, [title, width, height, zoom, fit, index]);
 
   useEffect(() => {
     const element = body.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
-      setZoom(value => Math.max(.01, Math.min(8, value * Math.exp(-event.deltaY * .002))));
+      setChosenZoom(value => Math.max(.01, Math.min(8, (value ?? fit) * Math.exp(-event.deltaY * .002))));
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
-  }, []);
+  }, [fit]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -118,7 +124,7 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
     }}>
     <section className="unity-original-viewer-window">
       <div className="unity-original-viewer-header">
-        <strong>{title} · {view.label}</strong>
+        <strong>{title}</strong>
         <div className="unity-image-button-group">
           <button type="button" className="unity-btn" disabled={!onPrevious} aria-keyshortcuts="ArrowUp"
             data-tooltip="上一张（↑）" onClick={() => onPrevious?.(showResult)}>上一张</button>
@@ -126,18 +132,17 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
             data-tooltip="下一张（↓）" onClick={() => onNext?.(showResult)}>下一张</button>
           <button type="button" className="unity-btn" disabled={!hasResult} aria-keyshortcuts={showResult ? "ArrowLeft" : "ArrowRight"}
             data-tooltip={switchLabel + (showResult ? "（←）" : "（→）")} onClick={() => selectView(!showResult)}>{switchLabel}</button>
-          <button type="button" className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setZoom(value => Math.max(.01, value / 1.2))}>−</button>
-          <button type="button" className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
-          <button type="button" className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setZoom(value => Math.min(8, value * 1.2))}>+</button>
+          <button type="button" className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setChosenZoom(Math.max(.01, zoom / 1.2))}>−</button>
+          <button type="button" className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setChosenZoom(1)}>{Math.round(zoom * 100)}%</button>
+          <button type="button" className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setChosenZoom(Math.min(8, zoom * 1.2))}>+</button>
           <button type="button" className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button>
         </div>
       </div>
       <div ref={body} className={"unity-original-viewer-body" + (panning ? " is-panning" : "")} onScroll={event => {
         const element = event.currentTarget;
-        scrollAnchor.current = {
-          x: element.scrollLeft / Math.max(1, element.scrollWidth - element.clientWidth),
-          y: element.scrollTop / Math.max(1, element.scrollHeight - element.clientHeight),
-        };
+        const maxX = element.scrollWidth - element.clientWidth;
+        const maxY = element.scrollHeight - element.clientHeight;
+        scrollAnchor.current = { x: maxX > 0 ? element.scrollLeft / maxX : .5, y: maxY > 0 ? element.scrollTop / maxY : .5 };
       }} onPointerDown={event => {
         if (event.button !== 0 || !event.isPrimary || pan.current ||
             (event.target as Element).closest("button, input, textarea, select, a")) return;
@@ -164,8 +169,8 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
         if (onDetails && (event.target as Element).closest("img"))
           setMenu(getFixedMenuPoint(event.clientX, event.clientY, 170, 70));
       }}>
-        <div className="unity-original-viewer-track">
-          {"src" in view ? <BitmapPreview view={view} title={title} zoom={zoom} /> : view.render(zoom)}
+        <div className="unity-original-viewer-track" data-zoomed={zoom > fit || undefined}>
+          {"render" in view ? view.render(zoom) : <BitmapPreview view={view} title={title} zoom={zoom} />}
         </div>
       </div>
     </section>

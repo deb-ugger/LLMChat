@@ -30,12 +30,18 @@ export type MaskUndoItem = {
   candidate?: MosaicCandidate;
 };
 export type RedrawStyle = { group: string; seed: number; reference?: UnityImage };
+export type MosaicRedrawReference = {
+  image: UnityImage;
+  source: "generate" | "adopted" | "candidate";
+  boxes?: MosaicBox[];
+  blob?: Blob;
+};
 export type RedrawPlan = {
   targets: { image: UnityImage; boxes: MosaicBox[]; keep: MosaicBox[]; pending: Set<MosaicModel>; style: RedrawStyle }[];
   models: MosaicModel[];
   steps: number;
   referenceGuide?: boolean;
-  generatedReferences?: Map<string, { anchorId: string; blob?: Blob }>;
+  groupReferences?: ReadonlyMap<string, MosaicRedrawReference>;
 };
 export type ResultVersion = { id: MosaicModel; blob: Blob; seconds?: number };
 export type MosaicStep = "screen" | "refine" | "redraw";

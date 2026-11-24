@@ -82,7 +82,10 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
     def encode(prompt):
-        return node("TextEncodeQwenImageEditPlus", clip=["2", 0], vae=["3", 0], image1=["5", 0], image2=["16", 0], prompt=prompt)
+        images = {"image1": ["5", 0]}
+        if reference is not None:
+            images["image2"] = ["16", 0]
+        return node("TextEncodeQwenImageEditPlus", clip=["2", 0], vae=["3", 0], prompt=prompt, **images)
     def condition(source):
         return node("FluxKontextMultiReferenceLatentMethod", reference_latents_method="index_timestep_zero", conditioning=[source, 0])
     kind = profile["kind"]
@@ -103,7 +106,7 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
             raise ValueError("工作流需要 {{draft}} 和 {{prompt}} 或 {{translation}} 输入")
         return graph
     if kind == "turbo":
-        if reference is None:
+        if reference is None and not edit_prompt:
             text = (f"The input is finished lettering on a solid RGB{matte} background. "
                     "Very subtly refine the existing ink color and texture in its current palette. "
                     "Keep the exact glyph shapes, line breaks, position and slant. Preserve the exact background.")
@@ -127,7 +130,7 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
             graph["5"]["inputs"]["images.image_2"] = ["16",0]
         return graph
     return {
-        "16": node("LoadImage", image=reference),
+        **({"16": node("LoadImage", image=reference)} if reference is not None else {}),
         "1": node("UnetLoaderGGUF", unet_name=profile["model"]),
         "2": node("CLIPLoader", clip_name=profile["clip"], type="qwen_image", device="default"),
         "3": node("VAELoader", vae_name=profile["vae"]),
@@ -350,6 +353,22 @@ async def benchmark_redraw_storage(session, root, argv, enabled):
                 remove_benchmark_directory(output, subfolder)
 
 
+def mosaic_blend_mask(mask):
+    from scipy import ndimage
+
+    edited = np.asarray(mask) > 0
+    if edited.all():
+        return mask
+    distance = ndimage.distance_transform_edt(edited)
+    labels, count = ndimage.label(edited)
+    # Scale the transition for each region so narrow masks still have a fully edited core.
+    peaks = ndimage.maximum(distance, labels, index=np.arange(count + 1))
+    width = np.clip(peaks * 0.5, 1, 8)
+    opacity = np.minimum(distance / width[labels], 1)
+    opacity = opacity * opacity * (3 - 2 * opacity)
+    return Image.fromarray(np.rint(opacity * 255).astype(np.uint8))
+
+
 async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in ("2511", "turbo"):
@@ -368,7 +387,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
             mask_name = await upload_image(session, source_mask.convert("RGB"), subfolder=subfolder)
-            reference_name = source_name
+            reference_name = None
             if reference:
                 with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as reference_image:
                     ref_bounds = tuple(round(value * (reference_image.width / original.width if index % 2 == 0 else reference_image.height / original.height))
@@ -376,7 +395,9 @@ async def repair_mosaic(original, data, steps, workflow_times):
                     reference_name = await upload_image(session, reference_image.crop(ref_bounds).convert("RGB"), subfolder=subfolder)
             prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
                       "Preserve the pose, composition, outline, palette and the existing illustration style. "
-                      "Use image 2 as a visual style reference. Keep everything outside the mask unchanged.")
+                      "Keep everything outside the mask unchanged.")
+            if reference_name:
+                prompt += " Use image 2 as a visual style reference."
             graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
             sampler = graph["13"]["inputs"]
             latent_key = "latent_image"
@@ -392,7 +413,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
         restored = output.convert("RGBA").resize(crop.size, Image.Resampling.LANCZOS)
     restored.putalpha(crop.getchannel("A"))
     result = original.copy()
-    result.paste(restored, bounds, source_mask)
+    result.paste(restored, bounds, mosaic_blend_mask(source_mask))
     return result
 
 
