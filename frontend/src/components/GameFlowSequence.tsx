@@ -422,23 +422,32 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const [concurrencyDrafts, setConcurrencyDrafts] = useState<Record<string, ConcurrencyEdit[]>>({});
   const [filterDrafts, setFilterDrafts] = useState<Record<string, Record<string, ModelFilter>>>({});
   const promptScope = promptContext?.scope || "game";
-  const draftForStep = (step: string) => ({
-    filter: (role: string) => filterDrafts[step]?.[role] ?? readModelFilter(promptScope + ":" + role),
-    updateFilter: (role: string, filter: ModelFilter) => setFilterDrafts(previous => {
-      const next = { ...previous[step] };
-      const stored = readModelFilter(promptScope + ":" + role);
-      const same = stored.local === filter.local && stored.online === filter.online &&
-        JSON.stringify([...stored.excluded].sort()) === JSON.stringify([...filter.excluded].sort());
-      if (same) delete next[role]; else next[role] = filter;
-      return { ...previous, [step]: next };
-    }),
-    value: (role: string, model: string) => concurrencyDrafts[step]?.find(item => item.role === role && item.model === model)?.count,
-    update: (edit: ConcurrencyEdit) => setConcurrencyDrafts(previous => {
-      const next = (previous[step] || []).filter(item => item.role !== edit.role || item.model !== edit.model);
-      if (edit.count !== modelConcurrency(promptScope, edit.role, edit.model)) next.push(edit);
-      return { ...previous, [step]: next };
-    }),
-  });
+  const configurationSteps = (step: string) => imageFlow && step === "translate"
+    ? [step, "recognize", "render"] : [step];
+  const draftForStep = (step: string) => {
+    const draftStep = (role: string) => imageFlow && step === "translate"
+      ? role === "recognize" ? "recognize" : role === "layout" ? "render" : step
+      : step;
+    return {
+      filter: (role: string) => filterDrafts[draftStep(role)]?.[role] ?? readModelFilter(promptScope + ":" + role),
+      updateFilter: (role: string, filter: ModelFilter) => setFilterDrafts(previous => {
+        const owner = draftStep(role);
+        const next = { ...previous[owner] };
+        const stored = readModelFilter(promptScope + ":" + role);
+        const same = stored.local === filter.local && stored.online === filter.online &&
+          JSON.stringify([...stored.excluded].sort()) === JSON.stringify([...filter.excluded].sort());
+        if (same) delete next[role]; else next[role] = filter;
+        return { ...previous, [owner]: next };
+      }),
+      value: (role: string, model: string) => concurrencyDrafts[draftStep(role)]?.find(item => item.role === role && item.model === model)?.count,
+      update: (edit: ConcurrencyEdit) => setConcurrencyDrafts(previous => {
+        const owner = draftStep(edit.role);
+        const next = (previous[owner] || []).filter(item => item.role !== edit.role || item.model !== edit.model);
+        if (edit.count !== modelConcurrency(promptScope, edit.role, edit.model)) next.push(edit);
+        return { ...previous, [owner]: next };
+      }),
+    };
+  };
   const snapshot = {
     scope: configurationScope, revision: configurationRevision, values: configuration, restore: Object.fromEntries(steps.map(step => [step.id, restoreConfiguration])),
     models: Object.fromEntries(steps.map(step => [step.id, step.models])),
@@ -457,7 +466,8 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
   const configurationLocked = testing || formalStep !== undefined;
   const withConfiguration = async (action?: () => void, stepId?: string, announce = false) => {
     if (pendingSave.current && !await pendingSave.current) return false;
-    const draftSteps = (stepId ? [stepId] : steps.map(step => step.id)).filter(changed);
+    const selectedSteps = stepId ? announce ? configurationSteps(stepId) : [stepId] : steps.map(step => step.id);
+    const draftSteps = selectedSteps.filter(changed);
     if (!onSaveConfiguration || !draftSteps.length) { action?.(); return true; }
     setConfigurationError("");
     const job = (async () => {
@@ -514,9 +524,12 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
     return () => { configurationCommit.current = null; };
   });
   const cancelConfiguration = (step: string) => {
-    if (optionsChanged(step)) saved.restore[step]?.(step);
-    setFilterDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => id !== step)));
-    setConcurrencyDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => id !== step)));
+    const selectedSteps = configurationSteps(step);
+    for (const id of selectedSteps) {
+      if (optionsChanged(id)) saved.restore[id]?.(id);
+    }
+    setFilterDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !selectedSteps.includes(id))));
+    setConcurrencyDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !selectedSteps.includes(id))));
     setConfigurationError("");
   };
   const expansion = useGameFlowExpansion();
@@ -595,7 +608,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
               <button type="button" className="unity-btn game-flow-clear" disabled={!clearAllowed || configurationLocked || savingConfiguration} aria-label={`清理${step.title}`} onClick={step.clear}>清理</button>
           </>}
           saveConfiguration={hasConfiguration && onSaveConfiguration ? {
-            disabled: savingConfiguration || configurationLocked || !changed(step.id),
+            disabled: savingConfiguration || configurationLocked || !configurationSteps(step.id).some(changed),
             saving: savingConfiguration,
             run: () => void withConfiguration(undefined, step.id, true),
           } : undefined}

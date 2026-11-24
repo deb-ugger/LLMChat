@@ -1517,18 +1517,18 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     (generation?.step === 2 && progressIsImage === imagePart ? generation.state : "pending");
   const flowProgressState = !imagePart && textScreening || partRunning ? "running" :
     redrawPhase && partProgressState === "error" ? "error" : (imagePart ? imagesReady : textReady) ? "done" : partProgressState;
-  const sharedLanguageLocked = !!busy || textScreening || restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview;
+  const sharedLanguageLocked = testing || !!busy || textScreening || restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview;
   const flowConfigComplete = imagePart ? flowConfig === "filter" ? !imagesNeedScreen : flowConfig === "refine" ? !imagesNeedRefine :
     flowConfig === "recognize" ? !imagesNeedRecognition : flowConfig === "translate" || flowConfig === "review" ? imageTextDone : imagesReady :
     flowConfig === "screen" ? screenComplete : textReady;
-  const flowConfigLocked = restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview ||
+  const flowConfigLocked = testing || restoring || saving || applyingTestConfiguration || !scanReady || !!importPreview ||
     (!!busy || textScreening) && (flowConfigComplete || flowProgressState === "running" && flowConfig === runningFlowStep);
 
   const prompt = (scene: keyof typeof promptState.selection) => promptState.selection[scene] || "builtin:" + scene;
   const sharedConfiguration = [translationKind, target, skipTargetLanguage,
     translationKind === "engine" ? engineChoices : includeContext];
   const textModels = translationKind !== "engine" ? [llmModel, prompt("text"), dialogueModel, prompt("dialogue"), nameModel, prompt("names")] : [];
-  const imageModels = translationKind !== "engine" ? [imageModel, prompt("image"), imageReviewModel, prompt("review")] : [];
+  const imageModels = picture.kind !== "engine" ? [imageModel, prompt("image"), imageReviewModel, prompt("review")] : [];
   const configuration = imagePart ? {
     filter: JSON.stringify([source, onlySourceLanguage, target, skipTargetLanguage, imageConcurrency, imageScreeningOptions.strategy, imageScreeningOptions.filterModel, prompt("screen")]),
     refine: JSON.stringify([imageRefine, imageRefineModel, prompt("refine")]),
@@ -1537,8 +1537,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     redraw: JSON.stringify(imageRedrawProfile),
     recognize: JSON.stringify(imageVisionModel === undefined
       ? [imageOcrMode, imageConcurrency, imageConfidenceThreshold] : [imageVisionModel, prompt("recognize"), imageOcrMode === "manga"]),
-    translate: JSON.stringify([...sharedConfiguration, ...imageModels, imageLayoutModel,
-      imageLayoutModel !== undefined ? prompt("layout") : null]),
+    translate: JSON.stringify([picture, ...imageModels, includeContext]),
   } : {
     screen: JSON.stringify([source, onlySourceLanguage, target, skipTargetLanguage, textScreenModel ?? null, textScreenModel !== undefined ? prompt("textScreen") : null]),
     translate: JSON.stringify([...sharedConfiguration, ...textModels, wrapMode,
@@ -1561,6 +1560,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       setImageVisionModel(imageVisionModel); setImageOcrMode(imageOcrMode);
       setImageConcurrency(imageConcurrency); setImageConfidenceThreshold(imageConfidenceThreshold);
       promptState.select("recognize", prompt("recognize"));
+      return;
+    }
+    if (imagePart && step === "render") {
+      setImageLayoutModel(imageLayoutModel); promptState.select("layout", prompt("layout"));
+      return;
+    }
+    if (imagePart && step === "translate") {
+      changePicture(picture); setImageModel(imageModel); setIncludeContext(includeContext);
+      promptState.select("image", prompt("image"));
       return;
     }
     setTranslationKind(translationKind); setTarget(target); setSkipTargetLanguage(skipTargetLanguage);
@@ -2173,6 +2181,16 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           {flowConfig === "translate" && <GameTranslationTabs kind={imagePart ? picture.kind : translationKind} disabled={flowConfigLocked} onChange={kind=>{if(imagePart){changePicture({kind});return;}setTranslationKind(kind);if(kind==="engine"&&wrapMode==="natural"){setWrapMode("join");setJoinLines(true);}}}>
           <div className="unity-control-group unity-translation-group" role="group" aria-label="翻译参数">
           <div className="unity-group-fields unity-translation-fields">
+            {imagePart && <>
+              <label>原文语言<select aria-label="原文语言" value={picture.source} disabled={flowConfigLocked}
+                onChange={event => changePicture({ source: event.currentTarget.value })}>
+                <option value="auto">自动检测</option>
+                {UNITY_LANGUAGES.map(language => <option key={language.value} value={language.value}>{language.label}</option>)}
+                <option value="all">全部语言</option>
+              </select></label>
+              <label className="unity-inline-check"><input type="checkbox" checked={picture.onlySourceLanguage} disabled={sharedLanguageLocked}
+                onChange={event => changePicture({ onlySourceLanguage: event.currentTarget.checked })} />仅翻原语言</label>
+            </>}
             {(imagePart ? picture.kind : translationKind) !== "engine" && (imagePart
               ? <>
                   <GameModelSelect label="图片文字翻译模型" promptKey="image" models={gameModels} value={imageModel} disabled={flowConfigLocked} onChange={setImageModel} />
@@ -2224,17 +2242,54 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             {imageRefine.method !== "off" && <label>复筛置信度（%）<input type="number" min={0} max={100} value={imageRefine.confidence} disabled={flowConfigLocked}
               onChange={event => setImageScreeningOptions({ ...imageScreeningOptions, refine: { ...imageRefine, confidence: Math.max(0,Math.min(100,Number(event.currentTarget.value))) } })} /></label>}
           </div>}
-          {imagePart && flowConfig === "render" && <GameProcessingTabs label="译图排版" localLabel="保留底图排版" disabled={flowConfigLocked} value={imageLayoutModel!==undefined?"llm":"local"} onChange={value=>setImageLayoutModel(value==="llm"?"":undefined)}>{imageLayoutModel!==undefined&&<div className="unity-offline-fields"><GameModelSelect label="断行排版模型" promptKey="layout" models={gameModels} value={imageLayoutModel} disabled={flowConfigLocked} onChange={setImageLayoutModel}/></div>}</GameProcessingTabs>}
+          {imagePart && (flowConfig === "recognize" || flowConfig === "translate") && <div className="game-flow-parameter-group" role="group" aria-label="图片识别">
+            {flowConfig === "translate" && <h6>图片识别</h6>}
+            <GameProcessingTabs label="识别方式" localLabel="本地 OCR" disabled={flowConfigLocked}
+              value={imageVisionModel !== undefined ? "llm" : "local"} onChange={value => setImageVisionModel(value === "llm" ? "" : undefined)}>
+              {imageVisionModel !== undefined ? <>
+                <div className="unity-offline-fields">
+                  <GameModelSelect label="视觉模型（需支持图片输入）" promptKey="recognize" models={gameModels}
+                    value={imageVisionModel} disabled={flowConfigLocked} onChange={setImageVisionModel} />
+                </div>
+                <label className="unity-inline-check"><input type="checkbox" checked={imageOcrMode === "manga"} disabled={flowConfigLocked}
+                  onChange={event => setImageOcrMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>
+              </> : <div className="unity-offline-fields">
+                <label>图片识别<select value={imageOcrMode} disabled={flowConfigLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>
+                  {OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}
+                </select></label>
+                <label>识别并发<select aria-label="Unity 图片识别并发" value={imageConcurrency} disabled={flowConfigLocked}
+                  onChange={event => setImageConcurrency(Number(event.currentTarget.value))}>
+                  {[1, 2, 3, 4, 6, 8].map(value => <option key={value}>{value}</option>)}
+                </select></label>
+                <label data-tooltip="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。">翻译置信度阈值（%）
+                  <input aria-label="图片翻译置信度阈值" type="number" min={0} max={100} step={1}
+                    value={imageConfidenceThreshold} disabled={flowConfigLocked}
+                    onBlur={event => { event.currentTarget.value = String(imageConfidenceThreshold); }}
+                    onChange={event => {
+                      const value = Number(event.currentTarget.value);
+                      const next = Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0;
+                      event.currentTarget.value = String(next);
+                      if (next !== imageConfidenceThreshold) setImageConfidenceThreshold(next);
+                    }} />
+                </label>
+                <p className="hint">可用底图优先按原像素恢复</p>
+              </div>}
+            </GameProcessingTabs>
+          </div>}
+          {imagePart && (flowConfig === "render" || flowConfig === "translate") && <div className="game-flow-parameter-group" role="group" aria-label="译图排版">
+            {flowConfig === "translate" && <h6>译图排版</h6>}
+            <GameProcessingTabs label="译图排版" localLabel="保留底图排版" disabled={flowConfigLocked}
+              value={imageLayoutModel !== undefined ? "llm" : "local"} onChange={value => setImageLayoutModel(value === "llm" ? "" : undefined)}>
+              {imageLayoutModel !== undefined && <div className="unity-offline-fields">
+                <GameModelSelect label="断行排版模型" promptKey="layout" models={gameModels} value={imageLayoutModel} disabled={flowConfigLocked} onChange={setImageLayoutModel} />
+              </div>}
+            </GameProcessingTabs>
+          </div>}
           {imagePart && flowConfig === "redraw" && <div className="unity-offline-fields">
             <label>模型工作流<select value={imageRedrawProfile} disabled={flowConfigLocked} onChange={event => setImageRedrawProfile(event.target.value as StyleRedrawProfileId)}>
               {Object.entries(styleRedrawLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select></label><span>勾选「识别到文字」中的图片即可批量重绘。</span>
           </div>}
-          {imagePart && flowConfig === "recognize" && <GameProcessingTabs label="识别方式" localLabel="本地 OCR" disabled={flowConfigLocked} value={imageVisionModel!==undefined?"llm":"local"} onChange={value=>setImageVisionModel(value==="llm"?"":undefined)}>{imageVisionModel!==undefined&&<div className="unity-offline-fields"><GameModelSelect label="视觉模型（需支持图片输入）" promptKey="recognize" models={gameModels} value={imageVisionModel} disabled={flowConfigLocked} onChange={setImageVisionModel}/></div>}
-          {imagePart && flowConfig === "recognize" && imageVisionModel !== undefined && <label className="unity-inline-check"><input type="checkbox" checked={imageOcrMode === "manga"} disabled={flowConfigLocked}
-            onChange={event => setImageOcrMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
-          {imagePart && flowConfig === "recognize" && imageVisionModel===undefined && <><div className="unity-offline-fields"><label>图片识别<select value={imageOcrMode} disabled={flowConfigLocked} onChange={event => setImageOcrMode(event.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(mode => <option key={mode.id} value={mode.id}>{mode.title}</option>)}</select></label><label>识别并发<select aria-label="Unity 图片识别并发" value={imageConcurrency} disabled={flowConfigLocked} onChange={event=>setImageConcurrency(Number(event.target.value))}>{[1,2,3,4,6,8].map(value=><option key={value} value={value}>{value}</option>)}</select></label><label data-tooltip="低于阈值的区域默认不自动翻译，可在图片结果中手动勾选后处理。">翻译置信度阈值<input aria-label="图片翻译置信度阈值" type="number" min={0} max={100} step={1} value={imageConfidenceThreshold} disabled={flowConfigLocked} onBlur={event => { event.currentTarget.value = String(imageConfidenceThreshold); }} onChange={event => { const value = Number(event.currentTarget.value); const next = Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0; event.currentTarget.value = String(next); if (next !== imageConfidenceThreshold) { setImageConfidenceThreshold(next); } }} />%</label><span>可用底图优先按原像素恢复</span></div></>}
-          </GameProcessingTabs>}
           {!imagePart && flowConfig === "translate" && <><div className="unity-control-group unity-line-group" role="group" aria-label="换行参数">
           <div className="unity-group-fields unity-line-fields">
             <label>换行处理<UnityDescriptionSelect label="换行处理" value={wrapMode} choices={translationKind==="engine"?UNITY_WRAP_CHOICES.filter(choice=>choice.value!=="natural"):UNITY_WRAP_CHOICES} disabled={flowConfigLocked} onChange={value => { const enabled = value !== "keep"; setJoinLines(enabled);setWrapMode(value as GameWrapMode); const saved = checkpointRef.current; if (saved && !saved.finished && saved.step === 2 && !saved.layoutOnly) remember({ ...saved, joinLines: enabled,wrapMode:value as GameWrapMode }); }} /></label>

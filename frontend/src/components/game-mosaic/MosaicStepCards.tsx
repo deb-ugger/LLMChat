@@ -194,6 +194,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         </div>
         <p className="hint">推理模型核对检测候选，复核模型检查纹理补检和未检出图片。按模型分批处理，思考模型逐图复筛耗时较长。</p>
         <label>复筛并发<select value={preferences.refineConcurrency ?? 1} disabled={busy} onChange={e=>changePreferences({refineConcurrency:Number(e.target.value)})}>{mosaicRefineConcurrencyChoices.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+        <div className="game-flow-range-field"><span>手动复筛范围</span><output>已勾选 {refine.targetCount} 张</output></div>
         <label className="game-mosaic-checkbox"><input type="checkbox" checked={!!preferences.refineIncludeMissed} disabled={busy} onChange={e=>changePreferences({refineIncludeMissed:e.target.checked})}/>自动流程使用大模型补查未发现（耗时长）</label>
         <label className="game-mosaic-checkbox"><input type="checkbox" checked={preferences.refine!==false} disabled={busy} onChange={e=>changePreferences({refine:e.target.checked})}/>自动流程执行视觉复筛</label>
       </>)}
@@ -206,11 +207,14 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>
-        <label>去码模型<select aria-label="去码模型" value={model} disabled={busy} onChange={event => {
+        <label>模型工作流<select aria-label="去码模型" value={model} disabled={busy} onChange={event => {
           const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: next === "turbo" ? 8 : 20 });
         }}>
           <option value="turbo">{mosaicModelLabels.turbo}</option><option value="2511">{mosaicModelLabels["2511"]}</option>
         </select></label>
+        <div className="game-flow-range-field"><span>重绘范围</span><output>
+          {redraw.paused ? "上次选择 · 剩余 " + redraw.remainingCount : "本组已勾选 " + redraw.targetCount} 张
+        </output></div>
         {model === "2511" && <label>步数<input type="number" min={1} max={100} value={steps} disabled={busy}
           onChange={event => changePreferences({ steps: Math.max(1, Math.min(100, Number(event.target.value) || 1)) })} /></label>}
         <label className="game-mosaic-checkbox"><input type="checkbox" checked={protect} disabled={busy}

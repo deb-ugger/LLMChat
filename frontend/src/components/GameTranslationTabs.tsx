@@ -65,12 +65,12 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
   const scope = context?.scope || "game";
   return <div className="game-model-prompt-row">
     <div className="game-model-column">
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+      <div className="game-model-head">
         <span>{label}</span>
-        <label htmlFor={concurrencyId} style={{ flex: "0 0 57px", margin: 0, textAlign: "center" }}>并发</label>
+        <label htmlFor={concurrencyId}>并发</label>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="game-model-controls">
+        <div className="game-model-filter">
           <ModelFilterSelect key={scope + ":" + promptKey} label={label} value={value} models={models}
             disabled={disabled} optionalValue={optional ? unset : undefined}
             filter={drafts?.filter(promptKey) ?? readModelFilter(scope + ":" + promptKey)}
@@ -78,7 +78,7 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
             onChange={model => onChange(model === unset ? "" : model)} />
         </div>
         <select id={concurrencyId} aria-label={label + "并发数"} data-tooltip="并发请求数（1–4）。使用 Ollama 时，修改后重启服务。"
-          style={{ flex: "0 0 57px", width: 57 }} disabled={disabled || !value || !drafts} value={concurrency}
+          className="game-model-concurrency-control" disabled={disabled || !value || !drafts} value={concurrency}
           onChange={event => drafts?.update({ role: promptKey, model: value, count: Number(event.target.value) })}>
           {[1, 2, 3, 4].map(count => <option key={count} value={count}>{count}</option>)}
         </select>

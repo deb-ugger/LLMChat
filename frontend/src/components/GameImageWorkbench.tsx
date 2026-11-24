@@ -1,4 +1,4 @@
-import { isBenchmarkRunning } from "../benchmark/benchmarkRunner";
+import { isBenchmarkRunning, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { readMosaicSettings, saveMosaicSettings } from "../gameMosaic";
 import { GameMosaicWorkbench, type GameMosaicDeploymentHandle } from "./GameMosaicWorkbench";
 import { matchImagePatchConflicts, resetImageGroupHistory } from "../gameImageGroupChanges";
@@ -877,7 +877,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const configuration = {
     filter: JSON.stringify(stageModels.filter === undefined ? [strategy] : [stageModels.filter, prompt("screen")]),
     refine: JSON.stringify([refineMethod, refineOcr.id, refineConcurrency, refineConfidence, refineModel, refineMethod === "llm" ? prompt("refine") : null]),
-    recognize: JSON.stringify(stageModels.recognize === undefined ? [mode, concurrency] : [stageModels.recognize, prompt("recognize"), mode === "manga"]),
+    recognize: JSON.stringify([confidence, ...(stageModels.recognize === undefined
+      ? [mode, concurrency] : [stageModels.recognize, prompt("recognize"), mode === "manga"])]),
     translate: JSON.stringify([source, target, onlySourceLanguage, skipTargetLanguage,
       translationKind === "engine" ? ["engine", engines] : [translationKind, translationModel, prompt("image")]]),
     review: JSON.stringify([reviewModel, reviewModel ? prompt("review") : null]),
@@ -907,6 +908,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         const next = { ...current };
         if (stageModels[step] === undefined) delete next[step];
         else next[step] = stageModels[step];
+        if (step === "recognize") next.confidence = stageModels.confidence;
         return next;
       });
       if (step === "filter") { setStrategy(strategy); promptState.select("screen", prompt("screen")); }
@@ -914,7 +916,53 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       if (step === "render") promptState.select("layout", prompt("layout"));
     }
   };
-  const configLocked = clearing || !project || !!busy && (configured === operationStep.current || imageFlow.some(step => step.id === configured && step.state === "done"));
+  const configLocked = useBenchmarkRunning() || clearing || !project || !!busy && (configured === operationStep.current || imageFlow.some(step => step.id === configured && step.state === "done"));
+  const imageProcessingSettings = (step: "filter" | "recognize" | "render") => {
+    const model = stageModels[step];
+    const label = step === "render" ? "译图排版" : step === "recognize" ? "图片识别" : "筛选方式";
+    const setModel = (value: string | undefined) => setStageModels(previous => {
+      const next = { ...previous };
+      if (value === undefined) delete next[step];
+      else next[step] = value;
+      return next;
+    });
+    return <div className="game-flow-parameter-group" role="group" aria-label={label}>
+      {configured === "translate" && <h6>{label}</h6>}
+      <GameProcessingTabs label={label}
+        localLabel={step === "render" ? "保留底图排版" : step === "filter" ? "本地筛选" : "本地 OCR"}
+        disabled={configLocked} value={model !== undefined ? "llm" : "local"}
+        onChange={value => setModel(value === "llm" ? "" : undefined)}>
+        {model !== undefined && <div className="unity-offline-fields">
+          <GameModelSelect promptKey={step === "render" ? "layout" : step === "filter" ? "screen" : "recognize"}
+            label={step === "render" ? "断行排版模型" : "视觉模型（需支持图片输入）"}
+            value={model} models={models} disabled={configLocked} onChange={setModel} />
+        </div>}
+        {step === "recognize" && <>
+          <label>翻译置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence}
+            onChange={event => setStageModels(previous => ({ ...previous,
+              confidence: String(Math.min(100, Math.max(0, Number(event.target.value)))) }))} /></label>
+          {model === undefined ? <>
+            <label>图片识别<select value={mode} disabled={configLocked} onChange={event => setMode(event.target.value as OcrMode)}>
+              {OCR_MODE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.title}</option>)}
+            </select></label>
+            <label>识别并发<select aria-label="图片识别并发" data-tooltip="分级快筛最多使用四个独立识别通道。"
+              value={concurrency} disabled={configLocked} onChange={event => setConcurrency(Number(event.target.value))}>
+              {[1, 2, 3, 4, 6, 8].map(value => <option key={value}>{value}</option>)}
+            </select></label>
+          </> : <label className="unity-inline-check"><input type="checkbox" checked={mode === "manga"} disabled={configLocked}
+            onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
+        </>}
+        {step === "filter" && model === undefined && <div className="unity-offline-fields">
+          <label>筛选策略<UnityDescriptionSelect label="筛选策略" value={strategy} disabled={configLocked}
+            onChange={value => setStrategy(value as typeof strategy)} choices={[
+{value:"staged",label:"分级快速筛选",description:"先按资源目录跳过常规动画、角色和瓦片素材，再用快速模型检测文字；疑似文字使用更高分辨率复核。",warning:"可能跳过含有文字的素材；可手动改选，或改用完整范围筛选。"},
+{value:"full",label:"完整范围筛选",description:"逐张检测全部未完成图片，包括动画、角色和瓦片素材，使用更高分辨率的快速模型。",warning:"检测范围更广，耗时通常更长。"}
+]} /></label>
+        </div>}
+        {step === "render" && <p className="hint">{model !== undefined ? "模型规划译文断行，程序绘制到原文字区域。" : "纯色覆盖原文字区域后嵌入译文。"}</p>}
+      </GameProcessingTabs>
+    </div>;
+  };
   const operationContent=<>
 
     <div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
@@ -963,19 +1011,9 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         </label>}
         <p className="hint">复筛「待复核」和「待正式识别」的图片。{refineMethod === "llm" && "只判断文字是否存在，先用 1024 尺寸，判断把握低时再以 1600 尺寸复查。"}</p>
       </div>}
-      {["filter","recognize","render"].includes(configured||"") && <GameProcessingTabs label="处理方式" localLabel={configured==="render"?"保留底图排版":configured==="filter"?"本地筛选":"本地 OCR"} disabled={configLocked} value={stageModels[configured!]!==undefined?"llm":"local"} onChange={value=>setStageModels(previous=>{const next={...previous};if(value==="llm")next[configured!]="";else delete next[configured!];return next;})}>{stageModels[configured!]!==undefined && <div className="unity-offline-fields"><GameModelSelect promptKey={configured==="render"?"layout":configured==="filter"?"screen":"recognize"} label={configured==="render"?"断行排版模型":"视觉模型（需支持图片输入）"} value={stageModels[configured!]||""} models={models} disabled={configLocked} onChange={value=>setStageModels(previous=>({...previous,[configured!]:value}))}/></div>}
-      {configured === "recognize" && <label>翻译置信度阈值<input type="number" min={0} max={100} disabled={configLocked} value={confidence} onChange={e=>setStageModels(previous=>({...previous, confidence:String(Math.min(100,Math.max(0,Number(e.target.value))))}))}/></label>}
-      {configured === "recognize" && stageModels.recognize !== undefined && <label className="unity-inline-check"><input type="checkbox" checked={mode === "manga"} disabled={configLocked}
-        onChange={event => setMode(event.target.checked ? "manga" : "precise")} />用 Manga OCR 复读日文竖排</label>}
-      {(configured === "filter" || configured === "recognize") && stageModels[configured]===undefined && <div className="unity-offline-fields">{configured === "filter" && <label>筛选策略<UnityDescriptionSelect label="筛选策略" value={strategy} disabled={configLocked} onChange={value=>setStrategy(value as typeof strategy)} choices={[
-{value:"staged",label:"分级快速筛选",description:"先按资源目录跳过常规动画、角色和瓦片素材，再用快速模型检测文字；疑似文字使用更高分辨率复核。",warning:"可能跳过含有文字的素材；可手动改选，或改用完整范围筛选。"},
-{value:"full",label:"完整范围筛选",description:"逐张检测全部未完成图片，包括动画、角色和瓦片素材，使用更高分辨率的快速模型。",warning:"检测范围更广，耗时通常更长。"}
-]}/></label>}
-        {configured === "recognize" && <><label>图片识别<select value={mode} disabled={configLocked} onChange={e=>setMode(e.target.value as OcrMode)}>{OCR_MODE_OPTIONS.map(option=><option key={option.id} value={option.id}>{option.title}</option>)}</select></label>
-        <label>识别并发<select aria-label="图片识别并发" data-tooltip="分级快筛最多使用四个独立识别通道。" value={concurrency} disabled={configLocked} onChange={e=>setConcurrency(Number(e.target.value))}>{[1,2,3,4,6,8].map(value=><option key={value} value={value}>{value}</option>)}</select></label></>}
-      </div>}
-      {configured === "render" && <p className="hint">{stageModels.render!==undefined?"模型规划译文断行，程序绘制到原文字区域。":"纯色覆盖原文字区域后嵌入译文。"}</p>}
-      </GameProcessingTabs>}
+      {configured === "filter" && imageProcessingSettings("filter")}
+      {(configured === "recognize" || configured === "translate") && imageProcessingSettings("recognize")}
+      {(configured === "render" || configured === "translate") && imageProcessingSettings("render")}
       {configured === "redraw" && <div className="unity-offline-fields">
         <label>模型工作流<select value={redrawProfile} disabled={configLocked} onChange={event => setStageModels(previous => ({ ...previous, redraw: event.target.value }))}>
           {Object.entries(styleRedrawLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
