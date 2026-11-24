@@ -52,6 +52,22 @@ function useChart(hostRef: RefObject<HTMLDivElement | null>, option: Record<stri
   }, [hostRef, option, colors]);
 }
 
+const mosaicSpeedConditions = "整轮成功完成、逐图结果完整且计时有效时显示。";
+
+function mosaicSpeedTooltip(row: MosaicTaskReport["totals"][number], anomalies: string, anomalyDetails: string) {
+  if (row.score.speed !== null) {
+    return `整轮用时 ÷ 有效结果数 × 100\n本轮 ${row.seconds.toFixed(1)} 秒 ÷ ${row.validRuns} 张 × 100`;
+  }
+  const timing = row.score.details.find(detail => detail.key === "timing")?.current;
+  return [
+    mosaicSpeedConditions,
+    `本轮 ${row.validRuns} / ${row.samples} 张有有效结果`,
+    anomalies,
+    timing,
+    anomalyDetails || (!anomalies && !timing ? row.score.speedUnavailableReason : ""),
+  ].filter(Boolean).join("\n");
+}
+
 function tooltipStyle(colors: ChartColors) {
   return {
     backgroundColor: colors.panel,
@@ -354,7 +370,8 @@ const RunComparePanel = memo(function RunComparePanel({
               <th scope="col" className={screening ? undefined : "benchmark-report-group-start"}>匹配框/可评框</th>
               {!screening && <th scope="col">交付覆盖</th>}<th scope="col">多余框</th>
               {!screening && <th scope="col" className="benchmark-report-ratio">判定率</th>}
-              <th scope="col" className="benchmark-report-group-start">每百张秒数</th>
+              <th scope="col" className="benchmark-report-group-start"
+                data-tooltip={"整轮用时 ÷ 有效结果数 × 100\n" + mosaicSpeedConditions}>每百张秒数</th>
               <th scope="col" aria-sort={sortState("seconds")}><button type="button" onClick={() => sortBy("seconds")}>用时 <span aria-hidden="true">{sortMark("seconds")}</span></button></th>
             </tr>
           </thead>
@@ -399,7 +416,8 @@ const RunComparePanel = memo(function RunComparePanel({
               {row.score.negativeCoverage !== null && <span>无码 {percent(row.score.negativeCoverage)}</span>}
               <span>框 {percent(row.score.boxCoverage)}</span>
             </td>}
-            <td className="benchmark-report-group-start" data-tooltip={row.score.speedUnavailableReason} tabIndex={row.score.speedUnavailableReason ? 0 : undefined}>
+            <td className="benchmark-report-group-start" data-tooltip={mosaicSpeedTooltip(row, anomalies, anomalyDetails)}
+              tabIndex={row.score.speed === null ? 0 : undefined}>
               {row.score.speed?.toFixed(1) ?? "—"}
             </td><td>{gameDuration(row.elapsedMs)}</td>
             <td className="benchmark-report-ranking benchmark-report-group-start">
