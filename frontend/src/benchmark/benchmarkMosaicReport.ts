@@ -2,7 +2,7 @@
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "./imageBenchmarkHistory";
 import { loadAnnotatedSampleSet } from "./imageSampleSet";
 import { countMosaicResults } from "./mosaicScoreCounts";
-import { freezeMosaicInputs, mosaicTruthLookup, type MosaicScoreFreeze } from "./mosaicScoreInputs";
+import { mosaicTruthLookup, verifyMosaicFreeze, type MosaicScoreFreeze } from "./mosaicScoreInputs";
 import { bestMosaicRuns, mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./mosaicScore";
 import type { BenchmarkResult } from "../gameTextBenchmark";
 
@@ -31,9 +31,8 @@ export async function compareMosaicTaskWithDataset(queueId: string, runs: readon
     let freeze: MosaicScoreFreeze | undefined;
     if (expected && samples.every(sample => sample.mosaicTruth !== undefined)) {
       try {
-        const actual = await freezeMosaicInputs(samples);
-        if (expected.version === actual.version && expected.inputs === actual.inputs && expected.truth === actual.truth) freeze = actual;
-        else issues.push("归档与冻结样本、初筛种子或标注版本不符");
+        freeze = await verifyMosaicFreeze(samples, expected);
+        if (!freeze) issues.push("归档与冻结样本、初筛种子或标注版本不符");
       } catch (error) { issues.push(String(error)); }
     }
     if (samples.length !== run.selected) issues.push("归档样本数与计划不一致");

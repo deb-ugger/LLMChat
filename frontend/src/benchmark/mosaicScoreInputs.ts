@@ -59,3 +59,18 @@ export async function freezeMosaicInputs(samples: readonly ImageBenchmarkInput[]
   const [inputHash, truthHash] = await Promise.all([digest(inputs), digest(truths)]);
   return { version: 1, inputs: inputHash, truth: truthHash } satisfies MosaicScoreFreeze;
 }
+
+export async function verifyMosaicFreeze(samples: readonly ImageBenchmarkInput[], expected: MosaicScoreFreeze) {
+  const actual = await freezeMosaicInputs(samples);
+  if (actual.version !== expected.version || actual.inputs !== expected.inputs) return undefined;
+  if (actual.truth === expected.truth) return actual;
+
+  // Older resumed runs froze the field order returned by native JSON serialization.
+  const nativeTruth = await digest(samples.map(sample => {
+    const truth = sample.mosaicTruth;
+    if (!truth) return [sample.sourceHash, truth];
+    const { boxCoverage, boxes, state } = canonicalMosaicTruth(truth);
+    return [sample.sourceHash, { boxCoverage, boxes, state }];
+  }));
+  return nativeTruth === expected.truth ? actual : undefined;
+}
