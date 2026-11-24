@@ -271,7 +271,7 @@ export type MosaicPreviewProps = {
   onApprove: (blob: Blob) => void;
   referenceCandidate?: Blob;
   header: ReactNode;
-  resultActions: ReactNode;
+  detailActions: ReactNode;
   notice: ReactNode;
   footer: ReactNode;
 };

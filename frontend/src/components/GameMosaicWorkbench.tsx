@@ -1451,42 +1451,34 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         onRedraw={redrawCurrent} onOpenComfy={openCurrentInComfy}
         onApprove={blob => { if (active) approve(active, blob, blob === referenceCandidate); }}
         referenceCandidate={referenceCandidate}
-        resultActions={active && <div className="unity-image-button-group game-mosaic-current-file-actions">
-          <button type="button" className="unity-btn is-secondary" aria-label="撤销当前图片改动"
-            disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => discardImageDraft(active)}>撤销改动</button>
-          <button type="button" className="unity-btn unity-btn-primary"
-            disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => void saveImageDraft(active)}>保存当前图片</button>
-        </div>}
-        header={active &&
-          <div className="unity-image-actions game-mosaic-detail-header">
+        header={active && <>
             <div className="game-mosaic-image-heading">
               <strong data-tooltip={active.file}><SearchHighlight text={active.name} query={needle} /></strong>
               <MosaicImageBadges adopted={activeSaved} reference={activeIsReference} />
             </div>
-            {draftReason && <span className="game-mosaic-detail-hint" data-tooltip={draftReason}>{draftReason}</span>}
-            <div className="unity-image-button-group">
-              <span data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
-                onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
-              <div className="game-mosaic-group-picker">
-                <UnityDescriptionSelect label="移动到处理分组…" value={activeResult?.manualStatus ?? ""} menuWidth={188} disabled={actionsDisabled || testing || !!activeResult?.saved}
-                  choices={[
-                    ...mosaicStatusChoices(),
-                    ...(activeResult?.manualStatus ? [{ value: "auto", label: "恢复自动分组" }] : []),
-                  ]}
-                  onChange={moveToStatus} />
-              </div>
-              <button type="button" className="unity-btn" data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，才能设为本组基准"}
-                disabled={actionsDisabled || !activeSaved || activeIsReference}
-                onClick={() => stageImageEdits(members, image => ({ reference: image.id === active.id, group, manualGroup: true }))}>
-                {activeIsReference ? "已是本组基准" : activeSaved ? "设置为本组基准" : "需要先采用一版"}
-              </button>
-              {activeSaved && <button type="button" className="unity-btn" disabled={actionsDisabled || testing}
-                data-tooltip={withdrawalStaged ? "取消尚未保存的撤回" : "保存后撤回采用，并从下次生成的补丁中移除"}
-                onClick={toggleAdoptionWithdrawal}>{withdrawalStaged ? "取消撤回" : "撤回采用"}</button>}
-              {draftReference && !activeIsReference && <span>参考图 {draftReference.name}</span>}
-            </div>
-          </div>
-        }
+            <span className="game-mosaic-group-count" data-tooltip={isIndependentGroup(group) ? "右键管理当前独立组" : undefined}
+              onContextMenu={event => openGroupMenu(event, group)}>{members.length} 张 · 本组已选 {selected.length} 张</span>
+            <span className="game-mosaic-detail-hint" data-tooltip={draftReason}>{draftReason ?? "没有改动"}</span>
+            <button type="button" className="unity-btn is-secondary" aria-label="撤销当前图片改动"
+              disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => discardImageDraft(active)}>撤销</button>
+            <button type="button" className="unity-btn unity-btn-primary"
+              disabled={actionsDisabled || testing || !drafts.has(active.id)} onClick={() => void saveImageDraft(active)}>保存</button>
+        </>}
+        detailActions={active && <>
+          <UnityDescriptionSelect label="分组" triggerContent="分组 ▾" value={activeResult?.manualStatus ?? ""} menuWidth={188}
+            disabled={actionsDisabled || testing || !!activeResult?.saved}
+            choices={[
+              ...mosaicStatusChoices(),
+              ...(activeResult?.manualStatus ? [{ value: "auto", label: "恢复自动分组" }] : []),
+            ]}
+            onChange={moveToStatus} />
+          <button type="button" className="unity-btn game-mosaic-reference-action"
+            data-tooltip={activeSaved ? "组内重绘时使用这张已采用的去码图作为画风参考" : "先重绘当前图并采用一版，才能设为本组基准"}
+            disabled={actionsDisabled || !activeSaved || activeIsReference}
+            onClick={() => stageImageEdits(members, image => ({ reference: image.id === active.id, group, manualGroup: true }))}>
+            {activeIsReference ? "已是本组基准" : activeSaved ? "设置为本组基准" : "需要先采用一版"}
+          </button>
+        </>}
         notice={<>{draftReason && <p className="visually-hidden" role="status">{draftReason}</p>}
            {active && !visible.includes(active) && <button type="button" className="unity-btn" onClick={() => {
              setImageFilters(allGameImageFilters);
@@ -1505,14 +1497,20 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
           {activeFailure ? <p className={activeRetry ? "hint" : "game-mosaic-error"}>
             {activeRetry && "重试中 · 上次"}{activeFailure}
           </p> : activeResult?.review && <p className="hint">{activeResult.review}</p>}</>}
-        footer={packageOnly ? undefined :
+        footer={(!packageOnly || activeSaved || (draftReference && !activeIsReference)) &&
           <div className="unity-image-actions">
-            <button className="unity-btn" disabled={testing || actionsDisabled || !!draftReason || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
-              {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}
-            </button>
-            <button className="unity-btn" disabled={testing || actionsDisabled || !!draftReason || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
-              {storage ? "从生成清单移除" : "撤销本组所选"}
-            </button>
+            {!packageOnly && <>
+              <button className="unity-btn" disabled={testing || actionsDisabled || !!draftReason || (storage ? saved.length === included.length : !saved.length)} title={testTitle} onClick={() => void patch(false)}>
+                {storage ? `纳入生成 · ${saved.length - included.length} 张` : `应用已采用去码图 · ${saved.length} 张`}
+              </button>
+              <button className="unity-btn" disabled={testing || actionsDisabled || !!draftReason || (storage ? !included.length : !selected.length)} title={testTitle} onClick={() => void patch(true)}>
+                {storage ? "从生成清单移除" : "撤销本组所选"}
+              </button>
+            </>}
+            {activeSaved && <button type="button" className="unity-btn game-mosaic-withdraw-action" disabled={actionsDisabled || testing}
+              data-tooltip={withdrawalStaged ? "取消尚未保存的撤回" : "保存后撤回采用，并从下次生成的补丁中移除"}
+              onClick={toggleAdoptionWithdrawal}>{withdrawalStaged ? "取消撤回" : "撤回采用"}</button>}
+            {draftReference && !activeIsReference && <span>参考图 {draftReference.name}</span>}
           </div>
         } />
     </MosaicGroupTree>

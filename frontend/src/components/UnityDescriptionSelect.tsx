@@ -21,9 +21,9 @@ export const UNITY_LINE_CHOICES: readonly Choice[] = [
 ];
 
 /** Descriptions are visible only in the open menu; the trigger shows the short label. */
-export function UnityDescriptionSelect({ label, value, choices, disabled, onChange, menuWidth = 440, onOptionContextMenu }: {
+export function UnityDescriptionSelect({ label, value, choices, disabled, onChange, menuWidth = 440, onOptionContextMenu, triggerContent }: {
   label: string; value: string; choices: readonly Choice[]; disabled?: boolean; onChange: (value: string) => void;
-  menuWidth?: number; onOptionContextMenu?: (value: string, event: MouseEvent<HTMLButtonElement>) => void;
+  menuWidth?: number; onOptionContextMenu?: (value: string, event: MouseEvent<HTMLButtonElement>) => void; triggerContent?: string;
 }) {
   const id = useId(), trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -57,7 +57,9 @@ export function UnityDescriptionSelect({ label, value, choices, disabled, onChan
       onPointerDown={()=>{pointerWasOpen.current=!!menu.current?.matches(":popover-open");}}
       onClick={() => {const shouldClose=pointerWasOpen.current||menu.current!.matches(":popover-open");pointerWasOpen.current=false;if(shouldClose)close();else show();}}
       onKeyDown={event => { if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) { event.preventDefault(); if((event.key==="Enter"||event.key===" ")&&menu.current!.matches(":popover-open"))close();else show(); } }}>
-      <span>{selected?.label || value || label}</span><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
+      {triggerContent ?? <>
+        <span>{selected?.label || value || label}</span><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
+      </>}
     </button>
     <div ref={menu} id={id} className="unity-description-menu" popover="auto" role="listbox" aria-label={label}
       onToggle={() => setOpen(!!menu.current?.matches(":popover-open"))}
