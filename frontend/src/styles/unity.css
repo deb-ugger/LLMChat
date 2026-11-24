@@ -3151,8 +3151,7 @@ body.ocr-image-resizing * {
   background: var(--accent);
 }
 .game-benchmark-config-resizer:focus-visible { outline: none; }
-/* 列表栏宽度足够时自动露出状态文字（容器查询，拖动即时生效） */
-.game-benchmark-config-list { container-type: inline-size; --config-running-tone: #3265b6; }
+.game-benchmark-config-list { --config-running-tone: #3265b6; }
 :root[data-theme="ink"] .game-benchmark-config-list { --config-running-tone: #7aa7f0; }
 .game-benchmark-config-list {
   min-block-size: 0;
@@ -3167,25 +3166,23 @@ body.ocr-image-resizing * {
   align-items: center;
   gap: var(--space-2);
   inline-size: 100%;
-  min-block-size: 34px;
+  min-block-size: 30px;
   padding: 4px 8px;
   text-align: start;
   border: 0;
-  border-inline-start: 2px solid transparent;
   background: transparent;
   color: var(--text);
   font: inherit;
   font-size: var(--fs-caption);
   cursor: pointer;
 }
-.game-benchmark-config-list li { position: relative; }
-.game-benchmark-config-list li[data-run="done"] { --config-state-tone: var(--success); }
 .game-benchmark-config-list li[data-run="failed"] { --config-state-tone: var(--danger); }
 .game-benchmark-config-list li[data-run="stopped"] { --config-state-tone: var(--warning); }
 .game-benchmark-config-list li[data-run="running"] { --config-state-tone: var(--config-running-tone); }
 .game-benchmark-config-state {
   color: var(--config-state-tone, var(--text-muted));
   flex: none;
+  margin-inline-start: auto;
   font-size: var(--fs-caption);
   font-weight: 500;
   white-space: nowrap;
@@ -3201,9 +3198,8 @@ body.ocr-image-resizing * {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .game-benchmark-config-list button[aria-pressed="true"] .game-benchmark-config-name { font-weight: 600; }
-.game-benchmark-config-list button[aria-pressed="true"] .game-benchmark-item-badge { color: var(--signal); }
+.game-benchmark-config-list button[aria-pressed="true"] .game-benchmark-item-badge { color: color-mix(in srgb, var(--signal) 74%, var(--text)); }
 .game-benchmark-config-list button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
-.game-benchmark-config-list button[aria-pressed="true"] { background: var(--accent-soft); border-inline-start-color: var(--accent); }
 .game-benchmark-config-list .game-benchmark-item-badge { flex: none; min-inline-size: 3ch; color: var(--text-muted); font: var(--fs-caption) var(--mono); }
 .game-benchmark-config-name { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game-benchmark-editor { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-inline-size: 0; min-block-size: 0; }
@@ -4143,7 +4139,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-benchmark-switch:has(input:checked:not(:disabled)) > span:last-child { color: var(--accent); font-weight: 600; }
 .game-benchmark-switch:has(input:disabled) > span:last-child { opacity: .65; }
 
-/* 列表行尾的启用状态圆点 */
+/* 配置行首的启用状态圆点 */
 .game-benchmark-config-enabled {
   flex: none;
   inline-size: 7px;
@@ -4155,23 +4151,15 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-benchmark-config-enabled.is-off { background: transparent; box-shadow: inset 0 0 0 1px var(--text-muted); }
 
 /* 只在“显示”视图里给运行中的配置做呼吸；配置态保持安静 */
-@keyframes benchmark-running-breathe {
-  0%, 100% { opacity: .55; }
-  50% { opacity: 1; }
-}
 @keyframes benchmark-running-row-breathe {
   0%, 100% { background-color: color-mix(in srgb, var(--config-running-tone) 6%, transparent); }
   50% { background-color: color-mix(in srgb, var(--config-running-tone) 16%, transparent); }
 }
-.game-benchmark-show-section .game-benchmark-config-list li[data-run="running"]::before {
-  animation: benchmark-running-breathe 1.8s ease-in-out infinite;
-}
-.game-benchmark-show-section .game-benchmark-config-list li[data-run="running"] button {
+.game-benchmark-show-section .game-benchmark-config-list li[data-run="running"] button[aria-pressed="false"] {
   animation: benchmark-running-row-breathe 1.8s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .game-benchmark-show-section .game-benchmark-config-list li[data-run="running"]::before,
-  .game-benchmark-show-section .game-benchmark-config-list li[data-run="running"] button { animation: none; }
+  .game-benchmark-show-section .game-benchmark-config-list li[data-run="running"] button[aria-pressed="false"] { animation: none; }
 }
 /* 显示视图里没有“排序/移除”，已完成的配置也不再显示底部那行状态 */
 .game-benchmark-show-section .game-benchmark-editor-order { display: none; }
