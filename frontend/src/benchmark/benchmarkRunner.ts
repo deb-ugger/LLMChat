@@ -804,9 +804,16 @@ export const benchmarkRunner = {
     return taskConfigView(job);
   },
   hideTask: closeShownTask,
-  releaseTask(id: string) {
-    if (showingTaskId === id && blockedTaskId === id) requestQueuePause("已中止队列");
+  releaseTask(id = showingTaskId) {
+    if (!id || showingTaskId !== id) return;
+    const wasBlocked = blockedTaskId === id;
+    // Once the editor is gone, the queue can use the saved configuration.
+    if (wasBlocked) blockedTaskId = undefined;
     closeShownTask(id);
+    if (wasBlocked) {
+      publish();
+      pumpQueue();
+    }
   },
   setTaskDirty(id: string, dirty: boolean) {
     if (showingTaskId !== id) return;
@@ -874,24 +881,6 @@ export const benchmarkRunner = {
     publish();
     await cleanupJob(job.status === "已暂停" ? job : undefined);
     pumpQueue();
-  },
-  async cleanup() {
-    await pauseQueue("关闭测试窗口时中止此任务", true);
-    if (!jobs.some(job => job.status === "已暂停" && isMosaicBenchmarkStep(job.step))) return;
-    try {
-      const recoverable = new Set(groupBenchmarkTasks(await readGameBenchmarkHistory())
-        .filter(record => record.continuation).map(record => record.id));
-      let changed = false;
-      for (let index = jobs.length - 1; index >= 0; index--) {
-        if (jobs[index].status !== "已暂停" || !isMosaicBenchmarkStep(jobs[index].step) || !recoverable.has(jobs[index].id)) continue;
-        jobs.splice(index, 1);
-        changed = true;
-      }
-      if (changed) publish();
-    } catch (error) {
-      // Keep the in-memory checkpoint if its archive cannot be verified.
-      console.error(error);
-    }
   },
   snapshot: () => snapshot,
   subscribe(listener: () => void) {

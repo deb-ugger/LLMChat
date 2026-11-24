@@ -64,7 +64,7 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
     return benchmarkRunner.continueArchivedBatch(input, data);
   if (kind === "benchmark-show-task" && typeof data === "string") return benchmarkRunner.showTask(data);
   if (kind === "benchmark-hide-task" && typeof data === "string") return benchmarkRunner.hideTask(data);
-  if (kind === "benchmark-release-task" && typeof data === "string") return benchmarkRunner.releaseTask(data);
+  if (kind === "benchmark-release-task" && (data === undefined || typeof data === "string")) return benchmarkRunner.releaseTask(data);
   if (data && typeof data !== "string" && "taskId" in data) {
     if (kind === "benchmark-decide-task" && "decision" in data) return benchmarkRunner.decideTask(data.taskId, data.decision, data.round, data.configs, data.confirmed);
     if (kind === "benchmark-save-task" && "configs" in data && "round" in data && data.round !== undefined && data.configs) return benchmarkRunner.saveTask(data.taskId, data.round, data.configs, data.confirmed);
@@ -74,7 +74,6 @@ function controlQueue(kind: BenchmarkQueueCommand, data?: BenchmarkQueueArgument
   if (kind === "benchmark-start" && typeof data === "string") benchmarkRunner.start(data);
   if (kind === "benchmark-stop" && typeof data === "string") benchmarkRunner.stop(data);
   if (kind === "benchmark-remove" && typeof data === "string") return benchmarkRunner.remove(data);
-  if (kind === "benchmark-cleanup") return benchmarkRunner.cleanup();
 }
 
 const BenchmarkHeader = createContext<HTMLDivElement | null>(null);
@@ -215,8 +214,10 @@ export function GameTextBenchmarkHost() {
     return () => { active = undefined; unsubscribe(); window.removeEventListener(openEvent, open); channel.close(); };
   }, []);
   if (!local) return null;
-  const close = () => void benchmarkRunner.cleanup().then(() => setLocal(undefined))
-    .catch(error => showAppNotice(String(error), "error"));
+  const close = () => {
+    benchmarkRunner.releaseTask();
+    setLocal(undefined);
+  };
   return <RecordsAndTestsPage browser onClose={close}
     gameView={<LocalGameBenchmark key={local.input?.scope} input={local.input} />} />;
 }
@@ -233,7 +234,7 @@ export function GameTextBenchmarkWindow() {
     if (building.current) { showAppNotice("构建测速正在运行，完成后可关闭"); return; }
     closing.current = "checking";
     try {
-      if (connection.current) await requestBenchmarkWindow(connection.current, "benchmark-cleanup");
+      if (connection.current) await requestBenchmarkWindow(connection.current, "benchmark-release-task");
       closing.current = "allowed";
       await getCurrentWindow().close();
     } catch (error) {
