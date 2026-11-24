@@ -4530,3 +4530,23 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   text-align: end;
   font-variant-numeric: tabular-nums;
 }
+
+/* 进度块三段式：上数据 / 进度条 / 下数据 */
+.game-flow-progress-top{display:flex;align-items:baseline;gap:10px;min-width:0;margin-bottom:6px}
+.game-flow-progress-top .game-flow-sample{font-size:11.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.game-flow-progress-track{display:flex;align-items:center;gap:10px}
+.game-flow-progress-track .game-flow-progress-bar{flex:1;inline-size:auto}
+.game-flow-progress .game-flow-progress-bottom{display:flex;align-items:center;gap:8px;margin-top:7px;min-width:0}
+.game-flow-progress .game-flow-progress-tail{margin-inline-start:auto;display:flex;align-items:baseline;gap:10px}
+.game-flow-progress .game-flow-progress-pct{font:700 14px/1 var(--mono,monospace);color:var(--text);font-variant-numeric:tabular-nums}
+.game-flow-progress .game-flow-progress-count{font:600 12px/1 var(--mono,monospace);color:var(--text-muted);font-variant-numeric:tabular-nums}
+.game-flow-progress .game-flow-progress-count small{color:var(--text-muted);opacity:.75;font-weight:400}
+
+/* 数字 chip 的编辑框：原生 spinner 在深色底上看不见数 */
+.game-flow-chip-value{inline-size:4.4em;min-inline-size:48px;block-size:24px;padding:0 6px;border-radius:5px;
+  border:1px solid var(--border-strong,#3d4136);background:#1c1d18;color:var(--text);
+  font:600 12.5px/22px var(--mono,monospace);text-align:center;font-variant-numeric:tabular-nums;
+  appearance:textfield;-moz-appearance:textfield}
+.game-flow-chip-value:focus{outline:none;border-color:var(--flow-color,#8f7cf0)}
+.game-flow-chip-value::-webkit-outer-spin-button,.game-flow-chip-value::-webkit-inner-spin-button{
+  appearance:none;-webkit-appearance:none;margin:0}
