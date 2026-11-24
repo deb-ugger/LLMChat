@@ -1,6 +1,7 @@
 import { useLayoutEffect } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { GameTestConfiguration, GameTestConfigurationAccess, SavedGameTestConfiguration } from "./gameModelPreset";
 
 export type GameAuxKind = "help" | "configuration" | "benchmark-review";
@@ -9,7 +10,7 @@ export type GameConfigurationSetup = {
   kind: "configuration"; scope: string; models: string[]; current: GameTestConfiguration; initialPart: "text" | "images";
 };
 export type GameBenchmarkReviewSetup = {
-  kind: "benchmark-review"; queueId: string; scope?: string; step?: string; label: string; itemUnit: "条" | "张";
+  kind: "benchmark-review"; queueId: string; scope?: string; step?: string; label: string; itemUnit: "条" | "张"; formal?: boolean;
 };
 export type GameAuxOpenSetup = GameHelpSetup | GameConfigurationSetup | GameBenchmarkReviewSetup;
 export type GameAuxSetup = GameAuxOpenSetup & { session: string };
@@ -43,6 +44,20 @@ export function currentGameAuxWindow(): GameAuxKind | undefined {
 
 export function openGameAuxWindow(setup: GameAuxOpenSetup) {
   window.dispatchEvent(new CustomEvent(gameAuxOpenEvent, { detail: setup }));
+}
+
+export const runReferenceKey = (queueId: string, formal?: boolean) =>
+  `llmchat-run-reference:${formal ? "formal" : "test"}:${queueId}`;
+
+export async function pickRunReference(path?: string) {
+  const selected = await open({
+    title: "选择对照集清单", multiple: false, defaultPath: path || "E:\\",
+    filters: [{ name: "对照集清单", extensions: ["json"] }],
+  });
+  if (typeof selected !== "string") return undefined;
+  if (selected.split(/[\\/]/).at(-1)?.toLowerCase() !== "manifest.json")
+    throw new Error("请选择对照集目录里的 manifest.json");
+  return selected;
 }
 
 export async function openBenchmarkReview(setup: GameBenchmarkReviewSetup) {

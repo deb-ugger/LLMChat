@@ -2,7 +2,7 @@
 export type RunRecordMode = "formal" | "test";
 
 const TABS: { mode: RunRecordMode; label: string; hint: string }[] = [
-  { mode: "formal", label: "正式运行", hint: "你在工作流里实际跑过的步骤" },
+  { mode: "formal", label: "正式记录", hint: "你在工作流里实际跑过的步骤" },
   { mode: "test", label: "测试运行", hint: "测试队列跑出来的对照结果" },
 ];
 

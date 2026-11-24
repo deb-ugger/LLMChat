@@ -2,25 +2,31 @@
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "./imageBenchmarkHistory";
 import { loadAnnotatedSampleSet } from "./imageSampleSet";
 import { countMosaicResults } from "./mosaicScoreCounts";
-import { mosaicTruthLookup, verifyMosaicFreeze, type MosaicScoreFreeze } from "./mosaicScoreInputs";
+import { freezeMosaicInputs, mosaicTruthLookup, mosaicWallClock, verifyMosaicFreeze, type MosaicScoreFreeze } from "./mosaicScoreInputs";
 import { bestMosaicRuns, mosaicScoreTitle, scoreMosaicRun, type MosaicScoreStage } from "./mosaicScore";
 import type { BenchmarkResult } from "../gameTextBenchmark";
 
-export async function compareMosaicTaskWithDataset(queueId: string, runs: readonly BenchmarkResult[], path?: string, stage: MosaicScoreStage = "mosaicRefine") {
+export async function readMosaicComparisonRuns(queueId: string, runs: readonly BenchmarkResult[]) {
   const entries: { run: BenchmarkResult; runId: string; details?: ImageBenchmarkDetails; issue?: string }[] = [];
   for (const run of runs) {
     const runId = run.performance.taskId;
     if (!runId) continue;
-    if (!run.performance.benchmark?.imageDetails) {
+    if (!run.performance.benchmark?.imageDetails && !run.performance.formalRun?.imageDetails) {
       entries.push({ run, runId, issue: "本轮没有逐图归档" });
       continue;
     }
-    try { entries.push({ run, runId, details: await readImageBenchmarkDetails(queueId, runId) }); }
+    try { entries.push({ run, runId, details: await readImageBenchmarkDetails(run.performance.formalRun ? runId : queueId, runId) }); }
     catch (error) { entries.push({ run, runId, issue: "逐图归档读取失败：" + String(error) }); }
   }
+  return entries;
+}
+
+export async function scoreMosaicComparisonRuns(entries: Awaited<ReturnType<typeof readMosaicComparisonRuns>>,
+  path: string | undefined, stage: MosaicScoreStage, switchReference = false) {
   const shared = entries.find(entry => entry.details)?.details?.samples;
   if (!shared) throw new Error(entries.find(entry => entry.issue)?.issue || "此任务暂无逐图结果");
-  const dataset = path && shared.some(sample => sample.mosaicTruth === undefined) ? await loadAnnotatedSampleSet(path) : undefined;
+  const dataset = path && (switchReference || entries.some(entry => entry.details?.samples.some(sample => sample.mosaicTruth === undefined)))
+    ? await loadAnnotatedSampleSet(path) : undefined;
   const lookup = mosaicTruthLookup(dataset);
   const totals = [];
   for (const { run, runId, details, issue } of entries) {
@@ -36,22 +42,31 @@ export async function compareMosaicTaskWithDataset(queueId: string, runs: readon
       } catch (error) { issues.push(String(error)); }
     }
     if (samples.length !== run.selected) issues.push("归档样本数与计划不一致");
-    const counts = countMosaicResults(samples, results, sample => {
+    const findTruth: typeof lookup = sample => {
       try { return lookup(sample); }
       catch (error) {
         issues.push(String(error));
         return null;
       }
-    });
+    };
+    const rescoring = switchReference && !!dataset;
+    const scoredSamples = rescoring ? samples.map(sample => ({ ...sample, mosaicTruth: findTruth(sample) })) : samples;
+    if (rescoring && details && (!expected || freeze)) {
+      try { freeze = await freezeMosaicInputs(scoredSamples); }
+      catch (error) { issues.push(String(error)); freeze = undefined; }
+    }
+    const counts = countMosaicResults(scoredSamples, results, findTruth);
     const row = { ...counts, runId, label: run.label, round: run.round, elapsedMs: run.performance.elapsedMs,
       seconds: run.performance.elapsedMs / 1000, status: run.status, runFailures: run.failed, freeze, issues,
-      timing: typeof metadata?.scoreTiming === "string" ? metadata.scoreTiming : undefined,
+      timing: run.performance.formalRun ? mosaicWallClock : typeof metadata?.scoreTiming === "string" ? metadata.scoreTiming : undefined,
       configId: (metadata?.config as { id?: string } | undefined)?.id || run.label };
     totals.push({ ...row, score: scoreMosaicRun(stage, row) });
   }
-  return { title: dataset?.title ?? "样本对照", stage, totals };
+  const referenceName = path?.replace(/[\\/]manifest\.json$/i, "").split(/[\\/]/).at(-1);
+  return { title: dataset?.title || referenceName || "样本对照", stage, totals };
 }
-export type MosaicTaskReport = Awaited<ReturnType<typeof compareMosaicTaskWithDataset>>;
+
+export type MosaicTaskReport = Awaited<ReturnType<typeof scoreMosaicComparisonRuns>>;
 
 export async function createMosaicTaskWorkbook(report: MosaicTaskReport) {
   const { default: Zip } = await import("jszip");
@@ -103,10 +118,10 @@ export async function createMosaicTaskWorkbook(report: MosaicTaskReport) {
   return book.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 
-export async function downloadMosaicTaskReport(report: MosaicTaskReport) {
+export async function downloadMosaicTaskReport(report: MosaicTaskReport, formal = false) {
   const blob = await createMosaicTaskWorkbook(report);
   const url = URL.createObjectURL(blob);
   const linkElement = document.createElement("a");
-  linkElement.href = url; linkElement.download = "图片去码测试总结.xlsx"; linkElement.click();
+  linkElement.href = url; linkElement.download = formal ? "图片去码正式记录.xlsx" : "图片去码测试总结.xlsx"; linkElement.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }

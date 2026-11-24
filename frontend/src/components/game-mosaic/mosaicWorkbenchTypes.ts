@@ -1,3 +1,4 @@
+import type { RecordImageBenchmarkOutcome } from "../../benchmark/imageBenchmarkHistory";
 import type { BenchmarkParameter } from "../../benchmark/benchmarkParameters";
 import type { ReactNode } from "react";
 import type { Settings } from "../../api";
@@ -73,10 +74,11 @@ export type MosaicStepUsage = {
   recordItems: (itemsDone: number, failures?: number) => void;
   measure: <T>(model: string, concurrency: number, work: () => Promise<T>) => Promise<T>;
   refresh: () => void;
-  finish: (completed: boolean) => void;
+  recordImage?: RecordImageBenchmarkOutcome;
+  finish: (completed: boolean, failed?: boolean, detail?: string) => void | Promise<void>;
 };
 
-export type MosaicBatchStep = { id: MosaicStep; total: number; completed?: number; summary: string; parameters?: readonly BenchmarkParameter[]; resume?: boolean };
+export type MosaicBatchStep = { id: MosaicStep; targets?: readonly UnityImage[]; total: number; completed?: number; summary: string; parameters?: readonly BenchmarkParameter[]; resume?: boolean };
 export type MosaicBatchWork = (signal: AbortSignal, report: (progress: StepReport) => void, usage?: MosaicStepUsage) => Promise<void | boolean>;
 
 export type MosaicBatchPorts = {
@@ -86,7 +88,7 @@ export type MosaicBatchPorts = {
   setProgressStep: (id?: MosaicStep) => void;
   setStepRuns: (change: (previous: Partial<Record<MosaicStep, StepRun>>) => Partial<Record<MosaicStep, StepRun>>) => void;
   setRunning: (label: string) => void;
-  beginUsage: (id: MosaicStep, resume: boolean, refresh: () => void) => MosaicStepUsage;
+  beginUsage: (step: MosaicBatchStep, refresh: () => void) => MosaicStepUsage;
   setProgress: (message: string) => void;
   setError: (message: string) => void;
   finish: () => void;

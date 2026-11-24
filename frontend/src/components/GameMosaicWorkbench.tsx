@@ -1,6 +1,8 @@
 import { formatMosaicParameters, type BenchmarkParameter } from "../benchmark/benchmarkParameters";
+import { archiveFormalMosaicImages } from "../benchmark/formalRunHistory";
+import { benchmarkImageInput, type ImageBenchmarkInput, type ImageBenchmarkOutcome } from "../benchmark/imageBenchmarkHistory";
 import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
-import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
+import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusLabels, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { gameAvailableModels } from "./GameTranslationTabs";
@@ -8,7 +10,7 @@ import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaic
 import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
-import { beginGameStep, clearGamePerformance, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type StepPerformance } from "../gameModelPerformance";
+import { beginGameStep, clearGamePerformance, finishFormalGameStep, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type FormalRunSummary, type StepPerformance } from "../gameModelPerformance";
 import { mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
@@ -75,11 +77,14 @@ function resumableMosaicMetrics(gamePath: string, step: MosaicStep, resume: bool
   return previous.taskId && !previous.endedAt ? previous : undefined;
 }
 
-function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolean, refresh = () => {}): MosaicStepUsage {
+function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolean, refresh = () => {},
+  run?: { summary: string; total: number; parameters?: readonly BenchmarkParameter[]; samples: readonly ImageBenchmarkInput[] }): MosaicStepUsage {
   const scope = mosaicMetricScope(gamePath,step);
   const previous = resumableMosaicMetrics(gamePath,step,resume);
   if (!previous) clearGamePerformance(scope,[step]);
   beginGameStep(scope, step);
+  const taskId = stepPerformance(scope, step).taskId;
+  const outcomes = new Map<string, ImageBenchmarkOutcome>();
   return {
     scope,
     snapshot: () => groupMosaicModels(stepPerformance(scope, step)),
@@ -93,7 +98,26 @@ function beginMosaicStepUsage(gamePath: string, step: MosaicStep, resume: boolea
       }
     },
     refresh,
-    finish: (completed: boolean) => finishGameStep(scope, completed),
+    recordImage: run ? (id, outcome) => outcomes.set(id, outcome) : undefined,
+    async finish(completed, failed, detail) {
+      if (!run) { finishGameStep(scope, completed); return; }
+      finishGameStep(scope);
+      const formal: FormalRunSummary = {
+        label: run.summary, total: run.total, status: completed ? "完成" : failed ? "失败" : "已暂停",
+        parameters: run.parameters, detail,
+      };
+      if (taskId && run.samples.length) {
+        try {
+          Object.assign(formal, await archiveFormalMosaicImages(taskId, run.samples, outcomes, !!previous?.formalRun?.imageDetails),
+            { imageDetails: true });
+        } catch (error) {
+          const message = "逐图归档保存失败：" + String(error);
+          formal.detail = [detail, message].filter(Boolean).join("\n");
+          showAppNotice(message, "error");
+        }
+      }
+      finishFormalGameStep(scope, step, formal);
+    },
   };
 }
 export const GameMosaicCompletionContext = createContext<((completed: boolean) => void) | null>(null);
@@ -631,7 +655,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         masks.resetDrawing();
         setBusy(label); setProgress(label); setError("");
       },
-      beginUsage: (id, resume, refresh) => beginMosaicStepUsage(gamePath, id, resume, refresh),
+      beginUsage: (step, refresh) => {
+        const samples = step.targets?.map(image => {
+          const row = resultFor(latestRows.current, image);
+          const seed = step.id === "refine" ? mosaicInitialScreening(row) : row;
+          return benchmarkImageInput(image, mosaicStatusLabels[mosaicScreeningStatus(seed)], row.checked, seed.boxes);
+        }) ?? [];
+        return beginMosaicStepUsage(gamePath, step.id, !!step.resume, refresh, { ...step, samples });
+      },
       setProgress, setError,
       finish: () => {
         task.current = null; setBusy("");
@@ -701,7 +732,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }, signal, report, usage, {
       replaceRows, clearReviews, resetRedraw, performReviews, setProgress, setError,
       trackReview: session => { lastReview.current = session; },
-    }), {id:"refine",total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
+    }), {id:"refine",targets,total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       parameters: formatMosaicParameters("mosaicRefine", {
         ...preferences, refineConcurrency: Math.min(targets.length, mosaicRefineConcurrency(preferences.refineConcurrency)),
       }), resume: !restart});
@@ -736,7 +767,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }, signal, report, usage, {
       replaceRows, setRows, clearReviews, resetRedraw, read, prepareSources, loadMosaicDetector, createMosaicGridScanner, setProgress,
       onDevice: device => setStepRuns(previous => previous.screen ? { ...previous, screen: { ...previous.screen, device } } : previous),
-    }), { id: "screen", total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind],
+    }), { id: "screen", targets, total: restart ? targets.length : screenTotal, completed: initial, summary: detectorLabels[detectorKind],
       parameters: [
         { scope: "config", label: "筛选范围", value: scope === "scenes" ? "场景图片" : "全部图片" },
         ...formatMosaicParameters("mosaicScreen", preferences).map(parameter =>
@@ -780,7 +811,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         });
         if (isPreviewing(image)) setPreferredResult(engine);
       },
-    }), { id: "redraw", total, completed: initial, summary, parameters: [
+    }), { id: "redraw", targets: plan.targets.map(target => target.image), total, completed: initial, summary, parameters: [
       ...plan.models.map((engine): BenchmarkParameter => ({
         scope: "config", label: mosaicModelLabels[engine], value: mosaicRedrawStepCount(plan, engine) + " 步",
       })),

@@ -5,7 +5,8 @@ import { BuildSpeedTest } from "./BuildSpeedTest";
 import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { readMosaicTaskPlan } from "../benchmark/benchmarkTaskPlan";
-import { openBenchmarkReview } from "../gameAuxWindows";
+import { openBenchmarkReview, pickRunReference, runReferenceKey } from "../gameAuxWindows";
+import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../benchmark/formalRunHistory";
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
@@ -18,13 +19,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { benchmarkChannelName, benchmarkHistoryForRecords, requestBenchmarkWindow, type BenchmarkQueueArgument, type BenchmarkQueueCommand } from "../gameBenchmarkWindow";
 import { benchmarkRunner, benchmarkSampleCounts, benchmarkTargetLabel, emptyBenchmarkSnapshot, formalBlockingReason, isMosaicBenchmarkStep as isMosaicStep, type BenchmarkTarget as Target, canEditBenchmarkTask, type BenchmarkInput, type BenchmarkJob, type BenchmarkRequest, type BenchmarkSnapshot, type BenchmarkTaskConfig, type BenchmarkTaskDecision } from "../benchmark/benchmarkRunner";
 export type { BenchmarkInput, BenchmarkImageSource } from "../benchmark/benchmarkRunner";
-import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
+import { benchmarkRoles, groupBenchmarkTasks, inspectBenchmarkSample, readGameBenchmarkHistory, readGameFormalHistory, type ArchivedBenchmarkRef, type BenchmarkConfig, type BenchmarkResult, type BenchmarkSample } from "../gameTextBenchmark";
 import { gameDuration, modelConcurrency } from "../gameModelPerformance";
 import type { UnityEntry } from "../unityOffline";
 import { imageBenchmarkSteps, type ImageBenchmarkStep, type ImageBenchmarkSetup } from "../gameImageBenchmark";
 import { gamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { RunRecordTabs, type RunRecordMode } from "./RunRecordTabs";
-import { FormalRunRecords } from "./FormalRunRecords";
 import { RunPerformanceDetails } from "./RunPerformanceDetails";
 import { formatBenchmarkParameters } from "../benchmark/benchmarkParameters";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
@@ -398,6 +398,7 @@ function BenchmarkRunMeasurements({ result }: { result: BenchmarkResult }) {
         { label: "模型", value: model.model },
         { label: "并发", value: model.concurrency },
         { label: "请求", value: model.requests + " 次" },
+        { label: "Token", value: model.requests ? model.usage?.completionTokens ?? model.tokens : undefined },
         { label: "纯生成", value: model.generationMs > 0 ? (model.generationTokens * 1000 / model.generationMs).toFixed(1) + "\u00a0tok/s" : undefined },
         { label: "请求平均", value: model.requestMs > 0 ? (model.tokens * 1000 / model.requestMs).toFixed(1) + "\u00a0tok/s" : undefined },
         { label: "服务总计", value: benchmarkSeconds(timing?.totalMs) },
@@ -480,19 +481,21 @@ function BenchmarkSection({ title, className = "", action, children }: {
   </section>;
 }
 
-function useBenchmarkArchive(historyRevision: number) {
+function useBenchmarkArchive(historyRevision: number, formal = false, enabled = true) {
   const [records, setRecords] = useState<BenchmarkResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     setLoading(true); setError("");
-    void readGameBenchmarkHistory().then(history => { if (active) setRecords(history); })
+    const reading = formal ? readGameFormalHistory().then(formalHistoryResults) : readGameBenchmarkHistory();
+    void reading.then(history => { if (active) setRecords(history); })
       .catch(error => { if (active) setError(String(error)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [historyRevision, reload]);
+  }, [historyRevision, reload, formal, enabled]);
   return { records, loading, error, refresh: () => setReload(value => value + 1) };
 }
 
@@ -997,17 +1000,36 @@ function StandaloneBenchmarkHistory({ snapshot, setupError }: { snapshot: Benchm
     {headerTools && createPortal(<RunRecordTabs mode={recordMode} onChange={setRecordMode} />, headerTools)}
     <div className="game-benchmark-scroll"><div className="game-text-benchmark">
       {setupError && <p className="unity-offline-error" role="alert">{setupError}</p>}
-      {recordMode === "test" ? <BenchmarkTestRecords archive={archive} snapshot={snapshot} /> : <FormalRunRecords />}
+      <BenchmarkRunRecords key={recordMode} archive={archive} snapshot={snapshot} formal={recordMode === "formal"} />
     </div></div>
   </section>;
 }
 
-function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
-  archive: ReturnType<typeof useBenchmarkArchive>; snapshot: BenchmarkSnapshot; projectScope?: string;
+function BenchmarkRunRecords({ archive, snapshot, formal = false, projectScope, onContinue }: {
+  archive: ReturnType<typeof useBenchmarkArchive>; snapshot: BenchmarkSnapshot; formal?: boolean; projectScope?: string;
   onContinue?: (reference: ArchivedBenchmarkRef) => Promise<unknown>;
 }) {
-  const { records: history, loading: historyLoading, error: historyError, refresh: refreshHistory } = archive;
-  const tasks = useMemo(() => groupBenchmarkTasks(benchmarkHistoryForRecords(history, snapshot.jobs)), [history, snapshot.jobs]);
+  const formalArchive = useBenchmarkArchive(snapshot.historyRevision, true, formal);
+  const { records: history, loading: historyLoading, error: historyError, refresh: refreshHistory } = formal ? formalArchive : archive;
+  const title = formal ? "正式记录" : "测试记录";
+  const tasks = useMemo(() => groupBenchmarkTasks(formal ? history : benchmarkHistoryForRecords(history, snapshot.jobs)), [formal, history, snapshot.jobs]);
+  const [referenceRevision, setReferenceRevision] = useState(0);
+  useEffect(() => {
+    const refresh = (event: StorageEvent) => {
+      if (event.key?.startsWith("llmchat-run-reference:") || event.key === null) setReferenceRevision(value => value + 1);
+    };
+    window.addEventListener("storage", refresh);
+    return () => window.removeEventListener("storage", refresh);
+  }, []);
+
+  const customReference = useMemo(() => new Map(tasks.map(task => [task.id,
+    localStorage.getItem(runReferenceKey(task.id, formal)) || undefined])), [tasks, formal, referenceRevision]);
+  function setReference(id: string, path?: string) {
+    const key = runReferenceKey(id, formal);
+    if (path) localStorage.setItem(key, path);
+    else localStorage.removeItem(key);
+    setReferenceRevision(value => value + 1);
+  }
   const [recordStep, setRecordStep] = useState<BenchmarkRecordStep>();
   const [recordStatus, setRecordStatus] = useState(allBenchmarkRecordStatuses);
   const [recordRange, setRecordRange] = useState<"1" | "7" | "30" | "all">("7");
@@ -1019,14 +1041,15 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
     if (recordRange !== "all") firstDay.setDate(firstDay.getDate() - (Number(recordRange) - 1));
     nextDay.setDate(nextDay.getDate() + 1);
     return tasks.filter(task => {
-      if (!matchesBenchmarkRecordStep(recordStep, archivedBenchmarkStep(task.runs[0]?.performance.step))) return false;
+      const run = task.runs[0].performance;
+      if (!matchesBenchmarkRecordStep(recordStep, archivedBenchmarkStep(formal ? formalRecordStep(run) : run.step))) return false;
       if (recordRange !== "all") {
         const time = Date.parse(task.firstTime);
         if (!(time >= firstDay.getTime() && time < nextDay.getTime())) return false;
       }
       return matchesBenchmarkRecordStatus(task, recordStatus);
     });
-  }, [tasks, recordStep, recordStatus, recordRange, dayStart]);
+  }, [tasks, formal, recordStep, recordStatus, recordRange, dayStart]);
   const taskDays = useMemo(() => {
     const days = new Map<string, { date: Date | null; records: typeof tasks }>();
     for (const task of [...filteredTasks].sort((left, right) => (Date.parse(right.firstTime) || 0) - (Date.parse(left.firstTime) || 0))) {
@@ -1049,9 +1072,9 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
     catch (error) { showAppNotice(String(error), "error"); }
     finally { setRestoringRun(undefined); }
   };
-  return <BenchmarkSection title="测试记录" className="game-benchmark-records game-benchmark-results" action={
+  return <BenchmarkSection title={title} className="game-benchmark-records game-benchmark-results" action={
    <button type="button" className="unity-btn" disabled={historyLoading} onClick={refreshHistory}>刷新</button>}>
-   <div className="game-benchmark-record-filters" role="group" aria-label="测试记录筛选">
+   <div className="game-benchmark-record-filters" role="group" aria-label={title + "筛选"}>
      <BenchmarkRecordStepFilter value={recordStep} onChange={setRecordStep} />
      <BenchmarkRecordStatusFilter value={recordStatus} onChange={setRecordStatus} />
      <select aria-label="时间范围" value={recordRange} onChange={event => setRecordRange(event.target.value as typeof recordRange)}>
@@ -1060,10 +1083,10 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
      </select>
      <output aria-live="polite">{filteredTasks.length} 条</output>
    </div>
-   <div className="game-benchmark-history-results" tabIndex={0} aria-label="测试记录列表" role="region">
-   {historyLoading && <p className="hint" role="status">正在读取测试记录…</p>}
+   <div className="game-benchmark-history-results" tabIndex={0} aria-label={title + "列表"} role="region">
+   {historyLoading && <p className="hint" role="status">正在读取{title}…</p>}
    {historyError && <p className="unity-offline-error" role="alert">{historyError}</p>}
-   {!historyLoading && !historyError && !filteredTasks.length && <p className="hint">{tasks.length ? "没有符合筛选条件的测试记录。" : "暂无测试记录。"}</p>}
+   {!historyLoading && !historyError && !filteredTasks.length && <p className="hint">{tasks.length ? `没有符合筛选条件的${title}。` : `暂无${title}。`}</p>}
    {[...taskDays].map(([day, { date, records }]) => <section className="game-benchmark-record-day" key={day}>
      <h4>{date
        ? `${day === recordToday.toDateString() ? "今天 · " : day === recordYesterday.toDateString() ? "昨天 · " : date.getFullYear() !== recordToday.getFullYear() ? date.getFullYear() + "/" : ""}${date.getMonth() + 1}/${date.getDate()}`
@@ -1071,13 +1094,18 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
    {records.map(task => {
      const first = task.runs[0];
      const { scope: archivedScope, step: archivedStep, benchmark: metadata } = first.performance;
-     const taskStep = archivedBenchmarkStep(archivedStep);
+     const taskStep = archivedBenchmarkStep(formal ? formalRecordStep(first.performance) : archivedStep);
      const mosaicTask = !!taskStep && isMosaicStep(taskStep);
      const content = mosaicTask ? "图片去码" : taskStep === "screen" || taskStep === "translate" ? "文本翻译" : "图片翻译";
-     const taskLabel = taskStep ? content + " · " + benchmarkTargetLabel(taskStep) : "未记录步骤";
-     const projectPath = archivedScope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
+     const stepName = taskStep ? benchmarkTargetLabel(taskStep) :
+       formal ? ({ scan: "扫描资源", scanImages: "扫描图片", mosaic: "图片去码", generate: "生成补丁",
+         generateImages: "生成图片补丁", generateMosaic: "生成去码补丁", apply: "应用补丁",
+         applyImages: "应用图片补丁", applyMosaic: "应用去码补丁", redraw: "AI 风格重绘" }[archivedStep ?? ""] ?? archivedStep) || "未记录步骤" : "未记录步骤";
+     const taskLabel = taskStep ? content + " · " + stepName : stepName;
+     const projectPath = formal ? formalRecordProject(archivedScope) : archivedScope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
      const reference = metadata?.referenceSampleSetPath ?? metadata?.sampleSetPath;
-     const referencePath = typeof reference === "string" ? reference : undefined;
+     const selectedReference = customReference.get(task.id);
+     const referencePath = selectedReference ?? (typeof reference === "string" ? reference : undefined);
      const inputSet = typeof metadata?.sampleSetPath === "string" ? metadata.sampleSetPath : undefined;
      const config = metadata?.config as BenchmarkConfig | undefined;
      const sampleUnit = taskStep === "screen" || taskStep === "translate" ? "条" : "张";
@@ -1086,7 +1114,7 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
        mosaicTask && config?.mosaic?.selection === "all" ? "工程全部可用图片" :
        sampleUnit === "条" ? "工程已勾选文本" : "工程已勾选图片";
      const sampleLimit = typeof metadata?.sampleLimit === "number" ? metadata.sampleLimit : undefined;
-     const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) : sampleScope;
+     const referenceName = referencePath ? filename(referencePath.replace(/[\\/]manifest\.json$/i, "")) : "未选择";
      const referenceDetails = [referencePath, referencePath !== inputSet ? sampleScope : undefined,
        sampleLimit === undefined ? undefined : sampleLimit > 0 ? "样本上限 " + sampleLimit + " " + sampleUnit : "样本不限"]
        .filter(Boolean).join("\n");
@@ -1096,17 +1124,18 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
      const stoppedLabel = task.runs.some(run => run.status === "已中止") ? "已中止" : "已暂停";
      const status = task.failed ? `含 ${task.failed} 项失败` : incomplete
        ? task.stopped ? stoppedLabel : "未完成" : "全部完成";
-     const canCompare = task.runs.length > 1 ||
-       (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && typeof reference === "string";
+     const canCompareDataset = (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") &&
+       task.runs.some(run => run.performance.formalRun?.imageDetails || run.performance.benchmark?.imageDetails);
+     const canCompare = task.runs.length > 1 || canCompareDataset;
      const openComparison = () => {
        void openBenchmarkReview({ kind: "benchmark-review", queueId: task.id,
-         scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit })
+         scope: archivedScope, step: archivedStep, label: taskLabel, itemUnit: sampleUnit, formal })
          .catch(error => showAppNotice(String(error), "error"));
      };
      return <details key={task.id} className={`game-benchmark-record-task is-${tone}`}>
      <summary>
        <span className="game-benchmark-record-main">
-         <strong>{taskStep ? benchmarkTargetLabel(taskStep) : "未记录步骤"}</strong>
+         <strong>{stepName}</strong>
          <span className="game-benchmark-record-tags">
            <span className="game-benchmark-record-status">{status}</span>
            <span>{task.rounds} 轮</span>
@@ -1126,21 +1155,29 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
      </summary>
      <div className="game-benchmark-record-runs">
      <dl className="game-benchmark-record-context">
-       <div><dt>步骤</dt><dd title={taskLabel}>{taskStep ? benchmarkTargetLabel(taskStep) : taskLabel}</dd></div>
+       <div><dt>步骤</dt><dd title={taskLabel}>{stepName}</dd></div>
        <div><dt>工程</dt><dd title={projectPath}>{projectPath ? filename(projectPath) : "未记录"}</dd></div>
-       <div><dt>对照集</dt><dd title={referenceDetails || referenceName}>{referenceName}</dd></div>
+       {mosaicTask && <div><dt>对照集</dt><dd className="game-benchmark-record-reference">
+         <span title={referenceDetails || referenceName}>{referenceName}</span>
+         {canCompareDataset && isTauri() && <button type="button" className="unity-btn" onClick={() =>
+           void pickRunReference(referencePath).then(path => { if (path) setReference(task.id, path); })
+             .catch(error => showAppNotice(String(error), "error"))}>{referencePath ? "更换" : "选择"}</button>}
+         {selectedReference && <button type="button" className="unity-btn" onClick={() => setReference(task.id)}>恢复默认</button>}
+       </dd></div>}
      </dl>
-     {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>测试结果对照（{task.runs.length} 项）</button>}
+     {canCompare && <button type="button" className="unity-btn is-secondary" onClick={openComparison}>{formal ? "正式结果对照" : "测试结果对照"}（{task.runs.length} 项）</button>}
       {taskStep && isMosaicStep(taskStep) && task.continuation && !snapshot.jobs.some(job => job.id === task.id) &&
         (onContinue && projectScope && archivedScope === projectScope + ":benchmark:mosaic"
           ? <button type="button" className="unity-btn" disabled={!!restoringRun || snapshot.stopping}
               onClick={() => void continueBatch({ queueId: task.id, step: taskStep })}>继续此任务</button>
           : <p className="hint">打开对应的游戏工程后可继续此任务。</p>)}
-     {mosaicTask && task.stopped > 0 && !task.planned &&
+     {formal && (taskStep === "mosaicScreen" || taskStep === "mosaicRefine") && !canCompareDataset &&
+       <p className="hint">这条记录没有逐图结果，无法计算对照分。</p>}
+     {!formal && mosaicTask && task.stopped > 0 && !task.planned &&
        <p className="hint">此记录缺少原批次配置，无法从记录续跑。</p>}
      {task.runs.map((result, index) => {
        const runConfig = result.performance.benchmark?.config as BenchmarkConfig | undefined;
-       const parameters = taskStep && runConfig?.models?.text && runConfig.prompts
+       const parameters = formal ? result.performance.formalRun?.parameters ?? [] : taskStep && runConfig?.models?.text && runConfig.prompts
          ? formatBenchmarkParameters(taskStep, runConfig, { rounds: task.rounds, sampleLimit: 0, annotated: !!inputSet })
            .filter(parameter => parameter.scope === "config")
          : [];
@@ -1172,10 +1209,10 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
          <BenchmarkDetailRows rows={parameters} fixedLabels />
          {result.detail && <p>{result.detail}</p>}
          <BenchmarkRunMeasurements result={result} />
-         <RunPerformanceDetails run={result.performance} source="benchmark" />
+         <RunPerformanceDetails run={result.performance} source={formal ? "formal" : "benchmark"} />
          {Boolean(result.performance.benchmark?.continuedFrom) && <p className="hint">耗时仅统计续跑阶段。</p>}
-         {result.performance.benchmark?.imageDetails === true && result.performance.taskId &&
-           <ImageBenchmarkRunDetails queueId={task.id} runId={result.performance.taskId} />}
+         {(result.performance.formalRun?.imageDetails || result.performance.benchmark?.imageDetails === true) && result.performance.taskId &&
+           <ImageBenchmarkRunDetails queueId={formal ? result.performance.taskId : task.id} runId={result.performance.taskId} />}
        </details>;
      })}
      </div>
@@ -1186,7 +1223,7 @@ function BenchmarkTestRecords({ archive, snapshot, projectScope, onContinue }: {
 }
 
 function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step, draft, onDraft, enqueue, targetControls,
-  requestSelection, imageSetup, mosaicSetup, mosaicRoot, imageCounts, mosaicCounts, selectedCount, models, snapshot, control, queueContents, archive, recordMode, onRecordModeChange, taskView, taskDialogs }:
+  requestSelection, imageSetup, mosaicSetup, imageCounts, mosaicCounts, selectedCount, models, snapshot, control, queueContents, archive, recordMode, onRecordModeChange, taskView, taskDialogs }:
   BenchmarkPageInput & { step: Target; draft?: QueueDraft; onDraft: (draft: QueueDraft) => void;
     targetControls: ReactNode; queueContents: ReactNode; archive: ReturnType<typeof useBenchmarkArchive>; recordMode: RunRecordMode;
     onRecordModeChange: (mode: RunRecordMode) => void; taskView: ReactNode; taskDialogs: ReactNode }) {
@@ -1194,10 +1231,6 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
   const imageStep = !isMosaicStep(step) && step !== "screen" && step !== "translate" ? step : undefined;
   const images = imageStep ? imageSetup : undefined;
   const scope = images?.scope || textScope;
-  const formalStep = mosaicStep ? { mosaicScreen: "screen", mosaicRefine: "refine", mosaicRedraw: "redraw" }[mosaicStep]
-    : step === "imageTranslate" ? "translate" : step;
-  const formalScope = mosaicStep ? mosaicRoot + ":mosaic:" + formalStep
-    : imageStep ? scope + ":images" : textScope + ":text";
   const mainRole = imageStep ? imageBenchmarkSteps[imageStep].role : "textScreen";
   const roles = step === "translate" ? benchmarkRoles : ["text"] as const;
   const requiresModel = step === "review";
@@ -1404,8 +1437,8 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       </div>
   </>;
   const toolbar = <>
-    {(testDraftVisible || recordMode === "formal") && <div className="game-benchmark-scope"
-      role="group" aria-label={recordMode === "formal" ? "正式运行范围" : "测试范围"}
+    {testDraftVisible && <div className="game-benchmark-scope"
+      role="group" aria-label="测试范围"
       aria-description={testDraftVisible ? scopeDescription : undefined}>
       {targetControls}
       {testDraftVisible && <div className="game-benchmark-toolbar game-benchmark-sample-tools">
@@ -1426,7 +1459,7 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
           title="留空时测试范围内的全部样本" onChange={event => setSampleLimit(Math.max(0, Math.trunc(Number(event.target.value))))} /></label>
       </div>}
     </div>}
-    {(testDraftVisible || recordMode === "formal") && <span className="game-benchmark-header-divider" aria-hidden="true" />}
+    {testDraftVisible && <span className="game-benchmark-header-divider" aria-hidden="true" />}
     <RunRecordTabs mode={recordMode} onChange={onRecordModeChange} />
   </>;
   return <section className={"game-benchmark-game" + (running ? " is-running" : "")}>
@@ -1477,11 +1510,11 @@ function GameTextBenchmarkDialog({ scope: textScope, current, screenModel, step,
       <BenchmarkSection title="当前任务队列" className={"game-benchmark-queue" + (running ? " is-active" : "")}>
         {queueContents}
       </BenchmarkSection>
-      <BenchmarkTestRecords archive={archive} snapshot={snapshot} projectScope={textScope}
+      <BenchmarkRunRecords archive={archive} snapshot={snapshot} projectScope={textScope}
          onContinue={reference => control("benchmark-continue-batch", reference)} />
       </div>
       </> : <>
-        <FormalRunRecords scope={formalScope} step={formalStep} />
+        <BenchmarkRunRecords archive={archive} snapshot={snapshot} formal />
       </>}
     </div></div>
     {taskDialogs}

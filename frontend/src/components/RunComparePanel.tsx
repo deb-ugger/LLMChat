@@ -2,12 +2,14 @@ import * as echarts from "echarts/core";
 import { BarChart, ScatterChart } from "echarts/charts";
 import { GridComponent, LegendComponent, LegendScrollComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
-import { compareMosaicTaskWithDataset, downloadMosaicTaskReport, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
-import { groupBenchmarkTasks, readGameBenchmarkHistory } from "../gameTextBenchmark";
+import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { downloadMosaicTaskReport, readMosaicComparisonRuns, scoreMosaicComparisonRuns, type MosaicTaskReport } from "../benchmark/benchmarkMosaicReport";
+import { groupBenchmarkTasks, readGameBenchmarkHistory, readGameFormalHistory } from "../gameTextBenchmark";
 import { gameDuration } from "../gameModelPerformance";
 import { bestMosaicRuns, compareMosaicScores, mosaicScoreTitle } from "../benchmark/mosaicScore";
-import type { GameBenchmarkReviewSetup } from "../gameAuxWindows";
+import { pickRunReference, runReferenceKey, type GameBenchmarkReviewSetup } from "../gameAuxWindows";
+import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../benchmark/formalRunHistory";
+import { isTauri } from "@tauri-apps/api/core";
 import { showAppNotice } from "./AppNotice";
 import { useChartColors, type ChartColors } from "./chartTheme";
 import {
@@ -59,54 +61,100 @@ function tooltipStyle(colors: ChartColors) {
 }
 
 export function BenchmarkReviewWindow({ setup, onClose }: { setup: GameBenchmarkReviewSetup; onClose: () => void }) {
-  const { queueId, scope, step } = setup;
+  const { queueId, scope, step, formal } = setup;
+  const referenceKey = runReferenceKey(queueId, formal);
+  const [reference, setReference] = useState(() => localStorage.getItem(referenceKey) || "");
   const [runs, setRuns] = useState<readonly BenchmarkCompareRun[]>();
+  const [entries, setEntries] = useState<Awaited<ReturnType<typeof readMosaicComparisonRuns>>>();
   const [report, setReport] = useState<MosaicTaskReport>();
   const [loadingReport, setLoadingReport] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [qualityError, setQualityError] = useState("");
+  const record = runs?.[0]?.performance;
+  const target = formal && record ? formalRecordStep(record) : step;
+  const stage = target === "mosaicScreen" || target === "mosaicRefine" ? target : undefined;
+  const archivedPath = record?.benchmark?.referenceSampleSetPath ?? record?.benchmark?.sampleSetPath;
+  const referencePath = reference || (typeof archivedPath === "string" ? archivedPath : undefined);
+
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === referenceKey || event.key === null) setReference(localStorage.getItem(referenceKey) || "");
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, [referenceKey]);
+
+  function selectReference(path: string) {
+    if (path) localStorage.setItem(referenceKey, path);
+    else localStorage.removeItem(referenceKey);
+    setReference(path);
+  }
+
   useEffect(() => {
     let active = true;
     void (async () => {
-      const records = await readGameBenchmarkHistory(scope, step);
+      const records = formal ? formalHistoryResults(await readGameFormalHistory(scope, step)) : await readGameBenchmarkHistory(scope, step);
       if (!active) return;
       const task = groupBenchmarkTasks(records).find(item => item.id === queueId);
-      if (!task) throw new Error("找不到该测试任务的记录");
+      if (!task) throw new Error("找不到该任务的记录");
       setRuns(task.runs);
-      const metadata = task.runs[0].performance.benchmark;
-      const path = metadata?.referenceSampleSetPath ?? metadata?.sampleSetPath;
-      if (step !== "mosaicScreen" && step !== "mosaicRefine") return;
-      setLoadingReport(true);
-      try {
-        const results = await compareMosaicTaskWithDataset(queueId, task.runs, typeof path === "string" ? path : undefined, step);
-        if (!active) return;
-        const qualityByRun = new Map(results.totals.map(row => [row.runId, row]));
-        setRuns(task.runs.map(run => ({ ...run, quality: qualityByRun.get(run.performance.taskId ?? "") })));
-        setReport(results);
-      } catch (error) {
-        if (active) setQualityError(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (active) setLoadingReport(false);
-      }
+      const target = formal ? formalRecordStep(task.runs[0].performance) : step;
+      if (target !== "mosaicScreen" && target !== "mosaicRefine") return;
+      if (!task.runs.some(run => run.performance.formalRun?.imageDetails || run.performance.benchmark?.imageDetails)) return;
+      const archive = await readMosaicComparisonRuns(queueId, task.runs);
+      if (active) setEntries(archive);
     })().catch(error => {
       if (active) setLoadError(error instanceof Error ? error.message : String(error));
     });
     return () => { active = false; };
-  }, [queueId, scope, step]);
-  if (!runs) return <main className="game-aux-loading">
-    <p role={loadError ? "alert" : "status"}>{loadError || "正在读取测试记录…"}</p>
+  }, [queueId, scope, step, formal]);
+
+  useEffect(() => {
+    if (!stage || !entries) return;
+    let active = true;
+    setLoadingReport(true);
+    setQualityError("");
+    setReport(undefined);
+    void scoreMosaicComparisonRuns(entries, referencePath, stage, !!reference).then(result => {
+      if (active) setReport(result);
+    }).catch(error => {
+      if (active) setQualityError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (active) setLoadingReport(false);
+    });
+    return () => { active = false; };
+  }, [entries, reference, referencePath, stage]);
+
+  const scoredRuns = useMemo(() => {
+    if (!report) return runs;
+    const quality = new Map(report.totals.map(row => [row.runId, row]));
+    return runs?.map(run => ({ ...run, quality: quality.get(run.performance.taskId ?? "") }));
+  }, [runs, report]);
+
+  if (!scoredRuns) return <main className="game-aux-loading">
+    <p role={loadError ? "alert" : "status"}>{loadError || "正在读取运行记录…"}</p>
     <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
   </main>;
-  const projectPath = scope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
+  const projectPath = formal ? formalRecordProject(scope) : scope?.replace(/(?::text|:images)?:benchmark:(?:text|images|mosaic)$/, "");
   const projectName = projectPath?.split(/[\\/]/).filter(Boolean).at(-1);
-  return <RunComparePanel label={setup.label} projectName={projectName} runs={runs} report={report} loading={loadingReport}
-    qualityError={qualityError} itemUnit={setup.itemUnit} onClose={onClose} />;
+  const canCompare = !!stage && scoredRuns.some(run => run.performance.formalRun?.imageDetails || run.performance.benchmark?.imageDetails);
+  return <RunComparePanel label={setup.label} projectName={projectName} runs={scoredRuns} report={report}
+    loading={loadingReport || (canCompare && !entries && !loadError)} qualityError={qualityError || loadError}
+    itemUnit={setup.itemUnit} onClose={onClose} formal={formal}
+    referenceActions={canCompare && isTauri() && <>
+      <button type="button" className="unity-btn" title={referencePath} onClick={() =>
+        void pickRunReference(referencePath).then(path => { if (path) selectReference(path); })
+          .catch(error => showAppNotice(String(error), "error"))}>选择对照集</button>
+      {reference && <button type="button" className="unity-btn" onClick={() => selectReference("")}>恢复原对照集</button>}
+    </>} />;
 }
 
 const RunComparePanel = memo(function RunComparePanel({
-  label, projectName, runs, report, loading, qualityError, itemUnit, onClose,
+  label, projectName, runs, report, loading, qualityError, itemUnit, onClose, formal, referenceActions,
 }: {
   label: string;
+  formal?: boolean;
+  referenceActions?: ReactNode;
   projectName?: string;
   runs: readonly BenchmarkCompareRun[];
   report?: MosaicTaskReport;
@@ -269,7 +317,8 @@ const RunComparePanel = memo(function RunComparePanel({
         <p>{[projectName, headerTime, `共 ${runs.length} 次运行`].filter(Boolean).join(" · ")}</p>
       </div>
       <div className="benchmark-report-actions">
-        {report && <button type="button" className="unity-btn is-secondary" onClick={() => void downloadMosaicTaskReport(report)
+        {referenceActions}
+        {report && <button type="button" className="unity-btn is-secondary" onClick={() => void downloadMosaicTaskReport(report, formal)
           .catch(error => showAppNotice(String(error), "error"))}>下载 Excel</button>}
         <button type="button" className="unity-btn" onClick={onClose}>关闭</button>
       </div>

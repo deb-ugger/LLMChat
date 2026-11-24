@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { isGameBenchmarkWindow } from "./gameBenchmarkWindow";
 import { logRuntimeError } from "./runtimeLog";
+import type { BenchmarkParameter } from "./benchmark/benchmarkParameters";
 import { startSystemPerformanceRun, stopSystemPerformanceRun } from "./systemPerformance";
 
 type Execution = { llmConcurrency?: number; performanceConcurrency?: number; performanceScope: string; performanceStep: string };
@@ -10,7 +11,20 @@ type TokenUsage = Partial<Record<"promptTokens" | "completionTokens" | "totalTok
 type RequestOutcome = "succeeded" | "failed" | "cancelled";
 type Meter = { model: string; concurrency: number; tokens: number; requestMs: number; generationTokens: number; generationMs: number; requests: number; outcomes?: Record<RequestOutcome, number>; usage?: TokenUsage; service?: "local" | "online"; serviceTiming?: ServiceTimingTotals };
 export type GameTimingCategory = "queueMs" | "processingMs" | "saveMs" | "modelRequestMs" | "detectorMs" | "ocrMs" | "workflowMs";
+export type FormalRunSummary = {
+  label: string;
+  total: number;
+  completed?: number;
+  failed?: number;
+  status: "完成" | "失败" | "已暂停";
+  parameters?: readonly BenchmarkParameter[];
+  imageDetails?: boolean;
+  detail?: string;
+};
+
 export type StepPerformance = {
+  formalRun?: FormalRunSummary;
+  reason?: "completed" | "paused" | "cleared";
   scope?: string;
   step?: string;
   elapsedMs: number;
@@ -211,6 +225,14 @@ export function finishGameStep(scope: string, completed = false) {
 export function archivePausedGameStep(scope: string, step: string) {
   const meter = records(scope)[step];
   if (meter) { stopMeter(meter); archiveStep(scope, step, meter, "paused"); commit(scope); }
+}
+
+export function finishFormalGameStep(scope: string, step: string, summary: FormalRunSummary) {
+  const meter = records(scope)[step];
+  if (!meter) return;
+  meter.formalRun = summary;
+  if (summary.status === "完成") completeGameStep(scope, step);
+  else archivePausedGameStep(scope, step);
 }
 
 export function completeGameStep(scope: string, step: string) {

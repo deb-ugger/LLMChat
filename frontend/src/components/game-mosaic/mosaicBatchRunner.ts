@@ -1,3 +1,4 @@
+import { mosaicRunImageOutcome } from "../../benchmark/formalRunHistory";
 import { groupMosaicScenes, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
 import { mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
 import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
@@ -107,9 +108,10 @@ export async function runMosaicBatch(label: string, work: MosaicBatchWork, step:
   };
   let usage: MosaicStepUsage | undefined;
   let state: StepRun["state"] = "error";
+  let failureDetail: string | undefined;
   try {
     if (step) {
-      usage = ports.beginUsage(step.id, !!step.resume,
+      usage = ports.beginUsage(step,
         () => { if (usage) updateStep(usage.snapshot()); });
       usage.refresh();
     }
@@ -123,14 +125,18 @@ export async function runMosaicBatch(label: string, work: MosaicBatchWork, step:
     if (stopped) setProgress("已停止后续任务");
     state = stopped ? "stopped" : completed === false ? "error" : "done";
   } catch (cause) {
-    if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+    if (!controller.signal.aborted) {
+      failureDetail = cause instanceof Error ? cause.message : String(cause);
+      setError(failureDetail);
+    }
     else setProgress("已停止后续任务");
     state = controller.signal.aborted ? "stopped" : "error";
   } finally {
     const ended = performance.now();
-    usage?.finish(state === "done");
-    updateStep({ ...usage?.snapshot(), state, elapsed: ended - started, batchElapsed: ended - batchStarted });
-    ports.finish();
+    try {
+      await usage?.finish(state === "done", state === "error", failureDetail);
+      updateStep({ ...usage?.snapshot(), state, elapsed: ended - started, batchElapsed: ended - batchStarted });
+    } finally { ports.finish(); }
   }
 }
 
@@ -185,6 +191,7 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
             const input = await read(image, signal);
             if (signal.aborted) break;
             const scan = await usage!.measure(modelName, lanes, () => scanner.scan(input));
+            usage?.recordImage?.(image.id, mosaicRunImageOutcome(scan, false));
             const { signature } = scan;
             const boxes = removeContainedMosaicBoxes(scan.boxes.length ? scan.boxes : scan.reviewBoxes || []);
             batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
@@ -193,7 +200,9 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
           } catch (cause) {
             if (signal.aborted) break;
             failures++;
-            batch[image.id] = { ...old, scanned: false, manualStatus: undefined, reason: cause instanceof Error ? cause.message : String(cause) };
+            const reason = cause instanceof Error ? cause.message : String(cause);
+            usage?.recordImage?.(image.id, mosaicRunImageOutcome(undefined, false, reason));
+            batch[image.id] = { ...old, scanned: false, manualStatus: undefined, reason };
           }
           completed++;
           if ((completed - initial) % 64 === 0) checkpoint();
@@ -264,6 +273,7 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
       request: (model, prompt, image, signal, lanes) => request(model, prompt, image, signal, selections ? selections(lanes) : undefined)
         .finally(() => usage?.refresh()),
       onResult: (image, scan) => {
+        usage?.recordImage?.(image.id, mosaicRunImageOutcome(scan, true));
         setRows(previous => {
           const old = resultFor(previous, image);
           if (old.manualBoxes || old.saved || sameReview(old, scan, reviewKey)) return previous;
@@ -273,6 +283,7 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
         if (ownedUsage && !isCached(image)) ownedUsage.recordItems(++processed, failures);
       },
       onError: (image, error) => {
+        usage?.recordImage?.(image.id, mosaicRunImageOutcome(undefined, true, error));
         metrics?.onFailure();
         if (ownedUsage) { failures++; ownedUsage.recordItems(++processed, failures); }
         setRows(previous => {
@@ -289,7 +300,7 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
     return result;
   } finally {
     if (retries.size) setRefineRetries(new Map());
-    ownedUsage?.finish(succeeded);
+    await ownedUsage?.finish(succeeded);
   }
 }
 
@@ -352,6 +363,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
   const failures = new Set<string>();
   const reportFailure = (image: UnityImage, detail: string) => {
     failures.add(image.id);
+    usage?.recordImage?.(image.id, mosaicRunImageOutcome(undefined, false, detail));
     update(image, { redrawError: detail });
     report({ completed, processed: completed - initial + failures.size, failed: failures.size });
   };
@@ -391,6 +403,7 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
         pending.delete(engine);
         if (!pending.size) {
           completed++;
+          usage?.recordImage?.(image.id, { category: "已生成去码候选", boxes, status: "完成" });
           update(image, { redrawError: undefined });
           report({ completed, processed: completed - initial + failures.size, failed: failures.size });
         }
