@@ -117,6 +117,17 @@
   padding-block: var(--space-1);
 }
 .game-mosaic-step-settings input[type="number"] { inline-size: 6ch; }
+input.game-mosaic-threshold[type="number"] {
+  box-sizing: border-box;
+  inline-size: 8ch;
+  min-inline-size: 8ch;
+  appearance: textfield;
+}
+.game-mosaic-threshold::-webkit-inner-spin-button,
+.game-mosaic-threshold::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .game-mosaic-empty { margin: 12px; color: var(--text-muted); }
 .game-mosaic-list { display: flex; flex-direction: column; overflow: hidden; }
 .game-mosaic-workbench .unity-image-body:has(> .unity-image-list-divider) { gap: var(--space-3); }

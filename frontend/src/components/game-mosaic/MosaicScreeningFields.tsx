@@ -31,10 +31,10 @@ export function MosaicScreeningFields({ value, disabled, onChange }: {
     </select></label>
     {current.localModels?.mrcnn && <label>Mask R-CNN 模型路径<input value={current.localModels.mrcnn.modelPath} disabled={disabled}
       onChange={event => onChange({ ...current, localModels: { ...current.localModels, mrcnn: { modelPath: event.target.value } } })} /></label>}
-    <label>分类阈值<input type="number" min={0.05} max={0.95} step={0.01} value={current.presenceThreshold} disabled={disabled}
+    <label>分类阈值<input className="game-mosaic-threshold" type="number" min={0.05} max={0.95} step={0.01} value={current.presenceThreshold} disabled={disabled}
       title="较低的分类阈值会保留更多疑似图片，也会增加待复核数量"
       onChange={event => threshold("presenceThreshold", event.target.valueAsNumber)} /></label>
-    <label>定位阈值<input type="number" min={0.05} max={0.95} step={0.01} value={current.boxThreshold} disabled={disabled}
+    <label>定位阈值<input className="game-mosaic-threshold" type="number" min={0.05} max={0.95} step={0.01} value={current.boxThreshold} disabled={disabled}
       title="较低的定位阈值会接受更多检测框，也可能增加误报"
       onChange={event => threshold("boxThreshold", event.target.valueAsNumber)} /></label>
     <label className="game-mosaic-checkbox"><input type="checkbox" checked={current.localZoom} disabled={disabled}
