@@ -132,7 +132,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       !benchmark && status?.prepared != null
         ? "候选已准备 " + status.prepared.toLocaleString() + " / " + status.total.toLocaleString()
         : refineSelection
-    ) : redrawSelection;
+    ) : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
       groupedParameters headerSummary={headerSummary}
       disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
@@ -243,19 +243,13 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       </>)}
       {stepCard("redraw", "重绘打码区域", <>
         <button type="button" className="unity-btn game-flow-start" disabled={!!redraw.batchReason} title={testTitle}
-          data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" :
-            [
-              "按图片组处理当前列表中已勾选且可重绘的图片。",
-              "每组从已勾选、确认有码的图片中找参考。优先用已采用的结果，其次用已生成的候选。",
-              "没有可用参考时，先无参考重绘本组第一张，再用这张结果重绘组内其余待处理图片。",
-              redraw.skipped,
-            ].filter(Boolean).join("\n"))}
+          data-tooltip={redraw.batchReason ?? (redraw.paused ? "按上一次重绘的图片及配置继续" : "按图片组重绘已勾选图片，规则见下方「重绘规则」")}
           onClick={redraw.start}>
-          {redraw.paused ? "继续重绘 · 剩余 " + redraw.remainingCount : "重绘列表已勾选 · " + redraw.targetCount} 张
+          {redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount : "重绘已勾选 · " + redraw.targetCount}
         </button>
         {!redraw.paused && <button type="button" className="unity-btn is-secondary" disabled={!!redraw.groupReason}
           data-tooltip={redraw.groupReason ?? "重绘当前图片所在的画风组"} onClick={redraw.startGroup}>
-          重绘本组所选 · {redraw.groupTargetCount} 张
+          本组 · {redraw.groupTargetCount}
         </button>}
         {redraw.canClear && <button type="button" className="unity-btn game-flow-clear"
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
@@ -278,6 +272,14 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         </GameFlowParameterGroup>
         {redraw.referenceFlow && <GameFlowParameterGroup kind="generation" title="本组参考重绘">
           <p className="hint">{redraw.referenceFlow.detail}</p>
+          <details className="game-flow-rules"><summary>重绘规则</summary>
+            <ul>
+              <li>按图片组处理当前列表中已勾选且可重绘的图片。</li>
+              <li>每组从已勾选、确认有码的图片中找参考：先用已采用的结果，其次用已生成的候选。</li>
+              <li>没有可用参考时，先无参考重绘本组第一张，再用这张结果处理组内其余图片。</li>
+              {redraw.skipped && <li>{redraw.skipped}</li>}
+            </ul>
+          </details>
           {redraw.referenceFlow.label && <button type="button" className="unity-btn is-secondary"
             disabled={!!redraw.referenceFlow.reason} data-tooltip={redraw.referenceFlow.reason}
             onClick={redraw.referenceFlow.run}>{redraw.referenceFlow.label}</button>}

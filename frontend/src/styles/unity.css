@@ -3875,6 +3875,13 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .game-flow-head > .game-flow-actions{margin-inline-start:auto}
 
 .game-flow-performance{container:game-flow-performance / inline-size}
+.game-flow-performance:not(:first-child){margin-block-start:8px;padding-block-start:8px;border-block-start:1px dashed color-mix(in srgb,var(--border) 70%,transparent)}
+.game-flow-rules{margin-block-start:4px}
+.game-flow-rules>summary{cursor:pointer;font-size:11px;color:var(--text-muted);list-style:none}
+.game-flow-rules>summary::-webkit-details-marker{display:none}
+.game-flow-rules>summary::before{content:"▸ ";font-size:10px}
+.game-flow-rules[open]>summary::before{content:"▾ "}
+.game-flow-rules ul{margin:4px 0 0;padding-inline-start:16px;font-size:11px;line-height:1.65;color:var(--text-muted)}
 .game-flow-performance.is-step-card :is(.game-flow-performance-wide,.game-flow-performance-compact){
   font-size:var(--fs-caption);line-height:1.25;font-variant-numeric:tabular-nums
 }
