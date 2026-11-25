@@ -265,3 +265,13 @@
 .training-run-status details {font-size:var(--fs-caption);}
 .training-results {border-inline-start:0;}
 .training-no-results {margin:0;color:var(--text-muted);font-size:var(--fs-body);}
+
+.training-dataset-create {margin-top:12px;}
+.training-dataset-create .training-dataset-actions {gap:6px;}
+.training-empty-dataset {display:grid;justify-items:start;gap:8px;}
+.training-env-checks {padding:0;margin:0;list-style:none;font-size:var(--fs-caption);}
+.training-env-checks li {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;padding:6px 0;border-bottom:1px solid var(--border);}
+.training-env-checks b {font-weight:500;font-variant-numeric:tabular-nums;}
+.training-env-checks li[data-ok="true"] b {color:var(--success);}
+.training-env-checks li[data-ok="false"] {color:var(--danger);}
+.training-env-checks small {grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;font-size:inherit;}

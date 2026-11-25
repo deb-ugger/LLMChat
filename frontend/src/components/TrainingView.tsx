@@ -6,22 +6,33 @@ import { readableTrainingLog, type TrainingRun } from "../benchmark/trainingResu
 import { loadAnnotatedSampleSet } from "../benchmark/imageSampleSet";
 
 type TrainingEvent = { runId: string; state: string; phase: string; current: number; total: number; message: string; outputDir: string };
-type EnvReport = { ready: boolean; messages: string[] };
+type EnvReport = { ready: boolean; messages: string[]; checks: { name: string; ok: boolean; detail: string }[] };
 const classifiers = [
   { name: "部位分类器", hint: "根据蒙版区域识别部位", trainable: true },
   { name: "初筛 ONNX", hint: "筛选有码图片与候选区域", trainable: false },
   { name: "复筛模型", hint: "复核候选区域与漏检", trainable: false },
 ];
 
-export function TrainingView() {
+export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void }) {
   const datasets = readDatasetCatalog().filter(item => item.workId);
   const comfy = localStorage.getItem("llmchat-comfy-directory") ?? "";
   const [classifier, setClassifier] = useState(0);
   const [dataset, setDataset] = useState(datasets[0]?.workId ?? "");
+  const datasetIds = datasets.map(item => item.workId).join("\n");
+  useEffect(() => {
+    const available = datasetIds.split("\n").filter(Boolean);
+    if (!available.includes(dataset)) setDataset(available[0] ?? "");
+  }, [datasetIds, dataset]);
   const [limit, setLimit] = useState(0);
   const [env, setEnv] = useState<EnvReport>();
   const [checkedComfy, setCheckedComfy] = useState("");
   const [checking, setChecking] = useState(false);
+  const [slowCheck, setSlowCheck] = useState(false);
+  useEffect(() => {
+    if (!checking) { setSlowCheck(false); return; }
+    const timer = window.setTimeout(() => setSlowCheck(true), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [checking]);
   const [starting, setStarting] = useState(false);
   const [event, setEvent] = useState<TrainingEvent>();
   const [progress, setProgress] = useState({ phase: "", current: 0, total: 160 });
@@ -96,22 +107,36 @@ export function TrainingView() {
               {item.title} · {item.count} 张 · {maskCounts[item.path] === undefined ? "读取中" : maskCounts[item.path] < 0 ? "蒙版读取失败" : `${maskCounts[item.path]} 蒙版`}
             </option>)}
           </select></label>
+          {!datasets.length && <div className="training-empty-dataset">
+            <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「复制现有」创建，并至少标注男、女两类。</p>
+            <button type="button" className="unity-btn" onClick={onOpenDatasets}>去数据集页创建</button>
+          </div>}
           <label>验证集策略<span>按场景留出约 25%</span></label>
           <label>样本上限<input type="number" min="0" max="100000" value={limit} onChange={e => setLimit(Number(e.target.value))} /></label>
           <p className="hint">0 表示全部已确认蒙版，需含男、女两类和至少三个场景。</p>
           <label>ComfyUI<span className="training-run-path">{comfy || "请先在设置中指定 ComfyUI 路径"}</span></label>
         </fieldset>
         {env && <p role="status" className="training-env-status" data-ready={env.ready}>
-          {env.ready ? "环境检查通过" : env.messages.join("；")}
+          {env.ready ? env.checks.every(check => check.ok) ? "7 项检查通过" : "6 项检查通过，模型目录检查未通过（仅影响启用）"
+            : `${env.checks.filter(check => !check.ok).length} 项未通过，开始训练已禁用`}
         </p>}
         {error && <p role="alert" className="training-env-status" data-ready="false">{error}</p>}
         <div className="training-dataset-actions">
-          <button type="button" className="unity-btn" disabled={!comfy || checking || running} onClick={() => void probe()}>{checking ? "正在检查…" : "检查环境"}</button>
+          <button type="button" className="unity-btn" disabled={!comfy || checking || running} onClick={() => void probe()}>{checking ? slowCheck ? "仍在检查…" : "正在检查…" : "检查环境"}</button>
           <button type="button" className="unity-btn unity-btn-primary" disabled={!env?.ready || checkedComfy !== comfy || !dataset || running || checking || !Number.isInteger(limit) || limit < 0 || limit > 100000} onClick={() => void start()}>开始训练</button>
           {running && <button type="button" className="unity-btn" disabled={!event?.runId} onClick={() => {
             void invoke("cancel_training", { runId: event?.runId }).catch(error => setError(String(error)));
           }}>中断</button>}
         </div>
+        {env && <ul className="training-env-checks" aria-label="环境检查明细">
+          {env.checks.map(check => <li key={check.name} data-ok={check.ok}>
+            <span>{check.name}</span><b title={check.detail}>{check.ok ? "✓" : "✗"} {check.ok
+              ? ["Python", "torch", "torchvision"].includes(check.name) ? check.detail
+                : check.name === "预训练权重" ? check.detail.split("，")[0] : check.name === "ComfyUI 路径" ? "可用" : "可写"
+              : "未通过"}</b>
+            {!check.ok && <small>{check.detail}</small>}
+          </li>)}
+        </ul>}
       </>}
     </aside>
     <div className="training-run-output">

@@ -14,7 +14,9 @@ pub struct TrainingEvent {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EnvReport { ready: bool, messages: Vec<String> }
+pub struct EnvReport { ready: bool, messages: Vec<String>, checks: Vec<EnvCheck> }
+#[derive(Serialize, Deserialize)]
+struct EnvCheck { name: String, ok: bool, detail: String }
 struct Active { id: String, job: Arc<win::Handle>, cancelled: Arc<AtomicBool> }
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -50,31 +52,90 @@ pub(super) fn work(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> 
     for entry in fs::read_dir(&images).map_err(error)? { managed(&path, &entry.map_err(error)?.path())?; }
     Ok(path)
 }
+fn write_check(directory: &Path) -> Result<(), String> {
+    let check = directory.join(format!(".write-check-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+    fs::create_dir_all(directory)
+        .and_then(|_| fs::write(&check, b"check"))
+        .and_then(|_| fs::remove_file(&check))
+        .map_err(error)
+}
+
 fn probe(comfy: &str, resources: &Path, output: &Path) -> EnvReport {
-    let mut messages = vec![];
     let python = Path::new(comfy).join("python_embeded/python.exe");
-    if comfy.trim().is_empty() { messages.push("请先在设置中指定 ComfyUI 路径".into()); }
-    else if !python.is_file() { messages.push("找不到 python_embeded/python.exe，请检查 ComfyUI 路径".into()); }
-    else {
-        let script = "import torch, torchvision; from PIL import Image; from torchvision.models import MobileNet_V3_Small_Weights; import os; p=os.path.join(os.environ['TORCH_HOME'],'hub','checkpoints',os.path.basename(MobileNet_V3_Small_Weights.DEFAULT.url)); torch.load(p,map_location='cpu',weights_only=True); print('Python / Pillow / torch / torchvision / 预训练权重检查通过')";
-        let mut command = Command::new(python);
+    let path_ok = !comfy.trim().is_empty() && Path::new(comfy).is_dir() && python.is_file();
+    let mut checks = vec![EnvCheck {
+        name: "ComfyUI 路径".into(), ok: path_ok,
+        detail: if path_ok { comfy.into() } else { "找不到 python_embeded/python.exe，请在设置中指定 ComfyUI 路径".into() },
+    }];
+    let script = r#"
+import json, sys
+checks = [{"name":"Python","ok":True,"detail":sys.version.split()[0]}]
+torch_module = None
+for name in ("torch", "torchvision"):
+    try:
+        module = __import__(name)
+        if name == "torch":
+            torch_module = module
+        checks.append({"name":name,"ok":True,"detail":module.__version__})
+    except Exception as error:
+        checks.append({"name":name,"ok":False,"detail":str(error)})
+try:
+    from PIL import Image
+except Exception as error:
+    checks[0]["ok"] = False
+    checks[0]["detail"] += "；Pillow 无法导入：" + str(error)
+try:
+    from pathlib import Path
+    path = Path(sys.argv[1])
+    with path.open("rb") as file:
+        file.read(1)
+    if torch_module is not None:
+        torch_module.load(path, map_location="cpu", weights_only=True)
+    else:
+        raise RuntimeError("torch 无法导入，尚不能校验权重")
+    checks.append({"name":"预训练权重","ok":True,"detail":str(path.stat().st_size) + " 字节，可读"})
+except Exception as error:
+    checks.append({"name":"预训练权重","ok":False,"detail":str(error)})
+print(json.dumps(checks, ensure_ascii=False))
+"#;
+    let dependency_checks = if path_ok {
+        let mut command = Command::new(&python);
         win::hidden(&mut command);
-        match command.args(["-X", "utf8", "-c", script]).env("TORCH_HOME", resources.join("torch")).output() {
-            Ok(result) if result.status.success() => {},
-            Ok(result) => messages.push(format!("训练依赖或预训练权重无法加载：{}", String::from_utf8_lossy(&result.stderr).trim())),
-            Err(e) => messages.push(format!("无法启动训练 Python：{e}")),
+        match command.args(["-X", "utf8", "-c", script])
+            .arg(resources.join("torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth")).output() {
+            Ok(result) if result.status.success() => serde_json::from_slice::<Vec<EnvCheck>>(&result.stdout).map_err(error),
+            Ok(result) => Err(String::from_utf8_lossy(&result.stderr).trim().to_owned()),
+            Err(cause) => Err(cause.to_string()),
+        }
+    } else { Err("未配置可用的 Python，无法检查".into()) };
+    match dependency_checks {
+        Ok(items) => checks.extend(items),
+        Err(detail) => {
+            for name in ["Python", "torch", "torchvision", "预训练权重"] {
+                checks.push(EnvCheck { name: name.into(), ok: false, detail: detail.clone() });
+            }
         }
     }
-    let check = output.join(format!(".write-check-{}-{}", std::process::id(), SEQUENCE.fetch_add(1,Ordering::Relaxed)));
-    if let Err(e) = fs::create_dir_all(output).and_then(|_| fs::write(&check, b"check")).and_then(|_| fs::remove_file(&check)) {
-        messages.push(format!("训练输出目录不可写：{e}"));
-    }
-    EnvReport { ready: messages.is_empty(), messages }
+    let output_check = write_check(output);
+    checks.push(EnvCheck {
+        name: "输出目录".into(), ok: output_check.is_ok(),
+        detail: output_check.map(|_| format!("{}（可写）", output.display())).unwrap_or_else(|cause| cause),
+    });
+    let model_directory = Path::new(comfy).join("ComfyUI/models/mosaic-region-targets");
+    let model_check = if path_ok { write_check(&model_directory) } else { Err("先配置有效的 ComfyUI 路径".into()) };
+    checks.push(EnvCheck {
+        name: "ComfyUI 模型目录".into(), ok: model_check.is_ok(),
+        detail: model_check.map(|_| format!("{}（可写，仅启用模型时需要）", model_directory.display()))
+            .unwrap_or_else(|cause| format!("{cause}（仅影响启用，不影响训练）")),
+    });
+    let messages = checks.iter().filter(|check| !check.ok && check.name != "ComfyUI 模型目录")
+        .map(|check| format!("{}：{}", check.name, check.detail)).collect::<Vec<_>>();
+    EnvReport { ready: messages.is_empty(), messages, checks }
 }
 #[tauri::command]
 pub async fn probe_training_env(app: tauri::AppHandle, comfy_dir: String) -> Result<EnvReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let resources = resource(&app)?;
+        let resources = app.path().resource_dir().map_err(error)?.join("resources/training");
         let output = app.path().app_local_data_dir().map_err(error)?.join("training-runs");
         Ok(probe(&comfy_dir, &resources, &output))
     }).await.map_err(error)?

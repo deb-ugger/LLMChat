@@ -217,12 +217,27 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
     </div>
     {error && <p className="training-dataset-error" role="alert">{error}</p>}
     <div className="training-dataset-placeholder" id={`${id}-training-panel`} role="tabpanel" aria-labelledby={`${id}-training`} hidden={view !== "training"}>
-      <TrainingView />
+      <TrainingView onOpenDatasets={() => setView("datasets")} />
     </div>
     <div className="training-dataset-workspace" id={`${id}-dataset-panel`} role="tabpanel" aria-labelledby={`${id}-datasets`} hidden={view !== "datasets"}>
       <aside className="training-dataset-library" aria-label="数据集列表">
         <div className="training-dataset-column-head">
           <h3>数据集列表</h3><button className="unity-btn" type="button" disabled={!desktop || !!busy} onClick={openDirectory}>打开目录</button>
+        </div>
+        <div className="training-dataset-create" aria-label="新建数据集">
+          <div className="training-dataset-actions">
+            <button type="button" className="unity-btn unity-btn-primary" disabled={!desktop || !!busy}
+              onClick={() => importInput.current?.click()}>从图片集导入</button>
+            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy} onClick={() => {
+              if (dataset) run("正在复制数据集…", () => copyTrainingDataset(dataset, `${dataset.reference.title}（副本）`, writer, new AbortController().signal));
+            }}>复制现有</button>
+          </div>
+          <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
+            aria-label="选择图片集目录" onChange={event => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              if (files.length) run("正在导入图片集…", () => importTrainingDataset(files, files[0].webkitRelativePath.split("/")[0], writer, new AbortController().signal));
+            }} />
         </div>
         <ul className="training-dataset-library-list">
           {catalog.map(reference => <li key={reference.path}><button type="button" className="training-dataset-entry"
@@ -297,22 +312,7 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
           </div>
           {dataset && !editable && <p className="hint">复制到工作副本后即可打标。</p>}
         </section>
-        <section>
-          <h3>新建数据集</h3>
-          <div className="training-dataset-actions">
-            <button type="button" className="unity-btn unity-btn-primary" disabled={!desktop || !!busy}
-              onClick={() => importInput.current?.click()}>从图片集导入</button>
-            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy} onClick={() => {
-              if (dataset) run("正在复制数据集…", () => copyTrainingDataset(dataset, `${dataset.reference.title}（副本）`, writer, new AbortController().signal));
-            }}>复制现有</button>
-          </div>
-          <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
-            aria-label="选择图片集目录" onChange={event => {
-              const files = Array.from(event.currentTarget.files ?? []);
-              event.currentTarget.value = "";
-              if (files.length) run("正在导入图片集…", () => importTrainingDataset(files, files[0].webkitRelativePath.split("/")[0], writer, new AbortController().signal));
-            }} />
-        </section>
+
       </aside>
     </div>
   </section>;
