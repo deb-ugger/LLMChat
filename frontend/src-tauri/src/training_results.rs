@@ -28,6 +28,19 @@ pub fn snapshot(dataset: &Path, output: &Path) -> Result<PathBuf,String> {
         let source=managed(dataset,&dataset.join(name))?;
         fs::copy(source,target.join(name)).map_err(|e|e.to_string())?;
     }
+    let annotation_path = target.join(annotation);
+    let mut labels: Value = serde_json::from_slice(&fs::read(&annotation_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    let mut changed = false;
+    if let Some(samples) = labels["samples"].as_object_mut() {
+        for sample in samples.values_mut() {
+            if let Some(boxes) = sample.get_mut("mosaic").and_then(|mosaic|mosaic.get_mut("boxes")).and_then(Value::as_array_mut) {
+                for item in boxes {
+                    if let Some(coordinates) = item.get("box").filter(|value|value.is_array()).cloned() { *item=coordinates;changed=true; }
+                }
+            }
+        }
+    }
+    if changed { write_metadata(&annotation_path,&labels)?; }
     fs::create_dir(target.join("images")).map_err(|e|e.to_string())?;
     for image in manifest["images"].as_array().ok_or("图片索引无效")? {
         let hash=image["sha256"].as_str().ok_or("图片哈希无效")?;

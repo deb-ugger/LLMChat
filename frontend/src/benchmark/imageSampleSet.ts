@@ -7,14 +7,16 @@ import type { MosaicBox } from "../gameMosaic";
 import type { MosaicBenchmarkStep } from "../gameMosaicBenchmark";
 import type { UnityImage, UnityImageRegion, UnityProject } from "../unityOffline";
 
-type SampleImage = { id: string; path: string; sha256: string; width: number; height: number; projectImageId?: string; projectSourceHash?: string; sourceHash?: string };
+type SampleImage = { id: string; path: string; sha256: string; width: number; height: number; projectImageId?: string; projectSourceHash?: string; sourceHash?: string; scene?: string; sourceDirectory?: string; adopted?: boolean };
 type Presence = "present" | "none" | "uncertain";
 export type PresenceVerdict = Presence | "skip" | "failed";
 type ExpectedText = { box: MosaicBox; text?: string; language?: string; keep?: boolean;
   translations?: Record<string, string>; drafts?: Record<string, string> };
+export type LabeledMosaicBox = MosaicBox & { part?: string };
 export type SampleAnnotation = {
   provenance?: string;
-  mosaic?: MosaicTruth;
+  adopted?: boolean;
+  mosaic?: Omit<MosaicTruth, "boxes"> & { boxes?: LabeledMosaicBox[] };
   text?: { state: Presence; regions?: ExpectedText[]; initialBoxes?: MosaicBox[] };
 };
 export type SampleSetManifest = {
@@ -22,7 +24,7 @@ export type SampleSetManifest = {
   purposes?: ("mosaic" | "text")[];
 };
 export type SampleSetAnnotations = { version: number; samples: Record<string, SampleAnnotation> };
-export type AnnotatedImage = UnityImage & { annotation: SampleAnnotation; projectImageId?: string; projectSourceHash?: string };
+export type AnnotatedImage = UnityImage & { scene?: string; sourceDirectory?: string; adopted?: boolean; annotation: SampleAnnotation; projectImageId?: string; projectSourceHash?: string };
 export type AnnotatedSampleSet = {
   title: string;
   manifest: SampleSetManifest;
@@ -86,6 +88,16 @@ export async function loadAnnotatedSampleSet(path: string, options?: {
     const saved = annotations.samples[item.sha256];
     if (!saved && !options?.includeUnannotated) continue;
     const annotation = saved || {};
+    // Work annotations may attach a human label to a box; consumers keep the
+    // original coordinate-array contract. Frozen v1 arrays remain unchanged.
+    if (Array.isArray(annotation.mosaic?.boxes)) {
+      annotation.mosaic.boxes = annotation.mosaic.boxes.map(value => {
+        if (Array.isArray(value)) return value;
+        const record = value as unknown as { box?: unknown; part?: unknown };
+        if (!Array.isArray(record?.box)) return value;
+        return Object.assign([...record.box] as MosaicBox, { part: typeof record.part === "string" ? record.part : undefined });
+      });
+    }
     const { mosaic, text } = annotation;
     const states = [mosaic?.state, text?.state].filter(state => state !== undefined);
     if (mosaic && (!states.includes(mosaic.state) || (mosaic.boxes !== undefined && !Array.isArray(mosaic.boxes)) ||
@@ -103,7 +115,7 @@ export async function loadAnnotatedSampleSet(path: string, options?: {
     const name = item.path.replaceAll("\\\\", "/").split("/").at(-1) || item.path;
     images.push({ id, sourceHash: item.sha256, projectImageId: item.projectImageId, projectSourceHash: item.projectSourceHash ?? item.sourceHash, name, file: item.path, width: item.width, height: item.height,
       kind: "PNG", sourceFile: item.sha256, container: "", objectId: "", renderedFile: "", renderedHash: "",
-      selected: true, ocrCompleted: false, completed: false, error: "", regions: [], annotation });
+      selected: true, ocrCompleted: false, completed: false, error: "", regions: [], scene: item.scene, sourceDirectory: item.sourceDirectory, adopted: item.adopted ?? annotation.adopted, annotation });
   }
   const project: UnityProject = { version: 1, scanRevision: 5, root: directory, folder: directory, entries: [], fonts: [], warnings: [], hashes: {} };
   return {

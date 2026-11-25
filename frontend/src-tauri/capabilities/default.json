@@ -4,7 +4,7 @@
   "description": "Default capabilities for LLMChat",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:default", "clipboard-manager:allow-write-image",
     "dialog:default",
     "clipboard-manager:allow-read-image",
     "clipboard-manager:allow-read-text",

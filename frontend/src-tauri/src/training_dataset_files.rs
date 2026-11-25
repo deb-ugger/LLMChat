@@ -66,3 +66,15 @@ pub async fn link_training_dataset_images(app: tauri::AppHandle, dataset_work_id
         link_images(Path::new(&source_directory), &directory, &hashes, |count| { let _ = progress.send(count); })
     }).await.map_err(|error| error.to_string())?
 }
+
+#[tauri::command]
+pub fn remove_training_dataset_image(app: tauri::AppHandle, dataset_work_id: String, hash: String) -> Result<(), String> {
+    if !valid_hash(&hash) { return Err("数据集图片编号无效".into()); }
+    let directory = crate::train_dataset::training_dataset_directory(app, dataset_work_id)?;
+    let images = directory.join("images");
+    let path = images.join(format!("{hash}.png"));
+    if !path.exists() { return Ok(()); }
+    crate::train_dataset::managed(&directory, &images)?;
+    crate::train_dataset::managed(&images, &path)?;
+    fs::remove_file(path).map_err(|error| format!("删除工作副本图片失败：{error}"))
+}

@@ -69,6 +69,7 @@ export function rememberDataset(reference: DatasetReference) {
   if (index < 0) items.unshift(reference);
   else items[index] = reference;
   localStorage.setItem(catalogKey, JSON.stringify(items));
+  window.dispatchEvent(new Event("llmchat-training-datasets-changed"));
   return items;
 }
 
@@ -94,7 +95,8 @@ function boxKey(hash: string, box: MosaicBox) {
 }
 
 export function partFor(dataset: TrainingDataset, hash: string, box: MosaicBox) {
-  return dataset.parts[boxKey(hash, box)];
+  const part = dataset.parts[boxKey(hash, box)] ?? (box as MosaicBox & { part?: string }).part;
+  return part && Object.hasOwn(datasetParts, part) ? part as DatasetPart : undefined;
 }
 
 export function csvRows(text: string) {
@@ -145,6 +147,9 @@ export async function openTrainingDataset(path: string, workId?: string): Promis
   const ownId = workId && path === `${await workingPath(workId)}/${manifestFile}` ? workId : undefined;
   const data = await loadAnnotatedSampleSet(path, { includeUnannotated: true });
   const parts = await openParts(path);
+  for (const image of data.images) for (const box of image.annotation.mosaic?.boxes ?? []) {
+    if (box.part && Object.hasOwn(datasetParts, box.part) && !parts[boxKey(image.sourceHash,box)]) parts[boxKey(image.sourceHash,box)] = box.part as DatasetPart;
+  }
   return { data, parts, reference: referenceFor(path, data, ownId) };
 }
 
@@ -182,7 +187,7 @@ async function createWorkDataset(title: string, manifest: DatasetManifest, annot
   await copyImages(write, id);
   const savedManifest = { ...manifest, imageStorage: manifest.imageStorage ?? "copied", title, annotationsFile, images: manifest.images.map(image => ({ ...image, id: image.sha256 })) };
   const manifestBytes = jsonBytes(savedManifest);
-  const annotationBytes = jsonBytes(annotations);
+  const annotationBytes = jsonBytes(storedDatasetAnnotations(annotations.samples));
   const data = await loadAnnotatedSampleSet(path, { includeUnannotated: true, readBytes: file => {
     if (file === path) return Promise.resolve(manifestBytes);
     if (file === `${directory}/${annotationsFile}`) return Promise.resolve(annotationBytes);
@@ -316,7 +321,7 @@ export async function saveDatasetLabels(dataset: TrainingDataset, samples: Sampl
   const nextCsv = reviewContents(path, images, validParts);
   if (nextCsv !== previousCsv) await writer({ id: workId, file: reviewFile, bytes: encode(nextCsv) });
   try {
-    if (samples !== dataset.data.annotations.samples) await writer({ id: workId, file: annotationsFile, bytes: jsonBytes(annotations) });
+    if (samples !== dataset.data.annotations.samples) await writer({ id: workId, file: annotationsFile, bytes: jsonBytes(storedDatasetAnnotations(samples)) });
   } catch (error) {
     if (nextCsv !== previousCsv) await writer({ id: workId, file: reviewFile, bytes: encode(previousCsv) });
     throw error;
@@ -326,9 +331,92 @@ export async function saveDatasetLabels(dataset: TrainingDataset, samples: Sampl
 }
 
 export function setDatasetPart(dataset: TrainingDataset, hash: string, box: MosaicBox, part: DatasetPart | "", writer: DatasetWriter) {
-  const parts = { ...dataset.parts };
   const key = boxKey(hash, box);
-  if (part) parts[key] = part;
-  else delete parts[key];
-  return saveDatasetLabels(dataset, dataset.data.annotations.samples, parts, writer);
+  const image = dataset.data.images.find(image => image.sourceHash === hash);
+  if (!image) throw new Error("图片不在当前数据集中");
+  return saveDatasetMasks(dataset, hash, (image.annotation.mosaic?.boxes ?? []).map(value =>
+    ({ box: value, part: boxKey(hash, value) === key ? part : partFor(dataset, hash, value) ?? "" })), writer);
+}
+
+export function storedDatasetAnnotations(samples: SampleSetAnnotations["samples"]) {
+  return { version: 1, samples: Object.fromEntries(Object.entries(samples).map(([hash, annotation]) => [hash,
+    !annotation.mosaic?.boxes ? annotation : { ...annotation, mosaic: { ...annotation.mosaic,
+      boxes: annotation.mosaic.boxes.map(box => box.part === undefined ? box : { box: [...box], part: box.part }) } },
+  ])) };
+}
+
+export function saveDatasetMasks(dataset: TrainingDataset, hash: string,
+  masks: { box: MosaicBox; part: DatasetPart | "" }[], writer: DatasetWriter) {
+  const image = dataset.data.images.find(image => image.sourceHash === hash);
+  if (!image) throw new Error("图片不在当前数据集中");
+  for (const { box } of masks) {
+    if (!box.every(Number.isInteger) || box[0] < 0 || box[1] < 0 || box[2] > image.width || box[3] > image.height || box[2] <= box[0] || box[3] <= box[1]) {
+      throw new Error("蒙版坐标超出图片范围");
+    }
+  }
+  if (new Set(masks.map(({box}) => JSON.stringify(box))).size !== masks.length) throw new Error("存在坐标相同的蒙版，请调整或删除重复框");
+  const parts = Object.fromEntries(Object.entries(dataset.parts).filter(([key]) => !key.startsWith(hash + ":")));
+  const boxes = masks.map(({box,part}) => {
+    const value = Object.assign([...box] as MosaicBox, { part: part || "unknown" });
+    if (part) parts[boxKey(hash, value)] = part;
+    return value;
+  });
+  const samples = { ...dataset.data.annotations.samples, [hash]: { ...image.annotation,
+    mosaic: { ...image.annotation.mosaic, state: "present" as const, boxes, boxCoverage: "partial" as const } } };
+  return saveDatasetLabels(dataset, samples, parts, writer);
+}
+
+export type DatasetFilters = {
+  widthMin: string; widthMax: string; heightMin: string; heightMax: string;
+  source: string; scene: string; masks: "all" | "yes" | "no"; adopted: "all" | "yes" | "no";
+};
+export const emptyDatasetFilters: DatasetFilters = { widthMin: "", widthMax: "", heightMin: "", heightMax: "", source: "", scene: "", masks: "all", adopted: "all" };
+export function matchesDatasetFilters(image: AnnotatedImage, filters: DatasetFilters) {
+  const ranges = [[image.width, filters.widthMin, filters.widthMax], [image.height, filters.heightMin, filters.heightMax]] as const;
+  if (ranges.some(([value,min,max]) => (min !== "" && value < Number(min)) || (max !== "" && value > Number(max)))) return false;
+  if (filters.source && !(image.sourceDirectory || image.file).replaceAll("\\","/").toLowerCase().startsWith(filters.source.replaceAll("\\","/").toLowerCase())) return false;
+  if (filters.scene && image.scene !== filters.scene) return false;
+  const masks = (image.annotation.mosaic?.boxes?.length ?? 0) + (image.annotation.text?.regions?.length ?? image.annotation.text?.initialBoxes?.length ?? 0);
+  if (filters.masks !== "all" && (filters.masks === "yes") !== (masks > 0)) return false;
+  if (filters.adopted !== "all" && image.adopted !== (filters.adopted === "yes")) return false;
+  return true;
+}
+
+export function datasetPartCounts(dataset: TrainingDataset) {
+  let images = 0, male = 0, female = 0, masks = 0;
+  for (const image of dataset.data.images) {
+    let marked = false;
+    for (const box of image.annotation.mosaic?.boxes ?? []) {
+      masks++;
+      const part = partFor(dataset, image.sourceHash, box);
+      if (part) marked = true;
+      if (part === "male_external") male++;
+      if (part === "female_external") female++;
+    }
+    if (marked) images++;
+  }
+  return { images, male, female, masks };
+}
+
+export async function removeDatasetImage(dataset: TrainingDataset, hash: string, writer: DatasetWriter) {
+  const id = dataset.reference.workId;
+  if (!id || dataset.reference.path !== (await workingPath(id)) + "/" + manifestFile) throw new Error("只能删除工作副本中的图片");
+  const oldManifest = dataset.data.manifest;
+  const manifest = { ...oldManifest, images: oldManifest.images.filter(image => image.sha256 !== hash) };
+  const samples = { ...dataset.data.annotations.samples }; delete samples[hash];
+  const parts = Object.fromEntries(Object.entries(dataset.parts).filter(([key]) => !key.startsWith(hash + ":")));
+  const images = dataset.data.images.filter(image => image.sourceHash !== hash);
+  const replacements = [[manifestFile,jsonBytes(manifest),jsonBytes(oldManifest)],
+    [annotationsFile,jsonBytes(storedDatasetAnnotations(samples)),jsonBytes(storedDatasetAnnotations(dataset.data.annotations.samples))],
+    [reviewFile,encode(reviewContents(dataset.reference.path, images, parts)),encode(reviewContents(dataset.reference.path,dataset.data.images,dataset.parts))]] as const;
+  const written: (typeof replacements)[number][] = [];
+  try {
+    for (const replacement of replacements) { await writer({ id, file: replacement[0], bytes: replacement[1] }); written.push(replacement); }
+    await invoke("remove_training_dataset_image", { datasetWorkId: id, hash });
+  } catch (error) {
+    for (const [file,,bytes] of written.reverse()) await writer({ id, file, bytes });
+    throw error;
+  }
+  const data = { ...dataset.data, manifest, images, annotations: { version: 1, samples } };
+  return { data, parts, reference: referenceFor(dataset.reference.path, data, id) };
 }

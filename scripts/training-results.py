@@ -73,7 +73,9 @@ def correct(work, sample, box, label):
     manifest = json.loads((work / 'manifest.json').read_bytes())
     truth = json.loads((work / manifest['annotationsFile']).read_bytes())
     annotation = truth['samples'].get(sample, {}).get('mosaic', {})
-    if annotation.get('state') != 'present' or box not in annotation.get('boxes', []):
+    matched_box = next((value for value in annotation.get('boxes', [])
+                        if (value.get('box') if isinstance(value, dict) else value) == box), None)
+    if annotation.get('state') != 'present' or matched_box is None:
         raise ValueError('工作版本的蒙版已变化，请先在数据集页核对')
     path = work / 'review.csv'
     with path.open(encoding='utf-8-sig', newline='') as file:
@@ -87,7 +89,16 @@ def correct(work, sample, box, label):
     writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n')
     writer.writeheader()
     writer.writerows(rows)
+    previous_review = path.read_bytes()
     atomic(path, stream.getvalue().encode('utf-8'))
+    if isinstance(matched_box, dict):
+        matched_box['part'] = label
+        try:
+            atomic(work / manifest['annotationsFile'],
+                   (json.dumps(truth, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        except Exception:
+            atomic(path, previous_review)
+            raise
     return {'saved': True}
 
 
