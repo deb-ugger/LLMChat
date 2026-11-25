@@ -162,7 +162,7 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
               {item.title} · {item.count} 张 · {maskCounts[item.path] ? String(maskCounts[item.path]?.masks) + " 蒙版" : "读取中或读取失败"}
             </option>)}
           </select></label>
-          {selectedCounts && <p className="hint" aria-label="部位标注统计">已标注 {selectedCounts.images} 张 · 男 {selectedCounts.male} / 女 {selectedCounts.female}</p>}
+          {selectedCounts && <p className="hint" aria-label="部位标注统计">已标注 {selectedCounts.images} 张（{selectedCounts.male + selectedCounts.female + selectedCounts.other} 个已确认框：男 {selectedCounts.male} / 女 {selectedCounts.female} / 其他 {selectedCounts.other}）</p>}
           {!!datasets.length && selectedCounts && !hasBothClasses && <p className="training-dataset-error">至少需要男女两类才能训练</p>}
           {!datasets.length && <div className="training-empty-dataset">
             <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「复制现有」创建，并至少标注男、女两类。</p>
@@ -199,9 +199,9 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
         </>}
         {error && <p role="alert" className="training-env-status" data-ready="false">操作失败，请查看右侧日志或明细</p>}
         <div className="training-dataset-actions">
-          <button type="button" className="unity-btn" data-tooltip="检查训练用的 Python、torch/torchvision、预训练权重和输出目录；不通过时开始训练会被禁用" disabled={checking || running || installing} onClick={() => void probe()}>{checking ? slowCheck ? "仍在检查…" : "正在检查…" : "检查环境"}</button>
+          <button type="button" className="unity-btn" data-tooltip-position="anchor" data-tooltip="检查训练用的 Python、torch/torchvision、预训练权重和输出目录；不通过时开始训练会被禁用" disabled={checking || running || installing} onClick={() => void probe()}>{checking ? slowCheck ? "仍在检查…" : "正在检查…" : "检查环境"}</button>
           <button type="button" className="unity-btn unity-btn-primary" disabled={!hasBothClasses || !env?.ready || installing || checkedPython !== pythonPath || checkedDirectory !== environmentDir || checkedComfy !== comfy || !dataset || running || checking || !Number.isInteger(limit) || limit < 0 || limit > 100000} onClick={() => void start()}>开始训练</button>
-          {env?.status === "needs_install" && !installing && <button type="button" className="unity-btn" data-tooltip="从国内镜像下载 CPU 训练依赖，准备约 1.4 GB 的训练环境；可中断。" disabled={running || checking} onClick={() => void prepare()}>准备训练环境</button>}
+          {env?.status === "needs_install" && !installing && <button type="button" className="unity-btn" data-tooltip-position="anchor" data-tooltip="从国内镜像下载 CPU 训练依赖，准备约 1.4 GB 的训练环境；可中断。" disabled={running || checking} onClick={() => void prepare()}>准备训练环境</button>}
           {installing && <button type="button" className="unity-btn" onClick={() => void invoke("cancel_training_environment").catch(error => setError(String(error)))}>中断准备</button>}
           {running && <button type="button" className="unity-btn" disabled={!event?.runId} onClick={() => {
             void invoke("cancel_training", { runId: event?.runId }).catch(error => setError(String(error)));

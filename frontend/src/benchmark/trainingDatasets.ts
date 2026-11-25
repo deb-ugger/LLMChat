@@ -383,7 +383,10 @@ export function matchesDatasetFilters(image: AnnotatedImage, filters: DatasetFil
 }
 
 export function datasetPartCounts(dataset: TrainingDataset) {
-  let images = 0, male = 0, female = 0, masks = 0;
+  // images counts distinct images with any confirmed part; category counts
+  // count boxes (one image may contain several). Confirmed = male+female+other;
+  // unknown boxes contribute only to masks, not images or confirmed categories.
+  let images = 0, male = 0, female = 0, other = 0, masks = 0;
   for (const image of dataset.data.images) {
     let marked = false;
     for (const box of image.annotation.mosaic?.boxes ?? []) {
@@ -392,10 +395,11 @@ export function datasetPartCounts(dataset: TrainingDataset) {
       if (part) marked = true;
       if (part === "male_external") male++;
       if (part === "female_external") female++;
+      if (part === "other") other++;
     }
     if (marked) images++;
   }
-  return { images, male, female, masks };
+  return { images, male, female, other, masks };
 }
 
 export async function removeDatasetImage(dataset: TrainingDataset, hash: string, writer: DatasetWriter) {
