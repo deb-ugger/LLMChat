@@ -440,19 +440,24 @@ input.game-mosaic-threshold[type="number"] {
 .game-mosaic-failed-filter { color: var(--danger); }
 .game-mosaic-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
 
-.game-mosaic-original-frame > .unity-image-preview-surface { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-.game-mosaic-original-viewport {
+:is(.game-mosaic-original-frame, .game-mosaic-result-frame) > .unity-image-preview-surface {
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.game-mosaic-preview-viewport {
   position: relative;
   display: grid;
   place-items: center;
   inline-size: 100%;
   block-size: 100%;
   overflow: clip;
-  container: mosaic-original / size;
+  container-type: size;
+  --mosaic-image-gutter: 12px;
+}
+.game-mosaic-original-viewport {
+  container-name: mosaic-original;
   --mosaic-tool-size: 34px;
   --mosaic-tool-padding: var(--space-1);
   --mosaic-tool-offset: var(--space-2);
-  --mosaic-image-gutter: 12px;
 }
 .game-mosaic-image-area {
   position: absolute;
@@ -462,10 +467,13 @@ input.game-mosaic-threshold[type="number"] {
   place-items: center;
   cursor: grab;
   touch-action: none;
+  --mosaic-image-inset: 0px;
+}
+.game-mosaic-original-viewport .game-mosaic-image-area {
   --mosaic-image-inset: calc(var(--mosaic-tool-size) + 2 * (var(--mosaic-tool-padding) + var(--mosaic-tool-offset) + 1px));
 }
-.game-mosaic-original-viewport .game-mosaic-stage {
-  inline-size: min(var(--mosaic-original-width),
+.game-mosaic-preview-viewport .game-mosaic-stage {
+  inline-size: min(var(--mosaic-image-width, 100cqw),
     calc(100cqw - 2 * max(var(--mosaic-image-gutter), var(--mosaic-image-inset))),
     calc(max(0px, 100cqh - 2 * var(--mosaic-image-gutter)) * var(--mosaic-image-aspect)));
 }
@@ -473,7 +481,7 @@ input.game-mosaic-threshold[type="number"] {
 .game-mosaic-image-area.is-panning,
 .game-mosaic-image-area.is-panning :is(img, svg, rect, line) { cursor: grabbing; }
 @container mosaic-original (width < 400px) {
-  .game-mosaic-image-area { --mosaic-image-inset: 0px; }
+  .game-mosaic-original-viewport .game-mosaic-image-area { --mosaic-image-inset: 0px; }
 }
 .game-mosaic-image-tools {
   position: absolute;

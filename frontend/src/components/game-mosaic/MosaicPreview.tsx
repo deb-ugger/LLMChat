@@ -7,8 +7,8 @@ import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
 
 const redrawModels = Object.keys(mosaicModelLabels) as MosaicModel[];
 
-function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
-  width: number; editing: boolean; onBackground: () => void; children: ReactNode;
+function MosaicImageCanvas({ width, editing = false, onBackground, children }: {
+  width?: number; editing?: boolean; onBackground?: () => void; children: ReactNode;
 }) {
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const [panReady, setPanReady] = useState(false);
@@ -84,7 +84,7 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
   };
 
   return <div ref={surface} className={"game-mosaic-image-area" + (panning ? " is-panning" : panReady ? " is-pan-ready" : "")}
-    style={{ "--mosaic-original-width": width + "px" } as CSSProperties}
+    style={width === undefined ? undefined : { "--mosaic-image-width": width + "px" } as CSSProperties}
     onPointerDownCapture={event => {
       if (!event.isPrimary || pan.current) return;
       const target = event.target as Element;
@@ -110,7 +110,7 @@ function MosaicOriginalCanvas({ width, editing, onBackground, children }: {
       const start = pan.current;
       if (start?.pointer !== event.pointerId) return;
       endPan(event.pointerId);
-      if (start.clearOnClick && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 4) onBackground();
+      if (start.clearOnClick && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 4) onBackground?.();
     }}
     onPointerCancel={event => endPan(event.pointerId)}
     onLostPointerCapture={event => endPan(event.pointerId)}>
@@ -138,6 +138,14 @@ function MaskResizeControls({ box }: { box: MosaicBox }) {
   </g>;
 }
 
+function MosaicResultImage({ src, alt }: { src: string; alt: string }) {
+  return <div className="game-mosaic-preview-viewport">
+    <MosaicImageCanvas>
+      <img src={src} alt={alt} draggable={false} />
+    </MosaicImageCanvas>
+  </div>;
+}
+
 function MosaicResultVersion({ version, imageName, disabledReason, replacing, asReference, onApprove, onOpen }: {
   version: ResultVersion; imageName: string;
   disabledReason?: string; replacing: boolean; asReference: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
@@ -146,11 +154,9 @@ function MosaicResultVersion({ version, imageName, disabledReason, replacing, as
   const modelName = mosaicModelLabels[version.model];
   const adoptLabel = asReference ? "采用为本组参考" : replacing ? "替换已采用图" : "采用此版";
   return <div className="game-mosaic-result-version">
-    <GameImagePreviewFrame keyboardPane aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined}
+    <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined}
       fallback={<p className="hint">正在读取图片…</p>}>
-      {url && <div className="unity-image-stage">
-        <img src={url} alt={`${imageName} · ${modelName} 去码结果`} draggable={false} />
-      </div>}
+      {url && <MosaicResultImage src={url} alt={`${imageName} · ${modelName} 去码结果`} />}
     </GameImagePreviewFrame>
     <button type="button" className="unity-btn" aria-label={adoptLabel + " · " + modelName}
       disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
@@ -329,8 +335,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             if (!(event.target as Element).closest(".game-mosaic-image-area, button")) deselectMask();
           }}
           onKeyDown={onImageToolKey} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
-          <div className="game-mosaic-original-viewport">
-            {originalUrl ? <MosaicOriginalCanvas key={active.id} width={active.width} editing={editing}
+          <div className="game-mosaic-preview-viewport game-mosaic-original-viewport">
+            {originalUrl ? <MosaicImageCanvas key={active.id} width={active.width} editing={editing}
               onBackground={deselectMask}>
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
               <svg viewBox={`0 0 ${active.width} ${active.height}`} className={editing ? "is-editing" : undefined}
@@ -354,17 +360,15 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
                   className={tool === "select" ? "game-mosaic-mask-selection" : "game-mosaic-mask"} vectorEffect="non-scaling-stroke" />}
                 {canSelectMask && resizeTarget && <MaskResizeControls box={transformed?.get(resizeTarget) ?? resizeTarget} />}
               </svg>
-            </MosaicOriginalCanvas> : original?.error
+            </MosaicImageCanvas> : original?.error
               ? <p className="game-mosaic-error" role="alert">{original.error}</p>
               : <p className="hint">正在读取图片…</p>}
             {imageToolbar}
           </div>
         </GameImagePreviewFrame>
-        {showSaved ? <GameImagePreviewFrame keyboardPane aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
+        {showSaved ? <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
           ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
-          {savedUrl && <div className="unity-image-stage">
-            <img src={savedUrl} alt={`${active.name} 已采用去码图`} draggable={false} />
-          </div>}
+          {savedUrl && <MosaicResultImage key={active.id} src={savedUrl} alt={`${active.name} 已采用去码图`} />}
         </GameImagePreviewFrame> : preferredVersion ? (
           <MosaicResultVersion key={preferredVersion.id} version={preferredVersion}
             imageName={active.name} replacing={activeSaved} asReference={preferredVersion.blob === referenceCandidate}
