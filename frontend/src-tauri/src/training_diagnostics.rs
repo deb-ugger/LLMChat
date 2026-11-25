@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{fmt, fs, sync::atomic::{AtomicU64, Ordering}, time::{SystemTime, UNIX_EPOCH}};
+use std::{cell::RefCell, fmt, fs, path::PathBuf, sync::atomic::{AtomicU64, Ordering}, time::{SystemTime, UNIX_EPOCH}};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,22 +10,28 @@ pub struct TrainingFailure {
 }
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+thread_local! { static DIRECTORY: RefCell<Option<PathBuf>> = const { RefCell::new(None) }; }
+
+pub struct DiagnosticScope(Option<PathBuf>);
+impl Drop for DiagnosticScope {
+    fn drop(&mut self) { DIRECTORY.with(|directory| *directory.borrow_mut()=self.0.take()); }
+}
+pub fn scope(environment_dir:Option<&str>)->DiagnosticScope{
+    let folder=environment_dir.filter(|value|!value.is_empty()).map(PathBuf::from).filter(|path|path.is_absolute())
+        .and_then(|path|path.file_name().map(|name|path.with_file_name(format!("{}-logs",name.to_string_lossy()))));
+    DiagnosticScope(DIRECTORY.with(|directory|directory.replace(folder)))
+}
 
 pub fn record(message: impl Into<String>, raw_output: impl Into<String>) -> TrainingFailure {
     let raw_output = raw_output.into();
-    let directory = crate::training_storage::software_directory().unwrap_or_else(|_|std::env::temp_dir()).join("training-logs");
+    let directory = DIRECTORY.with(|directory|directory.borrow().clone()).or_else(||crate::training_storage::software_directory().ok().map(|path|path.join("training-logs")));
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     let name = format!("{}-{stamp}-{}.log", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
-    let mut path = directory.join(&name);
-    let mut saved = fs::create_dir_all(&directory).and_then(|_| fs::write(&path, &raw_output));
-    if saved.is_err() {
-        let temporary = std::env::temp_dir().join("llmchat-training-logs");
-        path = temporary.join(name);
-        saved = fs::create_dir_all(&temporary).and_then(|_| fs::write(&path, &raw_output));
-    }
+    let path = directory.map(|directory|directory.join(name));
+    let saved=path.as_ref().is_some_and(|path|fs::create_dir_all(path.parent().unwrap()).and_then(|_|fs::write(path,&raw_output)).is_ok());
     TrainingFailure {
         message: message.into(), raw_output,
-        log_path: if saved.is_ok() { path.to_string_lossy().into_owned() } else { String::new() },
+        log_path: if saved { path.unwrap().to_string_lossy().into_owned() } else { String::new() },
     }
 }
 

@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { sha256Hex } from "../fileFingerprint";
 import type { MosaicBox } from "../gameMosaic";
 import { readFileBytes } from "../localDocFile";
@@ -24,7 +23,6 @@ export type TrainingDataset = { reference: DatasetReference; data: AnnotatedSamp
 export type TrainingDatasetWrite = { id: string; file: string; bytes: ArrayBuffer };
 export type DatasetWriter = (write: TrainingDatasetWrite) => Promise<unknown>;
 
-const workingDirectory = "training-datasets";
 const annotationsFile = "annotations.work.json";
 const catalogKey = "llmchat-training-datasets";
 const manifestFile = "manifest.json";
@@ -41,7 +39,7 @@ const fileIn = (path: string, name: string) => canonicalPath(path).replace(/[^/]
 
 async function workingPath(id: string) {
   if (!uuid.test(id)) throw new Error("工作副本标识无效");
-  return canonicalPath(await join(await appLocalDataDir(), workingDirectory, id));
+  return canonicalPath(await invoke<string>("training_dataset_directory", { datasetWorkId: id }));
 }
 
 // Only the main benchmark host calls the existing desktop write command.

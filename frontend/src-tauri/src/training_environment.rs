@@ -77,7 +77,9 @@ fn execute(command: &mut Command, events: &Channel<InstallEvent>, cancelled: &At
     fs::create_dir_all(temporary).map_err(|cause|record(stage.failure(),cause.to_string()))?;
     let job = Arc::new(win::job().map_err(|cause|record(stage.failure(),cause))?);
     win::suspended(command);
-    command.env("TEMP",temporary).env("TMP",temporary).env("PIP_CACHE_DIR",temporary.join("pip-cache"));
+    command.env("TEMP",temporary).env("TMP",temporary)
+        .env("PIP_CACHE_DIR",temporary.parent().ok_or("临时目录缺少训练环境父目录")?.join(".pip-cache"))
+        .env("PIP_DISABLE_PIP_VERSION_CHECK","1").env("PYTHONDONTWRITEBYTECODE","1");
     let mut child = command.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|cause|record(stage.failure(),cause.to_string()))?;
     if let Err(error) = win::assign(&job, &child) { let _=child.kill();let _=child.wait();return Err(record(stage.failure(),error)); }
@@ -181,6 +183,7 @@ for package, version in [('torch','2.6.0+cpu'),('torchvision','0.21.0+cpu')]:
 
 #[tauri::command]
 pub async fn ensure_training_venv(app: tauri::AppHandle, python_path: Option<String>, environment_dir: Option<String>, events: Channel<InstallEvent>) -> Result<(), String> {
+    let _diagnostics=crate::training_diagnostics::scope(environment_dir.as_deref());
     let exclusive=win::exclusive()?;
     let local=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
     let base=training_python::discover(python_path.as_deref())?;
@@ -193,8 +196,11 @@ pub async fn ensure_training_venv(app: tauri::AppHandle, python_path: Option<Str
     let job=Arc::new(win::job()?);
     *INSTALLING.lock().map_err(|e|e.to_string())?=Some(Installation{job,cancelled:cancelled.clone()});
     std::thread::spawn(move||{
+        let _diagnostics=crate::training_diagnostics::scope(Some(&storage.directory.to_string_lossy()));
+        let prepared=std::cell::Cell::new(false);
         let result=(||{
             let root=rebuild(&storage.directory).map_err(|raw|record("无法准备训练目录，请确认目录权限与剩余空间后重试",raw))?;
+            prepared.set(true);
             let _=events.send(InstallEvent{state:"installing".into(),message:format!("使用 {} 创建独立训练环境",base.path),diagnostic:None});
             execute(Command::new(&base.path).args(["-m","venv"]).arg(&root),&events,&cancelled,Stage::Venv,&storage.temp_directory)?;
             let python=root.join("Scripts/python.exe");
@@ -216,7 +222,7 @@ pub async fn ensure_training_venv(app: tauri::AppHandle, python_path: Option<Str
             execute(Command::new(&python).args(["-X","utf8","-c",DOWNLOAD_WHEELS]).arg(&cache),&events,&cancelled,Stage::Download,&storage.temp_directory)?;
             let tag=format!("cp{}",base.version.split('.').take(2).collect::<String>());
             execute(Command::new(&python).args(["-m","pip","install","--disable-pip-version-check","--progress-bar","off","-r"])
-                .arg(requirements)
+                .arg(requirements).arg("--cache-dir").arg(&storage.pip_cache_directory)
                 .arg(cache.join(format!("torch-2.6.0+cpu-{tag}-{tag}-win_amd64.whl")))
                 .arg(cache.join(format!("torchvision-0.21.0+cpu-{tag}-{tag}-win_amd64.whl")))
                 .env("PIP_CONFIG_FILE", "NUL").env_remove("PIP_INDEX_URL").env_remove("PIP_EXTRA_INDEX_URL")
@@ -226,6 +232,21 @@ pub async fn ensure_training_venv(app: tauri::AppHandle, python_path: Option<Str
             crate::training_results::write_metadata(&root.join("ready.json"),&serde_json::to_value(checked).map_err(|e|e.to_string())?)?;
             Ok::<(),TrainingFailure>(())
         })();
+        // The process tree has exited before removing its temporary files.
+        let cleanup=(||{
+            if prepared.get() && storage.temp_directory.exists(){
+                managed(&storage.directory,&storage.temp_directory)?;
+                fs::remove_dir_all(&storage.temp_directory).map_err(|error|error.to_string())?;
+            }
+            Ok::<(),String>(())
+        })();
+        let result=match (result,cleanup) {
+            (Ok(()),Ok(()))=>Ok(()),
+            (Err(failure),Ok(()))=>Err(failure),
+            (original,Err(raw))=>Err(record("依赖准备结束，但临时目录清理失败，请关闭使用该环境的程序后重试",
+                format!("{}\n{raw}",original.err().map(|failure|failure.raw_output).unwrap_or_default()))),
+        };
+        if prepared.get() && result.is_err(){let _=fs::remove_file(storage.directory.join("ready.json"));}
         *INSTALLING.lock().unwrap()=None;
         drop(exclusive);
         let state=if cancelled.load(Ordering::SeqCst){"cancelled"}else if result.is_ok(){"ready"}else{"failed"};

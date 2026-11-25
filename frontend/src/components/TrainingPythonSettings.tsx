@@ -31,11 +31,17 @@ export function TrainingPythonSettings() {
         setDirectory("");void invoke<TrainingStorage>("training_storage_info", { pythonPath: path, environmentDir: "" }).then(setStorage).catch(error => setError(String(error)));
       }}>使用软件目录</button>
       <button type="button" className="unity-btn" onClick={() => void refresh()}>刷新磁盘空间</button>
+      <button type="button" className="unity-btn" onClick={() => {
+        void invoke("clear_training_pip_cache", { environmentDir: directory }).then(() => showAppNotice("pip 缓存已清理", "success")).catch(error => setError(String(error)));
+      }}>清理 pip 缓存</button>
       <button className="settings-panel-save" type="submit">保存训练设置</button>
       </div>
     </form>
     <p className="hint">Python 留空自动查找 3.10–3.12。环境目录默认跟随软件，不可写或空间不足时请手动选择；至少需要约 1.9 GB 空间。</p>
-    {storage && <><p className="hint">{storage.reason}</p><ul>{storage.drives.map(drive => <li key={drive.root}>{drive.root} 剩余 {(drive.freeBytes / 1e9).toFixed(2)} GB</li>)}</ul>
+    {storage && <><p className="hint">{storage.reason}</p>
+      <p className="training-run-path">pip 缓存 {storage.pipCacheDirectory}</p>
+      <p className="training-run-path">临时目录 {storage.tempDirectory}，准备结束后自动清理</p>
+      <ul>{storage.drives.map(drive => <li key={drive.root}>{drive.root} 剩余 {(drive.freeBytes / 1e9).toFixed(2)} GB</li>)}</ul>
       {storage.issue && <p role="alert">{storage.issue}</p>}
       {storage.legacyDirectory && <p className="hint">检测到旧训练环境 {storage.legacyDirectory}，约 {(storage.legacyBytes / 1e9).toFixed(2)} GB；在新目录重建后可删除旧环境。</p>}</>}
     {error && <p role="alert">{error}</p>}
@@ -43,7 +49,7 @@ export function TrainingPythonSettings() {
 }
 
 export type TrainingStorage = {
-  directory: string; cacheDirectory: string; tempDirectory: string; softwareDirectory: string;
+  directory: string; cacheDirectory: string; pipCacheDirectory: string; tempDirectory: string; softwareDirectory: string;
   drives: { root: string; freeBytes: number }[]; reason: string; issue: string | null;
   freeBytes: number; requiredBytes: number; legacyDirectory: string | null; legacyBytes: number;
 };

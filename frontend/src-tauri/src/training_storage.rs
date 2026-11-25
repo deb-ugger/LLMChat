@@ -11,7 +11,7 @@ pub struct Drive { pub root: String, pub free_bytes: u64 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Storage {
-    pub directory: PathBuf, pub cache_directory: PathBuf, pub temp_directory: PathBuf,
+    pub directory: PathBuf, pub cache_directory: PathBuf, pub pip_cache_directory: PathBuf, pub temp_directory: PathBuf,
     pub drives: Vec<Drive>, pub free_bytes: u64, pub required_bytes: u64,
     pub reason: String, pub issue: Option<String>, pub software_directory: PathBuf, pub legacy_directory: Option<PathBuf>, pub legacy_bytes: u64,
 }
@@ -77,12 +77,25 @@ pub fn select(software: &Path, requested: Option<&str>, local: &Path) -> Result<
     }else{None};
     let name=directory.file_name().ok_or("训练目录不能是盘符根目录")?.to_string_lossy();
     let cache_directory=directory.with_file_name(format!("{name}-cache"));
-    let temp_directory=directory.with_file_name(format!("{name}-tmp"));
+    let pip_cache_directory=directory.join(".pip-cache");
+    let temp_directory=directory.join(".tmp");
     let legacy_directory=legacy(local).filter(|path|path!=&directory);
     let legacy_bytes=legacy_directory.as_ref().map(|path|tree_bytes(path)).unwrap_or(0);
-    Ok(Storage{directory,cache_directory,temp_directory,drives:disks,free_bytes,required_bytes:REQUIRED_BYTES,
+    Ok(Storage{directory,cache_directory,pip_cache_directory,temp_directory,drives:disks,free_bytes,required_bytes:REQUIRED_BYTES,
         reason:if explicit.is_some(){"使用用户指定的训练环境目录".into()}else{"默认使用 llmchat.exe 所在的软件目录".into()},
         issue,software_directory:software.to_owned(),legacy_directory,legacy_bytes})
+}
+
+#[tauri::command]
+pub fn clear_training_pip_cache(app:tauri::AppHandle,environment_dir:Option<String>)->Result<(),String>{
+    let _exclusive=crate::train_dataset::win::exclusive()?;
+    let storage=select(&software_directory()?,environment_dir.as_deref(),&app.path().app_local_data_dir().map_err(|error|error.to_string())?)?;
+    if !storage.directory.join(".llmchat-training-environment").is_file(){return Err("该目录不属于软件创建的训练环境，无法自动清理".into());}
+    if storage.pip_cache_directory.exists(){
+        crate::train_dataset::managed(&storage.directory,&storage.pip_cache_directory)?;
+        fs::remove_dir_all(&storage.pip_cache_directory).map_err(|_|"无法清理 pip 缓存，请关闭使用该环境的程序后重试".to_string())?;
+    }
+    Ok(())
 }
 
 pub fn check_space(storage:&Storage)->Result<(),String>{

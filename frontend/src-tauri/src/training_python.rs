@@ -17,6 +17,7 @@ struct ProcessOutput { success: bool, stdout: Vec<u8>, stderr: Vec<u8> }
 
 fn output(mut command: Command) -> Result<ProcessOutput, TrainingFailure> {
     let program = command.get_program().to_string_lossy().into_owned();
+    command.env("PYTHONDONTWRITEBYTECODE","1");
     crate::train_dataset::win::hidden(&mut command);
     let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| record(format!("{program} 无法启动，请确认解释器路径是否正确"), e.to_string()))?;
     let read = |mut pipe: Box<dyn Read + Send>| std::thread::spawn(move || {

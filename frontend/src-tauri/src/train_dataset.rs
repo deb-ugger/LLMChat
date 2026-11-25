@@ -42,13 +42,28 @@ pub(super) fn managed(root: &Path, child: &Path) -> Result<PathBuf, String> {
     if !path.starts_with(&root) { return Err("数据集或产物路径超出受管目录".into()); }
     Ok(path)
 }
-pub(super) fn work(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+pub(super) fn dataset_directory(software: &Path, local: &Path, id: &str) -> Result<PathBuf, String> {
     if id.len() != 36 || id.chars().enumerate().any(|(i,c)| if [8,13,18,23].contains(&i) { c != '-' } else { !c.is_ascii_hexdigit() }) {
         return Err("数据集工作副本标识无效".into());
     }
-    let root = app.path().app_local_data_dir().map_err(error)?.join("training-datasets");
-    managed(&app.path().app_local_data_dir().map_err(error)?, &root)?;
-    let path = managed(&root, &root.join(id))?;
+    let current = software.join("training-datasets");
+    let legacy = local.join("training-datasets");
+    let root = if !current.join(id).exists() && legacy.join(id).exists() { &legacy } else { &current };
+    let owner = if root == &legacy { local } else { software };
+    if root.exists() { managed(owner, root)?; }
+    let path = root.join(id);
+    if path.exists() { managed(root, &path)?; }
+    Ok(path)
+}
+
+#[tauri::command]
+pub fn training_dataset_directory(app: tauri::AppHandle, dataset_work_id: String) -> Result<PathBuf,String> {
+    dataset_directory(&crate::training_storage::software_directory()?, &app.path().app_local_data_dir().map_err(error)?, &dataset_work_id)
+}
+
+pub(super) fn work(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+    let path = training_dataset_directory(app.clone(), id.to_owned())?;
+    let path = managed(path.parent().ok_or("数据集目录无效")?, &path)?;
     for name in ["manifest.json", "review.csv"] { managed(&path, &path.join(name))?; }
     let manifest: serde_json::Value = serde_json::from_slice(&fs::read(path.join("manifest.json")).map_err(error)?).map_err(error)?;
     let annotation = manifest["annotationsFile"].as_str().ok_or("数据集缺少标注文件")?;
@@ -107,6 +122,7 @@ pub(super) fn probe(comfy: &str, resources: &Path, output: &Path, configured: Op
 #[tauri::command]
 pub async fn probe_training_env(app: tauri::AppHandle, comfy_dir: String, python_path: Option<String>, environment_dir: Option<String>) -> Result<EnvReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _diagnostics=crate::training_diagnostics::scope(environment_dir.as_deref());
         let resources = app.path().resource_dir().map_err(error)?.join("resources/training");
         let output = app.path().app_local_data_dir().map_err(error)?.join("training-runs");
         Ok(probe(&comfy_dir, &resources, &output, python_path.as_deref(), environment_dir.as_deref()))
@@ -122,6 +138,7 @@ pub fn cancel_training(run_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, options: TrainingOptions, events: Channel<TrainingEvent>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _diagnostics=crate::training_diagnostics::scope(options.environment_dir.as_deref());
         let exclusive = win::exclusive()?;
         if options.limit > 100_000 { return Err("样本上限须为 0–100000".into()); }
         let resources = resource(&app)?;
@@ -206,7 +223,7 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
 #[cfg(windows)]
 pub(super) mod win {
     use super::*;
-    use std::{ffi::c_void, os::windows::{io::AsRawHandle, process::CommandExt, fs::OpenOptionsExt}};
+    use std::{ffi::c_void, os::windows::{io::AsRawHandle, process::CommandExt}};
     type Raw = *mut c_void;
     #[link(name="kernel32")]
     unsafe extern "system" {
@@ -215,16 +232,29 @@ pub(super) mod win {
         fn TerminateJobObject(job: Raw, code: u32) -> i32;
         fn CloseHandle(handle: Raw) -> i32;
         fn SetInformationJobObject(job: Raw, class: i32, value: Raw, length: u32) -> i32;
+        fn CreateSemaphoreW(attributes: Raw, initial: i32, maximum: i32, name: *const u16) -> Raw;
+        fn WaitForSingleObject(handle: Raw, milliseconds: u32) -> u32;
+        fn ReleaseSemaphore(handle: Raw, count: i32, previous: *mut i32) -> i32;
     }
     #[link(name="ntdll")]
     unsafe extern "system" { fn NtResumeProcess(process: Raw) -> i32; }
     pub struct Handle(usize);
     impl Handle { fn raw(&self) -> Raw { self.0 as Raw } }
     impl Drop for Handle { fn drop(&mut self) { unsafe { CloseHandle(self.raw()); } } }
-    pub fn exclusive() -> Result<fs::File,String> {
-        fs::OpenOptions::new().create(true).truncate(false).write(true).share_mode(0)
-            .open(std::env::temp_dir().join("llmchat-dataset-training.lock"))
-            .map_err(|e| if e.raw_os_error()==Some(32) {"已有训练任务正在运行".into()} else {e.to_string()})
+    pub struct Exclusive(Handle);
+    impl Drop for Exclusive {
+        fn drop(&mut self) { unsafe { ReleaseSemaphore(self.0.raw(),1,std::ptr::null_mut()); } }
+    }
+    pub fn exclusive() -> Result<Exclusive,String> {
+        let name="Local\\LLMChatTrainingEnvironment_v1\0".encode_utf16().collect::<Vec<_>>();
+        let raw=unsafe {CreateSemaphoreW(std::ptr::null_mut(),1,1,name.as_ptr())};
+        if raw.is_null(){return Err(std::io::Error::last_os_error().to_string());}
+        let handle=Handle(raw as usize);
+        match unsafe {WaitForSingleObject(handle.raw(),0)} {
+            0=>Ok(Exclusive(handle)),
+            0x102=>Err("已有训练任务正在运行".into()),
+            _=>Err(std::io::Error::last_os_error().to_string()),
+        }
     }
     pub fn job() -> Result<Handle,String> {
         let handle=unsafe { CreateJobObjectW(std::ptr::null_mut(),std::ptr::null()) };
