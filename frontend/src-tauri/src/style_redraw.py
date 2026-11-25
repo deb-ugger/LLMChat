@@ -502,15 +502,18 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                   text="Anime game illustration, continuous linework, coherent proportions and shading, fine local texture"),
         "7": node("CLIPTextEncode", clip=["30", 1],
                   text="censored, mosaic artifacts, flat color fills, distorted proportions, broken outlines"),
-        "31": node("TilePreprocessor", image=["5", 0], pyrUp_iters=4, resolution=512),
+        # Clear the grid even when the mask has no surrounding pixels for Telea to borrow from.
+        "42": node("INPAINT_MaskedFill", image=["5", 0], mask=["5", 1], fill="neutral", falloff=0),
+        "41": node("INPAINT_MaskedFill", image=["42", 0], mask=["5", 1], fill="telea", falloff=0),
+        "31": node("TilePreprocessor", image=["41", 0], pyrUp_iters=4, resolution=512),
         "32": node("ACN_ControlNet++InputNode", image=["31", 0], control_type="tile"),
         "33": node("ACN_ControlNet++LoaderAdvanced", plus_input=["32", 0], name="controlnet-union-sdxl-1.0.safetensors"),
         "34": node("InpaintModelConditioning", positive=["6", 0], negative=["7", 0], vae=["30", 2],
-                   pixels=["5", 0], mask=["5", 1], noise_mask=True),
+                   pixels=["41", 0], mask=["5", 1], noise_mask=True),
         "35": node("ACN_AdvancedControlNetApply_v2", positive=["34", 0], negative=["34", 1], control_net=["33", 0],
-                   image=["33", 1], strength=1.0, start_percent=0.0, end_percent=1.0),
+                   image=["33", 1], strength=0.55, start_percent=0.0, end_percent=0.65),
         "13": node("KSampler", model=["30", 0], seed=seed, steps=steps, cfg=7, sampler_name="euler", scheduler="beta",
-                   positive=["35", 0], negative=["35", 1], latent_image=["34", 2], denoise=0.7),
+                   positive=["35", 0], negative=["35", 1], latent_image=["34", 2], denoise=0.95),
         "36": node("VAEDecode", samples=["13", 0], vae=["30", 2]),
         "14": node("INPAINT_ColorMatch", target=["36", 0], reference=["5", 0], exclude_mask=["5", 1], strength=1.0),
         "15": node("PreviewImage", images=["14", 0]),
@@ -645,6 +648,9 @@ async def repair_mosaic(original, data, steps, workflow_times):
             workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
             raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
+            if raw is not None and profile["kind"] == "diffusion-cream" and "42" not in old_history["prompt"][2]:
+                raw = None  # Replace the older graph that still fed the grid into the sampler.
+                workflow_times.clear()
             if raw is None:
                 source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
                 noise_mask = Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB")
