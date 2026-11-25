@@ -2,6 +2,7 @@ import { hasMosaicDrafts, mosaicDraftsOf, saveMosaicDrafts, useHasMosaicDrafts }
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
 import { automaticMosaicRedrawStyle } from "./game-mosaic/mosaicBatchRunner";
+import { createMosaicTargetResolver, mosaicRegionTargeting } from "../mosaicRegionTargets";
 import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
@@ -1797,6 +1798,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     let detector: Awaited<ReturnType<typeof openDeploymentDetector>> | undefined;
     const savedDrafts = new Set<string>();
     const redrawStyle = automaticMosaicRedrawStyle(usable, rows, (image, signal) => readSavedMosaicImage(image, signal, current.folder), signal);
+    const resolveTargets = createMosaicTargetResolver(root, mosaicRegionTargeting(preferences), rows, () => settings);
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();
@@ -1827,8 +1829,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
         try {
           const style = await redrawStyle(image);
-          const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep, model: preferences.model,
-            steps: preferences.steps, ...style, signal, timingScope: scope,
+          const original = source ?? await readSource();
+          if (resolveTargets) report({ completed: index, total: images.length, detail: "识别蒙版部位 · " + image.name });
+          const targetParts = await resolveTargets?.(image, original, boxes, signal);
+          const rendered = await redrawMosaic({ source: original, boxes, keep, model: preferences.model,
+            steps: preferences.steps, ...style, signal, timingScope: scope, targetParts,
             progress: detail => report({ completed: index, total: images.length, detail }) });
           const imageData = await imageBase64(rendered);
           const saved = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {

@@ -5,6 +5,7 @@ import { publishMosaicBenchmarkSource } from "../gameMosaicBenchmark";
 import { mosaicInitialScreening, mosaicManualStatuses, mosaicProcessingError, mosaicScreeningStatus, mosaicStatusChoices, mosaicStatusLabels, mosaicStatusOrder, type MosaicStatus } from "../gameMosaicStatus";
 import { api } from "../api";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
+import { createMosaicTargetResolver, mosaicRegionTargeting } from "../mosaicRegionTargets";
 import { gameAvailableModels } from "./GameTranslationTabs";
 import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
@@ -652,6 +653,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         selected, scoped, usable, rows, detectorKey, protect, refine: preferences.refine, model, steps, timingScope: deploymentMetricScope(gamePath, "mosaic"),
       }, signal, {
         read, readSaved, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
+        resolveTargets: createMosaicTargetResolver(gamePath, mosaicRegionTargeting(preferences), rows, () => settings || api.getSettings()),
         savedMosaicScan, redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
         readExisting: signal => readSavedMosaicSources(gamePath, signal),
         writeCandidate: saveCandidate,
@@ -947,6 +949,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const running = run("生成去码候选", (signal, report, usage) => runMosaicRedraw(plan, initial, signal, report, usage, {
       read, readSaved, mosaicInputKey, redrawMosaic: redrawWithConfirmation, recordGameCacheHit, update, setProgress: text => setProgress(text, "redraw"), setError,
       setPending: storePendingRedraw,
+      resolveTargets: createMosaicTargetResolver(gamePath, plan.regionTargeting, rows, () => settings || api.getSettings()),
       onCandidate: async (image, version) => {
         if (redrawCancelRequested.current) throw new Error("重绘任务已取消");
         const current = candidateRows.current[image.id];
@@ -991,7 +994,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }
     const groupReferences = mode === "automatic" ? new Map([...groups].map(([group, batch]) =>
       [group, existingRedraw.references.get(group) ?? { image: batch[0].image, source: "generate" as const }])) : undefined;
-    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide: mode === "reference", groupReferences });
+    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide: mode === "reference", groupReferences,
+      regionTargeting: mosaicRegionTargeting(preferences) });
   }
 
   function redrawCurrent(models: MosaicModel[]) {
@@ -1016,8 +1020,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const referenceImage = groupReference?.image ?? style.reference;
       const reference = referenceImage && referenceImage.id !== active.id
         ? groupReference?.blob ?? await readSaved(referenceImage, new AbortController().signal) : undefined;
+      const resolver = createMosaicTargetResolver(gamePath, mosaicRegionTargeting(preferences), rows, () => settings || api.getSettings());
+      const targetParts = activeResult.boxes.length ? await resolver?.(active, source, activeResult.boxes, new AbortController().signal) : undefined;
       const workflow = await prepareMosaicComfyWorkflow({
-        name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed: style.seed, reference,
+        name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed: style.seed, reference, targetParts,
       });
       window.dispatchEvent(new CustomEvent(openMosaicComfyWorkflowEvent, { detail: workflow }));
     } catch (error) {

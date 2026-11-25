@@ -7,6 +7,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { runtimeAssetBase } from "./runtimeAssets";
 import { recordGameWorkflowTiming } from "./gameModelPerformance";
 import type { UnityImage } from "./unityOffline";
+import type { MosaicTargetPart } from "./mosaicRegionTargets";
 
 export type MosaicBox = [left: number, top: number, right: number, bottom: number];
 export type MosaicModel = "2511" | "turbo" | "diffusion-cream";
@@ -55,7 +56,7 @@ export function createMosaicGridScanner() {
 export type MosaicSettings = {
   screening?: Partial<MosaicScreening>;
   concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number; refineIncludeMissed?: boolean;
-  detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean;
+  detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean; regionTargeting?: boolean;
 };
 export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "turbo", steps: 8, protect: true };
 export const mosaicRefineConcurrencyChoices = [1, 2, 4];
@@ -208,11 +209,12 @@ async function encoded(blob: Blob) {
 type Weights = { model: string; clip: string; vae: string };
 type MosaicRedrawInput = {
   source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
+  targetParts?: MosaicTargetPart[];
 };
 export type MosaicComfyWorkflow = { id: string; name: string; path: string; graph: Record<string, unknown> };
 export const openMosaicComfyWorkflowEvent = "llmchat-open-mosaic-comfy-workflow";
 
-async function mosaicRedrawDirectory() {
+export async function mosaicRedrawDirectory() {
   const directory = localStorage.getItem("llmchat-comfy-directory") || (await invoke<string[]>("find_redraw_directories"))[0];
   if (!directory) throw new Error("请先在 AI 风格重绘中配置 ComfyUI");
   return directory;
@@ -244,7 +246,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
     regions: input.boxes.map(box => ({ box })),
     profile: { ...weights, kind: input.model,
       referenceImage: input.reference && await encoded(input.reference),
-      keep: input.keep, seed: input.seed, name: input.name },
+      keep: input.keep, seed: input.seed, name: input.name, targetParts: input.targetParts },
   });
   const name = mosaicModelLabels[input.model] + ".json";
   return { id: crypto.randomUUID(), name, path: "LLMChat - 去码/" + name, graph };
@@ -282,7 +284,7 @@ export async function redrawMosaic(input: MosaicRedrawInput & {
     directory, steps: input.steps, mode: "mosaic", image, progress,
     regions: input.boxes.map(box => ({ box })),
     profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
-      promptId: input.promptId },
+      promptId: input.promptId, targetParts: input.targetParts },
   });
   recordGameWorkflowTiming(input.timingScope, result.workflowMs);
   if (!input.keepResultOnStop) input.signal.throwIfAborted();

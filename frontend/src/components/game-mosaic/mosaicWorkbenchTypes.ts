@@ -36,6 +36,7 @@ export type RedrawPlan = {
   models: MosaicModel[];
   steps: number;
   referenceGuide?: boolean;
+  regionTargeting?: import("../../mosaicRegionTargets").MosaicRegionTargeting;
   groupReferences?: ReadonlyMap<string, MosaicRedrawReference>;
 };
 export type ResultVersion = {
@@ -186,6 +187,7 @@ export type MosaicRefinePorts = MosaicResetPorts & {
 };
 
 export type MosaicRedrawPorts = {
+  resolveTargets?: import("../../mosaicRegionTargets").MosaicTargetResolver;
   read: MosaicRead;
   readSaved: MosaicRead;
   mosaicInputKey: typeof mosaicInputKey;
@@ -212,6 +214,7 @@ export type MosaicAutomaticPlan = {
 };
 
 export type MosaicAutomaticPorts = {
+  resolveTargets?: import("../../mosaicRegionTargets").MosaicTargetResolver;
   read: MosaicRead;
   readSaved: MosaicRead;
   performReviews: PerformMosaicReviews;

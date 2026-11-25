@@ -280,7 +280,12 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
               onChange={steps => changePreferences({ steps })} />}
           </div>
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}
-            onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label></div>
+            onChange={event => changePreferences({ protect: event.target.checked })} />保护已识别文字</label>
+            <label data-tooltip="同场景蒙版匹配时复用判断；其余优先使用已启用的小分类器，置信度不足时调用复筛模型。无法确认的图片留待处理。">
+              <input type="checkbox" role="switch" checked={!!preferences.regionTargeting} disabled={busy || redraw.paused}
+                onChange={event => changePreferences({ regionTargeting: event.target.checked })} />识别下半身部位
+            </label>
+          </div>
         </GameFlowParameterGroup>
         {redraw.referenceFlow && <GameFlowParameterGroup kind="generation" title="本组参考重绘">
           <p className="hint">{redraw.referenceFlow.detail}</p>

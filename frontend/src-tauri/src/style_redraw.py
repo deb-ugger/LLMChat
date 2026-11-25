@@ -541,10 +541,28 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
     return graph
 
 
+def mosaic_target_prompt(profile):
+    parts = set(profile.get("targetParts") or [])
+    if parts == {"male_external"}:
+        anatomy = "the visible adult male external genital anatomy"
+    elif parts == {"female_external"}:
+        anatomy = "the visible adult external vulvar anatomy"
+    else:
+        return ""
+    return (f" Repair {anatomy} only inside the lower-pelvis mask. "
+            "Follow the target pose, contours, occlusion and perspective. Preserve visible accessories and pixels outside the mask.")
+
+
 def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None):
+    target = mosaic_target_prompt(profile) if mask_name is not None else ""
+    target_negative = "open mouth, facial features, teeth, tongue, misplaced anatomy"
     if profile["kind"] == "diffusion-cream":
-        return diffusion_cream_workflow(source_name, reference_name, mask_name, steps,
+        graph = diffusion_cream_workflow(source_name, reference_name, mask_name, steps,
                                         profile.get("seed", 1), crop_size, guide_mask_name)
+        if target:
+            graph["6"]["inputs"]["text"] += target
+            graph["7"]["inputs"]["text"] += ", " + target_negative
+        return graph
     local_edit = profile["kind"] == "2511" and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
@@ -561,7 +579,9 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
         prompt += (" Use image 2 only as a guide to linework and rendering style. "
                    "Use image 1 for all proportions, placement and local colors." if local_edit
                    else " Use image 2 for style and retain the local colors of image 1.")
-    graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
+    graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt + target)
+    if target and profile["kind"] == "turbo":
+        graph["5"]["inputs"]["negative_prompt"] = target_negative
     if mask_name is not None:
         sampler = graph["13"]["inputs"]
         graph["17"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
@@ -577,6 +597,8 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
             **scale, "image": ["17", 0], "upscale_method": "nearest-exact"}}
         graph["18"]["inputs"]["image"] = ["26", 0]
         graph["7"]["inputs"]["prompt"] = "Flat color fill, missing texture, broken outlines, distorted proportions, duplicated forms."
+        if target:
+            graph["7"]["inputs"]["prompt"] += " " + target_negative + "."
         # Reuse the aligned target latent. The style image stays in the vision encoder.
         for encoder, conditioner, ref in (("6", "8", "27"), ("7", "9", "28")):
             del graph[encoder]["inputs"]["vae"]
@@ -1714,7 +1736,45 @@ def render_game_layout(original, regions, extra, font_path):
     return final
 
 
+def mosaic_target_model(directory):
+    path = Path(directory) / "ComfyUI/models/mosaic-region-targets/active.pt"
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return path, None
+    return path, f"{info.st_mtime_ns}:{info.st_size}"
+
+
+def predict_mosaic_target(image, model_file):
+    import torch
+    from PIL import ImageOps
+    from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
+
+    torch.set_num_threads(min(4, torch.get_num_threads()))
+    state = torch.load(model_file, map_location="cpu", weights_only=True)
+    labels = state.get("classes", [])
+    if (state.get("format") != "mosaic-target-evidence-v1" or not 2 <= len(labels) <= 3
+            or len(set(labels)) != len(labels)
+            or not set(labels) <= {"male_external", "female_external", "other"}):
+        raise ValueError("部位分类器格式不匹配")
+    encoder = mobilenet_v3_small(weights=None).eval()
+    encoder.classifier = torch.nn.Identity()
+    encoder.load_state_dict(state["encoder"])
+    head = torch.nn.Linear(state["head"]["weight"].shape[1], len(labels)).eval()
+    head.load_state_dict(state["head"])
+    transform = MobileNet_V3_Small_Weights.DEFAULT.transforms()
+    tensor = transform(ImageOps.pad(image.convert("RGB"), (224, 224), color=(110, 110, 110))).unsqueeze(0)
+    with torch.inference_mode():
+        features = torch.nn.functional.normalize(encoder(tensor))
+        score, index = head(features).softmax(1)[0].max(0)
+    return {"part": labels[int(index)], "confidence": float(score)}
+
+
 async def run(data):
+    if data["mode"] == "mosaic-target-status":
+        _, revision = mosaic_target_model(data["directory"])
+        emit("result", {"revision": revision})
+        return
     if data["mode"] == "open":
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
             await ready(session, Path(data["directory"]))
@@ -1725,6 +1785,16 @@ async def run(data):
         raise ValueError("采样步数须为 1–100")
     with Image.open(io.BytesIO(base64.b64decode(data["image"], validate=True))) as source:
         original = source.convert("RGBA")
+    if data["mode"] == "mosaic-target-predict":
+        path, revision = mosaic_target_model(data["directory"])
+        result = {}
+        if revision and revision == data["profile"].get("revision"):
+            with path.open("rb") as model_file:
+                info = os.fstat(model_file.fileno())
+                if revision == f"{info.st_mtime_ns}:{info.st_size}":
+                    result = predict_mosaic_target(original, model_file)
+        emit("result", result)
+        return
     if data["mode"] == "workflow-input":
         filename = workflow_input_name(data["profile"].get("name", ""))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:

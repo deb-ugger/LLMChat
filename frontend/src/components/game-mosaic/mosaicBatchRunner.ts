@@ -473,6 +473,8 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
     }
     try {
       const original = await read(image, signal);
+      if (ports.resolveTargets) setProgress("识别蒙版部位 · " + image.name);
+      const targetParts = await ports.resolveTargets?.(image, original, boxes, signal);
       const input = await mosaicInputKey(original, boxes);
       const referenceImage = automatic?.source === "adopted" ? automatic.image
         : !automatic && style.reference?.id !== image.id ? style.reference : undefined;
@@ -485,14 +487,14 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
           (automatic ? (isAnchor ? " · 生成本组参考" : " · 按本组参考重绘") : "");
         setProgress(title);
         const stepCount = mosaicRedrawStepCount(plan, engine);
-        const key = JSON.stringify([engine, stepCount, input, keep, style.seed, referenceKey]);
+        const key = JSON.stringify([engine, stepCount, input, keep, style.seed, referenceKey, targetParts]);
         const promptId = promptIds?.[engine];
         let outcome = cache.get(key);
         if (!outcome) {
           const start = performance.now();
           try {
             const blob = await usage!.measure(mosaicModelLabels[engine], 1, () => redrawMosaic({
-              source: original, boxes, keep, model: engine, steps: stepCount, seed: style.seed, signal, reference,
+              source: original, boxes, keep, model: engine, steps: stepCount, seed: style.seed, signal, reference, targetParts,
               keepResultOnStop: true, promptId, timingScope: usage?.scope,
               progress: detail => setProgress(title + " · " + detail),
             }));
@@ -587,8 +589,11 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
       if (!boxes.length) continue;
       try {
         const style = await redrawStyle(image);
-        const rendered = await redrawMosaic({ source: source ?? await readSource(), boxes, keep: keepText(image, protect), model, steps,
-          ...style, signal, timingScope, progress: setProgress });
+        const original = source ?? await readSource();
+        if (ports.resolveTargets) setProgress("识别蒙版部位 · " + image.name);
+        const targetParts = await ports.resolveTargets?.(image, original, boxes, signal);
+        const rendered = await redrawMosaic({ source: original, boxes, keep: keepText(image, protect), model, steps,
+          ...style, signal, timingScope, progress: setProgress, targetParts });
         await measureGameAsync(timingScope, "saveMs", async () =>
           ports.writeCandidate(image, rendered, signal));
       } catch (error) {
