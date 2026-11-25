@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { BenchmarkRequest, BenchmarkSnapshot, BenchmarkTaskDecision } from "./benchmark/benchmarkRunner";
 import type { ArchivedBenchmarkRef, BenchmarkConfig, BenchmarkResult } from "./gameTextBenchmark";
 import { useLayoutEffect, useRef } from "react";
+import type { TrainingDatasetWrite } from "./benchmark/trainingDatasets";
 
 export const isGameBenchmarkWindow = isTauri() && getCurrentWindow().label === "game-benchmark";
 export const benchmarkChannelName = "llmchat-game-benchmark-window";
@@ -38,7 +39,8 @@ export function benchmarkHistoryForRecords(history: readonly BenchmarkResult[], 
   });
 }
 
-export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | BenchmarkQueueCommand, data?: BenchmarkRequest | BenchmarkRequest[] | BenchmarkQueueArgument): Promise<T> {
+export function requestBenchmarkWindow<T>(channel: BroadcastChannel, kind: "setup" | "selection" | "benchmark-enqueue" | "benchmark-snapshot" | "training-dataset-write" | BenchmarkQueueCommand,
+  data?: BenchmarkRequest | BenchmarkRequest[] | BenchmarkQueueArgument | TrainingDatasetWrite): Promise<T> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const finish = () => { window.clearTimeout(timer); channel.removeEventListener("message", receive); };

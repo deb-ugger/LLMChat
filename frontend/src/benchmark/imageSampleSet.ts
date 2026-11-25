@@ -12,16 +12,21 @@ type Presence = "present" | "none" | "uncertain";
 export type PresenceVerdict = Presence | "skip" | "failed";
 type ExpectedText = { box: MosaicBox; text?: string; language?: string; keep?: boolean;
   translations?: Record<string, string>; drafts?: Record<string, string> };
-type Annotation = {
+export type SampleAnnotation = {
   provenance?: string;
   mosaic?: MosaicTruth;
   text?: { state: Presence; regions?: ExpectedText[]; initialBoxes?: MosaicBox[] };
 };
-type Manifest = { version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string };
-type Annotations = { version: number; samples: Record<string, Annotation> };
-export type AnnotatedImage = UnityImage & { annotation: Annotation; projectImageId?: string; projectSourceHash?: string };
+export type SampleSetManifest = {
+  version: number; kind: string; title: string; images: SampleImage[]; annotationsFile?: string;
+  purposes?: ("mosaic" | "text")[];
+};
+export type SampleSetAnnotations = { version: number; samples: Record<string, SampleAnnotation> };
+export type AnnotatedImage = UnityImage & { annotation: SampleAnnotation; projectImageId?: string; projectSourceHash?: string };
 export type AnnotatedSampleSet = {
   title: string;
+  manifest: SampleSetManifest;
+  annotations: SampleSetAnnotations;
   images: AnnotatedImage[];
   project: UnityProject;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
@@ -30,8 +35,8 @@ export type AnnotatedSampleSet = {
 const pngId = /^[0-9a-f]{64}$/;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-async function readJson<T>(path: string): Promise<T> {
-  return JSON.parse(decoder.decode(await readFileBytes(path))) as T;
+async function readJson<T>(path: string, readBytes: typeof readFileBytes): Promise<T> {
+  return JSON.parse(decoder.decode(await readBytes(path))) as T;
 }
 
 export function sampleTextMatchesScope(image: AnnotatedImage, source: string, target: string, skipTarget: boolean) {
@@ -50,11 +55,14 @@ function validBox(box: MosaicBox, { width, height }: SampleImage) {
     box[0] >= 0 && box[1] >= 0 && box[2] > box[0] && box[3] > box[1] && box[2] <= width && box[3] <= height;
 }
 
-export async function loadAnnotatedSampleSet(path: string, options?: { includeUnannotated?: boolean; preserveDuplicates?: boolean; verifyContent?: boolean }): Promise<AnnotatedSampleSet> {
+export async function loadAnnotatedSampleSet(path: string, options?: {
+  includeUnannotated?: boolean; preserveDuplicates?: boolean; verifyContent?: boolean; readBytes?: typeof readFileBytes;
+}): Promise<AnnotatedSampleSet> {
+  const readBytes = options?.readBytes ?? readFileBytes;
   const absolute = path.replaceAll("\\", "/");
   const directory = absolute.slice(0, absolute.lastIndexOf("/") + 1);
   if (!directory) throw new Error("请选择样本集的 manifest.json");
-  const manifest = await readJson<Manifest>(absolute);
+  const manifest = await readJson<SampleSetManifest>(absolute, readBytes);
   if (manifest?.version !== 1 || manifest.kind !== "llmchat-image-sample-set" ||
       typeof manifest.title !== "string" || !Array.isArray(manifest.images))
     throw new Error("样本集清单格式不正确");
@@ -62,7 +70,7 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
   const annotationsFile = manifest.annotationsFile ?? "annotations.json";
   if (typeof annotationsFile !== "string" || !/^annotations(?:\.[^/\\:*?"<>|]+)?\.json$/u.test(annotationsFile))
     throw new Error("样本集标注文件名无效");
-  const annotations = await readJson<Annotations>(directory + annotationsFile);
+  const annotations = await readJson<SampleSetAnnotations>(directory + annotationsFile, readBytes);
   if (annotations?.version !== 1 || !annotations.samples || typeof annotations.samples !== "object" || Array.isArray(annotations.samples))
     throw new Error("样本集标注文件格式不正确");
 
@@ -99,10 +107,10 @@ export async function loadAnnotatedSampleSet(path: string, options?: { includeUn
   }
   const project: UnityProject = { version: 1, scanRevision: 5, root: directory, folder: directory, entries: [], fonts: [], warnings: [], hashes: {} };
   return {
-    title: manifest.title, images, project, read: async (image, signal) => {
+    title: manifest.title, manifest, annotations, images, project, read: async (image, signal) => {
       signal.throwIfAborted();
       if (!pngId.test(image.sourceHash)) throw new Error("标注样本编号无效");
-      const data = await readFileBytes(directory + "images/" + image.sourceHash + ".png");
+      const data = await readBytes(directory + "images/" + image.sourceHash + ".png");
       if (options?.verifyContent && await sha256Hex(data) !== image.sourceHash) throw new Error("样本内容与冻结哈希不一致：" + image.file);
       signal.throwIfAborted();
       return new Blob([data], { type: "image/png" });
@@ -147,7 +155,7 @@ export function annotatedTextInput({ annotation, ...image }: AnnotatedImage, ste
   return { ...image, regions, ocrCompleted: true };
 }
 
-export function presenceScore(rows: Iterable<readonly [Annotation, PresenceVerdict]>, kind: "mosaic" | "text") {
+export function presenceScore(rows: Iterable<readonly [SampleAnnotation, PresenceVerdict]>, kind: "mosaic" | "text") {
   let matched = 0, falsePositive = 0, missed = 0, review = 0, skipped = 0;
   for (const [annotation, verdict] of rows) {
     const expected = annotation[kind]?.state;
@@ -183,7 +191,7 @@ export function compareBoxes(expected: readonly MosaicBox[], predicted: readonly
   return pairs;
 }
 
-export function mosaicBoxScore(rows: Iterable<readonly [Annotation, MosaicBox[]]>) {
+export function mosaicBoxScore(rows: Iterable<readonly [SampleAnnotation, MosaicBox[]]>) {
   let matched = 0, expectedCount = 0, extra = 0, fullSamples = 0;
   for (const [annotation, predicted] of rows) {
     const mosaic = annotation.mosaic;
@@ -202,7 +210,7 @@ export function mosaicBoxScore(rows: Iterable<readonly [Annotation, MosaicBox[]]
     (fullSamples ? " · 多余框 " + extra + "（仅完整标注）" : "");
 }
 
-export function textBoxScore(rows: Iterable<readonly [Annotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
+export function textBoxScore(rows: Iterable<readonly [SampleAnnotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
   let matched = 0, expectedCount = 0, correctText = 0, matchedWithText = 0;
   const normalize = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
   for (const [annotation, observed] of rows) {

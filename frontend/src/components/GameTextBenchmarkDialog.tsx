@@ -2,6 +2,8 @@ import { MosaicScreeningFields } from "./game-mosaic/MosaicScreeningFields";
 import { allBenchmarkRecordStatuses, BenchmarkRecordStatusFilter, BenchmarkRecordStepFilter,
   matchesBenchmarkRecordStatus, matchesBenchmarkRecordStep, type BenchmarkRecordStep } from "./BenchmarkRecordFilters";
 import { BuildSpeedTest } from "./BuildSpeedTest";
+import { TrainingDatasetsPage } from "./TrainingDatasetsPage";
+import { writeTrainingDatasetFile } from "../benchmark/trainingDatasets";
 import { benchmarkRoundChanges } from "../benchmark/benchmarkRoundPlan";
 import { readImageBenchmarkDetails, type ImageBenchmarkDetails } from "../benchmark/imageBenchmarkHistory";
 import { scoreMosaicComparisonRuns } from "../benchmark/benchmarkMosaicReport";
@@ -116,11 +118,11 @@ function readBenchmarkSampleView(key: string): BenchmarkSampleView {
   } catch { return {}; }
 }
 
-function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, browser = false }: {
+function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChannel, browser = false }: {
   gameView: ReactNode; onClose: () => void;
-  onBuildRunning?: (running: boolean) => void; browser?: boolean;
+  onBuildRunning?: (running: boolean) => void; benchmarkChannel?: BroadcastChannel; browser?: boolean;
 }) {
-  const [module, setModule] = useRememberedBenchmarkChoice("llmchat-benchmark-module", "game", ["game", "build"]);
+  const [module, setModule] = useRememberedBenchmarkChoice("llmchat-benchmark-module", "game", ["game", "build", "datasets"]);
   const [headerTools, setHeaderTools] = useState<HTMLDivElement | null>(null);
   const tabId = useId();
   const page = <main className={"game-benchmark-page" + (browser ? " game-benchmark-browser-fallback" : "")}>
@@ -130,6 +132,8 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, browser = fals
           aria-selected={module === "game"} onClick={() => setModule("game")}>游戏翻译</button>
         <button type="button" role="tab" id={tabId + "-build"} aria-controls={tabId + "-build-panel"}
           aria-selected={module === "build"} onClick={() => setModule("build")}>构建测速</button>
+        <button type="button" role="tab" id={tabId + "-datasets"} aria-controls={tabId + "-datasets-panel"}
+          aria-selected={module === "datasets"} onClick={() => setModule("datasets")}>训练与数据集</button>
       </div>
       <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game"} />
       {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
@@ -143,6 +147,10 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, browser = fals
     <div className="game-benchmark-module" id={tabId + "-build-panel"} role="tabpanel"
       aria-labelledby={tabId + "-build"} hidden={module !== "build"}>
       <BuildSpeedTest onRunningChange={onBuildRunning} />
+    </div>
+    <div className="game-benchmark-module" id={tabId + "-datasets-panel"} role="tabpanel"
+      aria-labelledby={tabId + "-datasets"} hidden={module !== "datasets"}>
+      {module === "datasets" && <TrainingDatasetsPage channel={benchmarkChannel} />}
     </div>
   </main>;
   return browser ? createPortal(page, document.body) : page;
@@ -195,6 +203,7 @@ export function GameTextBenchmarkHost() {
         let value: unknown = true;
         if (message.kind === "setup") value = active && setupFor(active);
         else if (message.kind === "benchmark-snapshot") value = benchmarkRunner.snapshot();
+        else if (message.kind === "training-dataset-write") await writeTrainingDatasetFile(message.data);
         else if (typeof message.kind === "string" && message.kind.startsWith("benchmark-") &&
             message.kind !== "benchmark-enqueue" && message.kind !== "benchmark-continue-batch")
           value = await controlQueue(message.kind, message.data);
@@ -282,7 +291,7 @@ export function GameTextBenchmarkWindow() {
   }, [close]);
   const closeWindow = () => void close();
   return <AuxiliaryWindowChrome title="测试队列">
-    <RecordsAndTestsPage onClose={closeWindow} onBuildRunning={value => { building.current = value; }}
+    <RecordsAndTestsPage onClose={closeWindow} benchmarkChannel={page?.channel ?? connection.current ?? undefined} onBuildRunning={value => { building.current = value; }}
       gameView={page?.setup ? <GameBenchmarkPage key={page.setup.scope} {...page.setup} snapshot={snapshot}
         requestSelection={() => requestBenchmarkWindow(page.channel, "selection")}
         enqueue={request => requestBenchmarkWindow(page.channel, "benchmark-enqueue", request)}
