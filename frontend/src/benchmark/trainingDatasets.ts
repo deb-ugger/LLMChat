@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { sha256Hex } from "../fileFingerprint";
 import type { MosaicBox } from "../gameMosaic";
 import { readFileBytes } from "../localDocFile";
@@ -16,8 +16,9 @@ export const datasetVerdictLabels = {
 export const datasetParts = { male_external: "男", female_external: "女", other: "其他" };
 export type DatasetPart = keyof typeof datasetParts;
 type PartLabels = Record<string, DatasetPart>;
+type DatasetManifest = SampleSetManifest & { imageStorage?: "shared" | "copied" };
 export type DatasetReference = {
-  path: string; title: string; count: number; labeled: number; purposes: DatasetPurpose[]; workId?: string;
+  path: string; title: string; count: number; labeled: number; purposes: DatasetPurpose[]; workId?: string; displayTitle?: string; imageStorage?: "shared" | "copied";
 };
 export type TrainingDataset = { reference: DatasetReference; data: AnnotatedSampleSet; parts: PartLabels };
 export type TrainingDatasetWrite = { id: string; file: string; bytes: ArrayBuffer };
@@ -42,15 +43,16 @@ async function workingPath(id: string) {
   return canonicalPath(await invoke<string>("training_dataset_directory", { datasetWorkId: id }));
 }
 
-// Only the main benchmark host calls the existing desktop write command.
 export async function writeTrainingDatasetFile(request: unknown) {
   const value = request as Partial<TrainingDatasetWrite> | null;
   if (!value || typeof value.id !== "string" || typeof value.file !== "string" || !(value.bytes instanceof ArrayBuffer) ||
     (![manifestFile, annotationsFile, reviewFile].includes(value.file) && !/^images\/[0-9a-f]{64}\.png$/.test(value.file))) {
     throw new Error("无效的数据集写入请求");
   }
-  const path = `${await workingPath(value.id)}/${value.file}`;
-  await invoke<void>("write_file_bytes", { path, contents: Array.from(new Uint8Array(value.bytes)) });
+  if (!uuid.test(value.id)) throw new Error("工作副本标识无效");
+  await invoke<void>("write_training_dataset_file", new Uint8Array(value.bytes), { headers: {
+    "llmchat-dataset-id": value.id, "llmchat-dataset-file": value.file,
+  } });
 }
 
 export function readDatasetCatalog(): DatasetReference[] {
@@ -82,7 +84,8 @@ function purposesOf(data: AnnotatedSampleSet) {
 }
 
 function referenceFor(path: string, data: AnnotatedSampleSet, workId?: string): DatasetReference {
-  return { path, workId, title: data.title, count: data.images.length, purposes: purposesOf(data),
+  const displayTitle = readDatasetCatalog().find(reference => reference.path.toLowerCase() === path.toLowerCase())?.displayTitle;
+  return { path, workId, displayTitle, imageStorage: (data.manifest as DatasetManifest).imageStorage, title: displayTitle ?? data.title, count: data.images.length, purposes: purposesOf(data),
     labeled: data.images.filter(({ annotation }) => datasetPurposes.some(purpose => datasetVerdict(annotation, purpose) !== "unmarked")).length };
 }
 
@@ -170,14 +173,14 @@ function reviewContents(path: string, images: AnnotatedImage[], parts: PartLabel
   return rows.map(row => row.map(cell => /[",\r\n]/.test(cell) ? '"' + cell.replaceAll('"', '""') + '"' : cell).join(",")).join("\n") + "\n";
 }
 
-async function createWorkDataset(title: string, manifest: SampleSetManifest, annotations: SampleSetAnnotations,
-  parts: PartLabels, copyImages: (write: (file: string, bytes: ArrayBuffer) => Promise<unknown>) => Promise<void>, writer: DatasetWriter) {
+async function createWorkDataset(title: string, manifest: DatasetManifest, annotations: SampleSetAnnotations,
+  parts: PartLabels, copyImages: (write: (file: string, bytes: ArrayBuffer) => Promise<unknown>, id: string) => Promise<void>, writer: DatasetWriter) {
   const id = crypto.randomUUID();
   const directory = await workingPath(id);
   const path = `${directory}/${manifestFile}`;
   const write = (file: string, bytes: ArrayBuffer) => writer({ id, file, bytes });
-  await copyImages(write);
-  const savedManifest = { ...manifest, title, annotationsFile, images: manifest.images.map(image => ({ ...image, id: image.sha256 })) };
+  await copyImages(write, id);
+  const savedManifest = { ...manifest, imageStorage: manifest.imageStorage ?? "copied", title, annotationsFile, images: manifest.images.map(image => ({ ...image, id: image.sha256 })) };
   const manifestBytes = jsonBytes(savedManifest);
   const annotationBytes = jsonBytes(annotations);
   const data = await loadAnnotatedSampleSet(path, { includeUnannotated: true, readBytes: file => {
@@ -191,16 +194,43 @@ async function createWorkDataset(title: string, manifest: SampleSetManifest, ann
   return { data, parts, reference: referenceFor(path, data, id) };
 }
 
-export function copyTrainingDataset(source: TrainingDataset, title: string, writer: DatasetWriter, signal: AbortSignal) {
+export function copyTrainingDataset(source: TrainingDataset, title: string, writer: DatasetWriter, signal: AbortSignal,
+  options: { shareImages?: boolean; onProgress?: (completed: number, total: number) => void } = {}) {
   const { data, parts } = source;
-  return createWorkDataset(title, { ...data.manifest, purposes: purposesOf(data) }, data.annotations, parts, async write => {
+  return createWorkDataset(title, { ...data.manifest, purposes: purposesOf(data), imageStorage: options.shareImages ? "shared" : "copied" }, data.annotations, parts, async (write, id) => {
+    signal.throwIfAborted();
+    if (options.shareImages) {
+      const hashes = [...new Set(data.images.map(image => image.sourceHash))];
+      const progress = new Channel<number>(completed => options.onProgress?.(completed, hashes.length));
+      await invoke<void>("link_training_dataset_images", { datasetWorkId: id,
+        sourceDirectory: canonicalPath(source.reference.path).slice(0, canonicalPath(source.reference.path).lastIndexOf("/")), hashes, progress });
+      signal.throwIfAborted();
+      return;
+    }
+    let completed = 0;
     for (const image of data.images) {
       const bytes = await (await data.read(image, signal)).arrayBuffer();
       if (await sha256Hex(bytes) !== image.sourceHash) throw new Error(`样本内容与清单哈希不一致：${image.file}`);
       signal.throwIfAborted();
       await write(imageFile(image.sourceHash), bytes);
+      options.onProgress?.(++completed, data.images.length);
     }
   }, writer);
+}
+
+export async function renameTrainingDataset(dataset: TrainingDataset, title: string, writer: DatasetWriter): Promise<TrainingDataset> {
+  title = title.trim();
+  if (!title) throw new Error("请输入数据集名称");
+  const { workId } = dataset.reference;
+  const manifest = { ...dataset.data.manifest, title };
+  if (workId) {
+    if (canonicalPath(dataset.reference.path) !== `${await workingPath(workId)}/${manifestFile}`) {
+      throw new Error("数据集工作副本路径无效");
+    }
+    await writer({ id: workId, file: manifestFile, bytes: jsonBytes(manifest) });
+  }
+  return { ...dataset, reference: { ...dataset.reference, title, displayTitle: workId ? undefined : title },
+    data: { ...dataset.data, title, manifest: workId ? manifest : dataset.data.manifest } };
 }
 
 async function importPng(file: File) {

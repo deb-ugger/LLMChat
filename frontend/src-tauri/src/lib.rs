@@ -1,6 +1,7 @@
 mod build_close;
 mod build_speed_test;
 mod train_dataset;
+mod training_dataset_files;
 mod training_python;
 mod training_diagnostics;
 mod training_storage;
@@ -872,6 +873,8 @@ pub fn run() {
             train_dataset::cancel_training,
             train_dataset::probe_training_env,
             train_dataset::training_dataset_directory,
+            training_dataset_files::write_training_dataset_file,
+            training_dataset_files::link_training_dataset_images,
             training_storage::training_storage_info,
             training_storage::clear_training_pip_cache,
             training_storage::remove_legacy_training_environment,

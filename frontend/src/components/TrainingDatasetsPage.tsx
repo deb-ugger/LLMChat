@@ -1,13 +1,16 @@
 import { TrainingView } from "./TrainingView";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useId, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useId, useRef, useState, type PointerEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { AnnotatedImage, AnnotatedSampleSet } from "../benchmark/imageSampleSet";
 import { copyTrainingDataset, datasetManifestIn, datasetParts, datasetPurposeLabels, datasetPurposes, datasetVerdict,
   datasetVerdictLabels, importTrainingDataset, labelDatasetImages, openTrainingDataset, partFor, readDatasetCatalog,
-  rememberDataset, saveDatasetLabels, setDatasetPart, writeTrainingDatasetFile, type DatasetPart, type DatasetPurpose,
+  rememberDataset, renameTrainingDataset, saveDatasetLabels, setDatasetPart, writeTrainingDatasetFile, type DatasetPart, type DatasetPurpose,
   type DatasetReference, type DatasetVerdict, type DatasetWriter, type TrainingDataset } from "../benchmark/trainingDatasets";
-import { requestBenchmarkWindow } from "../gameBenchmarkWindow";
+import { api } from "../api";
+import { getFixedMenuPoint } from "../viewportLayout";
+import { GameDialog } from "./GameActionConfirm";
+import { showAppNotice } from "./AppNotice";
 import type { MosaicBox } from "../gameMosaic";
 import "../styles/trainingDatasets.css";
 
@@ -113,7 +116,7 @@ function SampleDetails({ dataset, image, purpose, busy, onBoxes, onPart }: {
   </>;
 }
 
-export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }) {
+export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const id = useId();
   const [view, setView] = useState<"datasets" | "training">("datasets");
   const [catalog, setCatalog] = useState(readDatasetCatalog);
@@ -131,7 +134,11 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
   const busyRef = useRef(false);
   const importInput = useRef<HTMLInputElement>(null);
   const desktop = isTauri();
-  const writer: DatasetWriter = channel ? data => requestBenchmarkWindow(channel, "training-dataset-write", data) : writeTrainingDatasetFile;
+  const writer: DatasetWriter = writeTrainingDatasetFile;
+  const datasetMenu = useRef<HTMLDivElement>(null);
+  const [menuReference, setMenuReference] = useState<DatasetReference>();
+  const [renaming, setRenaming] = useState<DatasetReference>();
+  const [renameTitle, setRenameTitle] = useState("");
   const editable = desktop && !!dataset?.reference.workId;
   const query = search.trim().toLowerCase();
   const images = dataset?.data.images.filter(image => (filter === "all" || datasetVerdict(image.annotation, purpose) === filter) &&
@@ -164,6 +171,7 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
   }
 
   function openReference(reference: DatasetReference) {
+    if (reference.path === dataset?.reference.path) return;
     run("正在打开数据集…", () => openTrainingDataset(reference.path, reference.workId));
   }
 
@@ -185,6 +193,42 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
       const path = datasetManifestIn(directory);
       return openTrainingDataset(path, catalog.find(reference => reference.path.toLowerCase() === path.toLowerCase())?.workId);
     });
+  }
+
+  function duplicate(shareImages: boolean) {
+    if (!dataset) return;
+    const status = shareImages ? "正在创建标注副本…" : "正在复制数据集…";
+    run(status, () => copyTrainingDataset(dataset, `${dataset.reference.title}（副本）`, writer,
+      new AbortController().signal, { shareImages,
+        onProgress: (completed, total) => setBusy(`${status} ${completed} / ${total} 张`) }));
+  }
+
+  function openDatasetMenu(event: ReactMouseEvent<HTMLElement>, reference: DatasetReference) {
+    if (busy || !datasetMenu.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const pointer = event.clientX !== 0 || event.clientY !== 0;
+    const { x, y } = getFixedMenuPoint(pointer ? event.clientX : bounds.left,
+      pointer ? event.clientY : bounds.bottom, 190, 100);
+    datasetMenu.current.style.left = x + "px";
+    datasetMenu.current.style.top = y + "px";
+    setMenuReference(reference);
+    datasetMenu.current.showPopover();
+    datasetMenu.current.querySelector("button")?.focus({ preventScroll: true });
+  }
+
+  function rename() {
+    if (!renaming) return;
+    const reference = renaming;
+    run("正在重命名…", async () => {
+      const current = dataset?.reference.path === reference.path;
+      const source = dataset && current ? dataset : await openTrainingDataset(reference.path, reference.workId);
+      const renamed = await renameTrainingDataset(source, renameTitle, writer);
+      setCatalog(rememberDataset(renamed.reference));
+      setRenaming(undefined);
+      return current ? renamed : undefined;
+    }, false);
   }
 
   function toggleChecked(hashes: string[], selected: boolean) {
@@ -216,7 +260,32 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
       </div>
       {busy && <span className="hint" role="status">{busy}</span>}
     </div>
-    {error && <p className="training-dataset-error" role="alert">{error}</p>}
+    {error && !renaming && <p className="training-dataset-error" role="alert">{error}</p>}
+    <div ref={datasetMenu} popover="auto" className="unity-gallery-menu" role="menu"
+      aria-label="数据集操作" style={{ inset: "auto", margin: 0 }}>
+      <button type="button" role="menuitem" onClick={() => {
+        datasetMenu.current?.hidePopover();
+        if (menuReference) void api.revealPath(menuReference.path).catch(error => showAppNotice(String(error), "error"));
+      }}>打开所在文件夹</button>
+      <button type="button" role="menuitem" onClick={() => {
+        datasetMenu.current?.hidePopover();
+        if (menuReference) {
+          setError(""); setRenameTitle(menuReference.title); setRenaming(menuReference);
+        }
+      }}>重命名</button>
+    </div>
+    {renaming && <GameDialog title="重命名数据集" description={renaming.title} disabled={!!busy}
+      onCancel={() => setRenaming(undefined)} details={<form id={`${id}-rename`} onSubmit={event => {
+        event.preventDefault(); rename();
+      }}>
+        <input aria-label="数据集名称" value={renameTitle} autoFocus required disabled={!!busy}
+          onFocus={event => event.currentTarget.select()} onChange={event => setRenameTitle(event.target.value)} />
+        {error && <p className="training-dataset-error" role="alert">{error}</p>}
+      </form>}>
+      <button type="submit" form={`${id}-rename`} className="game-confirm-primary"
+        disabled={!!busy || !renameTitle.trim()}>保存</button>
+      <button type="button" className="game-confirm-cancel" disabled={!!busy} onClick={() => setRenaming(undefined)}>取消</button>
+    </GameDialog>}
     <div className="training-dataset-placeholder" id={`${id}-training-panel`} role="tabpanel" aria-labelledby={`${id}-training`} hidden={view !== "training"}>
       <TrainingView onOpenDatasets={() => setView("datasets")} />
     </div>
@@ -229,9 +298,12 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
           <div className="training-dataset-actions">
             <button type="button" className="unity-btn unity-btn-primary" disabled={!desktop || !!busy}
               onClick={() => importInput.current?.click()}>从图片集导入</button>
-            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy} onClick={() => {
-              if (dataset) run("正在复制数据集…", () => copyTrainingDataset(dataset, `${dataset.reference.title}（副本）`, writer, new AbortController().signal));
-            }}>复制现有</button>
+            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy}
+              data-tooltip="共用图片，单独保存标注；要求位于同一磁盘分区。直接修改图片内容会影响共用它的副本。"
+              onClick={() => duplicate(true)}>新建标注副本</button>
+            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy}
+              data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况"
+              onClick={() => duplicate(false)}>复制全部图片</button>
           </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {
@@ -242,11 +314,16 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
         </div>
         <ul className="training-dataset-library-list">
           {catalog.map(reference => <li key={reference.path}><button type="button" className="training-dataset-entry"
-            aria-pressed={reference.path === dataset?.reference.path} disabled={!!busy} onClick={() => openReference(reference)}>
+            aria-pressed={reference.path === dataset?.reference.path} disabled={!!busy} onClick={() => openReference(reference)}
+            onContextMenu={event => openDatasetMenu(event, reference)}>
             <strong title={reference.title}>{reference.title}</strong>
             <span className="training-dataset-entry-meta">{reference.count} 张 · 已标注 {reference.labeled}</span>
             <span className="training-dataset-entry-badges">
               {reference.purposes.map(item => <span className="training-dataset-badge" key={item}>{datasetPurposeLabels[item]}</span>)}
+              {reference.imageStorage && <span className="training-dataset-badge"
+                data-tooltip={reference.imageStorage === "shared" ? "图片通过硬链接共用，标注单独保存；直接修改图片内容会影响共用副本" : "图片已完整拷贝"}>
+                {reference.imageStorage === "shared" ? "共用图片" : "独立图片"}
+              </span>}
               <span className="training-dataset-library-state">{reference.workId ? "正常" : "只读"}</span>
             </span>
           </button></li>)}
