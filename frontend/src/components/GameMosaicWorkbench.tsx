@@ -1216,25 +1216,40 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const activePrompt = localStorage.getItem(redrawPromptKey);
     if (!activePrompt) return;
     const [modelOrLegacyId, promptId] = activePrompt.split(":", 2);
-    await cancelMosaicRedraw(promptId ?? modelOrLegacyId, modelOrLegacyId === "2511" ? "2511" : undefined);
+    const interruptedPromptId = promptId ?? modelOrLegacyId;
+    await cancelMosaicRedraw(interruptedPromptId, modelOrLegacyId === "2511" ? "2511" : undefined);
     if (localStorage.getItem(redrawPromptKey) === activePrompt) localStorage.removeItem(redrawPromptKey);
+    return interruptedPromptId;
   }
 
-  async function cancelRedrawTask() {
+  async function interruptRedrawTask(discard: boolean) {
     const running = redrawTask.current;
     if (redrawCancelRequested.current || (!pausedRedraw && !running) || (task.current && !running)) return;
     redrawCancelRequested.current = true;
     setRedrawCancelling(true);
     if (running) task.current?.abort();
-    setProgress("正在取消重绘任务…", "redraw");
+    const action = discard ? "取消" : "中止";
+    setProgress(`正在${action}重绘任务…`, "redraw");
     try {
-      await cancelRedrawPrompt();
+      const interruptedPrompt = await cancelRedrawPrompt();
       await running;
-      await storePendingRedraw(null);
-      clearStepProgress("redraw");
-      showAppNotice("已取消当前重绘任务");
+      if (discard) {
+        await storePendingRedraw(null);
+        clearStepProgress("redraw");
+      } else {
+        const plan = pendingRedraw.current;
+        if (plan && interruptedPrompt) {
+          const target = plan.targets.find(item => [...item.pending].some(model => item.promptIds?.[model] === interruptedPrompt));
+          const model = target && [...target.pending].find(engine => target.promptIds?.[engine] === interruptedPrompt);
+          if (target && model) {
+            const retry = { ...target, promptIds: { ...target.promptIds, [model]: crypto.randomUUID() } };
+            await storePendingRedraw({ ...plan, targets: plan.targets.map(item => item === target ? retry : item) });
+          }
+        }
+      }
+      showAppNotice(`已${action}当前重绘任务`);
     } catch (error) {
-      showAppNotice("无法取消当前重绘任务：" + String(error), "error");
+      showAppNotice(`无法${action}当前重绘任务：${String(error)}`, "error");
     } finally {
       redrawCancelRequested.current = false;
       setRedrawCancelling(false);
@@ -1395,7 +1410,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     {confirmation.dialog}
     {createPortal(<MosaicStepCards paneVisible={paneVisible} hiddenStyle={hiddenStyle}
       busy={!!busy} aborting={task.current?.signal.aborted} actionsDisabled={actionsDisabled || !!draftReason}
-      onStop={id => id === "redraw" ? void cancelRedrawTask() : stopMosaicBatch(task.current, text => setProgress(text, id))}
+      onStop={id => id === "redraw" ? void interruptRedrawTask(false) : stopMosaicBatch(task.current, text => setProgress(text, id))}
       preferences={preferences} changePreferences={changePreferences} detectorLabels={detectorLabels} reviewModels={reviewModels}
       testing={testing} parametersLocked={disabled} testTitle={testTitle} benchmarkProgress={benchmarkProgress} measurements={{
         screen: cardMeasurement("screen"), refine: cardMeasurement("refine"), redraw: cardMeasurement("redraw"),
@@ -1421,7 +1436,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       }} redraw={{
         status: stepRuns.redraw, targetCount: listRedraw.length, groupTargetCount: redrawGroup.length,
         remainingCount: redrawRemaining, paused: !!pausedRedraw, skipped: redrawSkipped, canClear: canClearRedraw,
-        cancelling: redrawCancelling, cancel: cancelRedrawTask,
+        cancelling: redrawCancelling, cancel: () => interruptRedrawTask(true),
         batchReason, groupReason: groupRedrawReason, referenceFlow,
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model], "automatic"),
         startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
