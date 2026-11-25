@@ -3,5 +3,5 @@
   "identifier": "game-benchmark-review",
   "description": "Permissions for viewing game benchmark comparisons and annotations",
   "windows": ["game-benchmark-review"],
-  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-toggle-maximize", "allow-runtime-log", "allow-read-file-bytes"]
+  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-toggle-maximize", "allow-runtime-log", "dialog:allow-open", "allow-read-file-bytes"]
 }
