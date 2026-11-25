@@ -11,7 +11,7 @@ if (!(Test-Path -LiteralPath $weights)) {
     else { Invoke-WebRequest -Uri 'https://download.pytorch.org/models/mobilenet_v3_small-047dcff4.pth' -OutFile $weights }
 }
 if (!(Get-FileHash -LiteralPath $weights -Algorithm SHA256).Hash.StartsWith('047DCFF4')) {
-    throw '训练预训练权重校验失败'
+    throw 'Training pretrained weights checksum verification failed.'
 }
 foreach ($name in @('mosaic-region-training.ps1', 'train-mosaic-region-classifier.py', 'training-results.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $destination $name)
