@@ -605,7 +605,11 @@ async def prepare_mosaic_workflow(original, data, steps):
         mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
         reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
         graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None)
+        graph["4"]["_meta"] = {"title": "目标原图"}
+        if reference_name:
+            graph["16"]["_meta"] = {"title": "画风参考图"}
         if masked:
+            graph["17"]["_meta"] = {"title": "重绘蒙版"}
             left, top, _, _ = bounds
             graph["20"] = {"class_type": "ImageCrop", "inputs": {
                 "image": ["4", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}

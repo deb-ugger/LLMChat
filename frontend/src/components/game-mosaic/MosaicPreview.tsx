@@ -294,12 +294,12 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             </div>}
           </div>
           <button type="button" className="unity-btn is-secondary" disabled={actionsDisabled || !original?.blob || openingComfy}
-            data-tooltip="在 AI 风格重绘的 ComfyUI 编辑器中打开当前原图和工作流"
+            data-tooltip="在 ComfyUI 打开当前图片、蒙版和画风参考，并更新该模型在「LLMChat - 去码」中的共享工作流"
             onClick={() => {
               if (!original?.blob) return;
               setOpeningComfy(true);
               void onOpenComfy(original.blob).finally(() => setOpeningComfy(false));
-            }}>{openingComfy ? "正在移入 ComfyUI…" : "送到 ComfyUI"}</button>
+            }}>{openingComfy ? "正在同步到 ComfyUI…" : "同步到 ComfyUI"}</button>
           {detailActions}
         </div>
         <div className="game-mosaic-detail-row game-mosaic-detail-meta">

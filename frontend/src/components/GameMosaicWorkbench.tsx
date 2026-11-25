@@ -1011,10 +1011,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   async function openCurrentInComfy(source: Blob) {
     if (!active || !activeResult) return;
     try {
-      const { seed, reference } = mosaicRedrawStyle(active, rows, redrawReferences);
+      const style = mosaicRedrawStyle(active, rows, redrawReferences);
+      const groupReference = existingRedraw.references.get(style.group);
+      const referenceImage = groupReference?.image ?? style.reference;
+      const reference = referenceImage && referenceImage.id !== active.id
+        ? groupReference?.blob ?? await readSaved(referenceImage, new AbortController().signal) : undefined;
       const workflow = await prepareMosaicComfyWorkflow({
-        name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed,
-        reference: reference && await readSaved(reference, new AbortController().signal),
+        name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed: style.seed, reference,
       });
       window.dispatchEvent(new CustomEvent(openMosaicComfyWorkflowEvent, { detail: workflow }));
     } catch (error) {

@@ -209,7 +209,7 @@ type Weights = { model: string; clip: string; vae: string };
 type MosaicRedrawInput = {
   source: Blob; boxes: MosaicBox[]; reference?: Blob; keep: MosaicBox[]; model: MosaicModel; steps: number; seed: number;
 };
-export type MosaicComfyWorkflow = { id: string; name: string; graph: Record<string, unknown> };
+export type MosaicComfyWorkflow = { id: string; name: string; path: string; graph: Record<string, unknown> };
 export const openMosaicComfyWorkflowEvent = "llmchat-open-mosaic-comfy-workflow";
 
 async function mosaicRedrawDirectory() {
@@ -246,7 +246,8 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
       referenceImage: input.reference && await encoded(input.reference),
       keep: input.keep, seed: input.seed, name: input.name },
   });
-  return { id: crypto.randomUUID(), name: input.name + " - " + mosaicModelLabels[input.model] + ".json", graph };
+  const name = mosaicModelLabels[input.model] + ".json";
+  return { id: crypto.randomUUID(), name, path: "LLMChat - 去码/" + name, graph };
 }
 
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
