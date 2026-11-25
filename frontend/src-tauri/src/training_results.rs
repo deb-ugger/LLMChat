@@ -72,9 +72,9 @@ pub fn read_training_result(app:tauri::AppHandle,run_id:String)->Result<Value,St
     Ok(json!({"meta":meta,"report":report,"csv":csv,"snapshotPath":path.join("snapshot/manifest.json")}))
 }
 
-fn helper(app:&tauri::AppHandle,python_path:Option<&str>,action:&str,args:&[(&str,String)])->Result<Value,String>{
+fn helper(app:&tauri::AppHandle,python_path:Option<&str>,environment_dir:Option<&str>,action:&str,args:&[(&str,String)])->Result<Value,String>{
     let local=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
-    let environment=crate::training_environment::resolve(&local,python_path);
+    let environment=crate::training_environment::resolve(&local,python_path,environment_dir);
     let python=environment.python.or(environment.base).ok_or(environment.detail)?;
     let mut command=Command::new(python.path);win::hidden(&mut command);
     command.args(["-X","utf8"]).arg(resource(app)?.join("training-results.py")).arg(action);
@@ -87,13 +87,13 @@ fn helper(app:&tauri::AppHandle,python_path:Option<&str>,action:&str,args:&[(&st
 fn model_dir(comfy:&str)->String{Path::new(comfy).join("ComfyUI/models/mosaic-region-targets").to_string_lossy().into()}
 
 #[tauri::command]
-pub async fn training_model_status(app:tauri::AppHandle,comfy_dir:String,python_path:Option<String>)->Result<Value,String>{
-    tauri::async_runtime::spawn_blocking(move||helper(&app,python_path.as_deref(),"status",&[("--directory",model_dir(&comfy_dir))])).await.map_err(|e|e.to_string())?
+pub async fn training_model_status(app:tauri::AppHandle,comfy_dir:String,python_path:Option<String>,environment_dir:Option<String>)->Result<Value,String>{
+    tauri::async_runtime::spawn_blocking(move||helper(&app,python_path.as_deref(),environment_dir.as_deref(),"status",&[("--directory",model_dir(&comfy_dir))])).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
 pub async fn enable_training_model(
-    app: tauri::AppHandle, run_id: String, comfy_dir: String, expected_active_hash: Option<String>, python_path: Option<String>,
+    app: tauri::AppHandle, run_id: String, comfy_dir: String, expected_active_hash: Option<String>, python_path: Option<String>, environment_dir: Option<String>,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if comfy_dir.trim().is_empty() {return Err("请先配置 ComfyUI 模型目录".into());}
@@ -109,14 +109,14 @@ pub async fn enable_training_model(
         if let Some(hash) = expected_active_hash {
             args.push(("--expected-hash", hash));
         }
-        helper(&app, python_path.as_deref(), "enable", &args)
+        helper(&app, python_path.as_deref(), environment_dir.as_deref(), "enable", &args)
     }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 pub async fn correct_training_label(
     app: tauri::AppHandle, run_id: String, sample: String, box_coordinates: [u32; 4],
-    label: String, python_path: Option<String>,
+    label: String, python_path: Option<String>, environment_dir: Option<String>,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _exclusive = win::exclusive()?;
@@ -124,7 +124,7 @@ pub async fn correct_training_label(
         let meta = metadata(&run)?;
         let id = meta["datasetWorkId"].as_str().ok_or("缺少工作版本关联")?;
         let dataset = work(&app, id)?;
-        helper(&app, python_path.as_deref(), "correct", &[
+        helper(&app, python_path.as_deref(), environment_dir.as_deref(), "correct", &[
             ("--directory", dataset.to_string_lossy().into()),
             ("--sample", sample),
             ("--box", serde_json::to_string(&box_coordinates).unwrap()),

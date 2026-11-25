@@ -1,5 +1,6 @@
-import { TrainingPythonSettings } from "./TrainingPythonSettings";
-import { useTrainingPython } from "../trainingPythonSettings";
+import { GameDialog, useGameActionConfirm } from "./GameActionConfirm";
+import { TrainingPythonSettings, type TrainingStorage } from "./TrainingPythonSettings";
+import { useTrainingPython, useTrainingEnvironmentDirectory, readTrainingPython, readTrainingEnvironmentDirectory, saveTrainingPython } from "../trainingPythonSettings";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useId, useRef, useState } from "react";
 import { readDatasetCatalog } from "../benchmark/trainingDatasets";
@@ -8,8 +9,10 @@ import { readableTrainingLog, type TrainingRun } from "../benchmark/trainingResu
 import { loadAnnotatedSampleSet } from "../benchmark/imageSampleSet";
 
 type TrainingEvent = { runId: string; state: string; phase: string; current: number; total: number; message: string; outputDir: string };
+type Diagnostic = { message: string; rawOutput: string; logPath: string };
 type PythonInfo = { path: string; version: string; torch: string; torchvision: string };
 type EnvReport = {
+  diagnostic?: Diagnostic; storage?: TrainingStorage;
   ready: boolean; status: "ready" | "needs_install" | "blocked"; messages: string[];
   python: PythonInfo | null; basePython: PythonInfo | null; systemEnvironment: boolean; estimatedBytes: number;
   checks: { name: string; ok: boolean; detail: string }[];
@@ -24,10 +27,16 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
   const datasets = readDatasetCatalog().filter(item => item.workId);
   const comfy = localStorage.getItem("llmchat-comfy-directory") ?? "";
   const pythonPath = useTrainingPython();
+  const environmentDir = useTrainingEnvironmentDirectory();
+  const [checkedDirectory, setCheckedDirectory] = useState("");
+  const [storageChoice, setStorageChoice] = useState(false);
+  const [installDiagnostic, setInstallDiagnostic] = useState<Diagnostic>();
+  const confirmation = useGameActionConfirm();
+
   const [checkedPython, setCheckedPython] = useState("");
   const [installing, setInstalling] = useState(false);
   const [manualPython, setManualPython] = useState(false);
-  const installChannel = useRef<Channel<{ state: string; message: string }> | undefined>(undefined);
+  const installChannel = useRef<Channel<{ state: string; message: string; diagnostic?: Diagnostic }> | undefined>(undefined);
   const [classifier, setClassifier] = useState(0);
   const [dataset, setDataset] = useState(datasets[0]?.workId ?? "");
   const datasetIds = datasets.map(item => item.workId).join("\n");
@@ -37,6 +46,7 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
   }, [datasetIds, dataset]);
   const [limit, setLimit] = useState(0);
   const [env, setEnv] = useState<EnvReport>();
+  useEffect(() => { if (env?.storage?.issue && env.status !== "ready") setStorageChoice(true); }, [env]);
   const [showChecks, setShowChecks] = useState(false);
   const checksId = useId();
   const [checkedComfy, setCheckedComfy] = useState("");
@@ -77,25 +87,29 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
   async function probe() {
     setChecking(true);setError("");setEnv(undefined);
     try {
-      setEnv(await invoke<EnvReport>("probe_training_env", { comfyDir: comfy, pythonPath }));
-      setCheckedComfy(comfy);setCheckedPython(pythonPath);
+      const selectedPython = readTrainingPython();
+      const selectedDirectory = readTrainingEnvironmentDirectory();
+      setEnv(await invoke<EnvReport>("probe_training_env", { comfyDir: comfy, pythonPath: selectedPython, environmentDir: selectedDirectory }));
+      setCheckedComfy(comfy);setCheckedPython(selectedPython);setCheckedDirectory(selectedDirectory);
     }
     catch (error) { setError(String(error)); }
     finally { setChecking(false); }
   }
 
-  async function prepare() {
-    setInstalling(true);setError("");setLogs([]);setExpandedLogs(true);
-    const events = new Channel<{ state: string; message: string }>();
+  async function prepare(migrate = false) {
+    if (migrate) saveTrainingPython(pythonPath, "");
+    setInstalling(true);setError("");setLogs([]);setExpandedLogs(true);setInstallDiagnostic(undefined);
+    const events = new Channel<{ state: string; message: string; diagnostic?: Diagnostic }>();
     installChannel.current = events;
     events.onmessage = value => {
       setLogs(lines => [...lines.slice(-499), value.message]);
+      if (value.diagnostic) setInstallDiagnostic(value.diagnostic);
       if (value.state !== "installing") {
         setInstalling(false);
         void probe().then(() => { if (value.state !== "ready") setError(value.message); });
       }
     };
-    try { await invoke("ensure_training_venv", { pythonPath, events }); }
+    try { await invoke("ensure_training_venv", { pythonPath, environmentDir: migrate ? "" : environmentDir, events }); }
     catch (error) { setInstalling(false);setError(String(error)); }
   }
 
@@ -108,12 +122,14 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
       if (value.phase === "fit" || value.phase === "features") setProgress(value);
       setLogs(logs => [...logs.slice(-499), value.message]);
     };
-    try { await invoke<string>("start_training", { datasetWorkId: dataset, options: { comfyDir: comfy, limit, pythonPath }, events }); }
+    try { await invoke<string>("start_training", { datasetWorkId: dataset, options: { comfyDir: comfy, limit, pythonPath, environmentDir }, events }); }
     catch (error) { setError(String(error)); }
     finally { setStarting(false); }
   }
 
   const report = selectedRun?.report;
+  const storage = env?.storage;
+  const softwareEnvironmentReady = env?.ready && storage && storage.directory.replaceAll("\\", "/") === `${storage.softwareDirectory.replaceAll("\\", "/")}/training-venv`;
   const historicalComplete = !event && selectedRun?.state === "complete";
   const statusLine = starting ? "正在启动训练" : event?.state === "cancelled" ? `已中断 · 停在 ${progress.current}/160`
     : running ? progress.phase === "features" ? "训练中 · 提取特征" : `训练中 · ${progress.current}/160`
@@ -157,10 +173,22 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
         {env?.status === "blocked" && <p className="hint">请安装 Python 3.10–3.12（含 venv），或指定已有解释器。
           <a href="https://mirrors.aliyun.com/python-release/windows/" target="_blank" rel="noreferrer">国内下载镜像</a></p>}
         {env?.status === "blocked" && <button type="button" className="unity-btn" onClick={() => { setManualPython(true);setShowChecks(true); }}>手动指定路径</button>}
+        {env?.storage?.legacyDirectory && <>
+          <p className="hint">检测到旧训练环境，约 {(env.storage.legacyBytes / 1e9).toFixed(2)} GB</p>
+          <div className="training-dataset-actions">
+            <button className="unity-btn" type="button" disabled={installing || running || !!softwareEnvironmentReady} onClick={() => void prepare(true)}>{softwareEnvironmentReady ? "软件目录已就绪" : "迁移到软件目录"}</button>
+            <button className="unity-btn" type="button" disabled={installing || running} onClick={() => {
+              void confirmation.confirm("删除旧训练环境将释放磁盘空间，之后需要重新准备才能使用。", { title: "删除旧训练环境", okLabel: "删除" }).then(async accepted => {
+                if (!accepted) return;
+                try { await invoke("remove_legacy_training_environment");void probe(); } catch (error) { setError(String(error)); }
+              });
+            }}>删除旧环境</button>
+          </div>
+        </>}
         {error && <p role="alert" className="training-env-status" data-ready="false">操作失败，请查看右侧日志或明细</p>}
         <div className="training-dataset-actions">
           <button type="button" className="unity-btn" disabled={checking || running || installing} onClick={() => void probe()}>{checking ? slowCheck ? "仍在检查…" : "正在检查…" : "检查环境"}</button>
-          <button type="button" className="unity-btn unity-btn-primary" disabled={!env?.ready || installing || checkedPython !== pythonPath || checkedComfy !== comfy || !dataset || running || checking || !Number.isInteger(limit) || limit < 0 || limit > 100000} onClick={() => void start()}>开始训练</button>
+          <button type="button" className="unity-btn unity-btn-primary" disabled={!env?.ready || installing || checkedPython !== pythonPath || checkedDirectory !== environmentDir || checkedComfy !== comfy || !dataset || running || checking || !Number.isInteger(limit) || limit < 0 || limit > 100000} onClick={() => void start()}>开始训练</button>
           {env?.status === "needs_install" && !installing && <button type="button" className="unity-btn" disabled={running || checking} onClick={() => void prepare()}>准备训练环境</button>}
           {installing && <button type="button" className="unity-btn" onClick={() => void invoke("cancel_training_environment").catch(error => setError(String(error)))}>中断准备</button>}
           {running && <button type="button" className="unity-btn" disabled={!event?.runId} onClick={() => {
@@ -179,9 +207,11 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
         {expandedLogs && <details><summary>原始输出</summary><pre className="training-run-log" data-expanded="true">{logs.join("\n")}</pre></details>}
       </section>
       <section id={checksId} className="training-env-panel" hidden={!showChecks || (!env && !error && !manualPython)} aria-label="环境检查明细">
+
         {error && <p role="alert" className="training-run-path">{error}</p>}
         {manualPython && <TrainingPythonSettings />}
-        {env?.python && <p className="training-run-path">{env.python.path}</p>}
+        {env?.storage && <p className="training-run-path">训练环境目录 {env.storage.directory}</p>}
+        {env?.storage?.legacyDirectory && <p className="training-run-path">检测到旧训练环境在 {env.storage.legacyDirectory}（约 {(env.storage.legacyBytes / 1e9).toFixed(2)} GB）。{softwareEnvironmentReady ? "软件目录中的环境已就绪，可确认后删除旧环境释放空间。" : "可通过重建迁移到软件目录，成功前保留原目录。"}</p>}
         {env?.status === "blocked" && <p className="training-run-path">{env.messages.join("\n")}</p>}
         {env && <ul className="training-env-checks">
           {env.checks.map(check => <li key={check.name} data-ok={check.ok}>
@@ -193,9 +223,20 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
           </li>)}
         </ul>}
       </section>
+      {(env?.diagnostic || installDiagnostic) && <details key={(env?.diagnostic || installDiagnostic)?.logPath} className="training-env-panel">
+        <summary>查看原始输出</summary>
+        <p className="training-run-path">{(env?.diagnostic || installDiagnostic)?.logPath}</p>
+        <pre className="training-run-log" data-expanded="true">{(env?.diagnostic || installDiagnostic)?.rawOutput}</pre>
+      </details>}
       <TrainingResults datasetId={dataset} finishedRun={event?.state === "complete" ? event.runId : undefined} comfy={comfy}
         runState={running ? "running" : event?.state}
-        pythonPath={pythonPath} onRunChange={setSelectedRun} onRetrain={() => document.querySelector<HTMLSelectElement>(".training-run-fields select")?.focus()} />
+        pythonPath={pythonPath} environmentDir={environmentDir} onRunChange={setSelectedRun} onRetrain={() => document.querySelector<HTMLSelectElement>(".training-run-fields select")?.focus()} />
     </div>
+    {storageChoice && <GameDialog className="training-storage-dialog" title="选择训练环境目录" description={env?.storage?.issue || "请选择可写且空间充足的训练环境目录"}
+      onCancel={() => setStorageChoice(false)} details={<TrainingPythonSettings />}>
+      <button className="game-confirm-cancel" type="button" onClick={() => setStorageChoice(false)}>取消</button>
+      <button className="game-confirm-primary" type="button" onClick={() => { setStorageChoice(false);void probe(); }}>返回检查</button>
+    </GameDialog>}
+    {confirmation.dialog}
   </div>;
 }

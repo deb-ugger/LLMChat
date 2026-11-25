@@ -36,9 +36,9 @@ function ValidationImage({ row, snapshot }: { row: ValidationRow; snapshot: Anno
   </div>;
 }
 
-export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange, runState, pythonPath }: {
+export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange, runState, pythonPath, environmentDir }: {
   datasetId: string; finishedRun?: string; comfy: string; onRetrain: () => void; onRunChange?: (run: TrainingRun | undefined) => void;
-  runState?: string; pythonPath?: string;
+  runState?: string; pythonPath?: string; environmentDir?: string;
 }) {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [runId, setRunId] = useState("");
@@ -78,10 +78,10 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
 
   useEffect(() => {
     let active = true;setModel(undefined);
-    if (comfy) void invoke<ModelStatus>("training_model_status", { comfyDir: comfy, pythonPath }).then(value => { if (active) setModel(value); })
+    if (comfy) void invoke<ModelStatus>("training_model_status", { comfyDir: comfy, pythonPath, environmentDir }).then(value => { if (active) setModel(value); })
       .catch(error => { if (active) setError(String(error)); });
     return () => { active = false; };
-  }, [comfy, runId, pythonPath]);
+  }, [comfy, runId, pythonPath, environmentDir]);
 
   useEffect(() => {
     onRunChange?.(result ? { ...result.meta, report: result.report } : undefined);
@@ -96,7 +96,7 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     if (!model || !runId) return;
     setBusy(true);setError("");
     try {
-      setModel(await invoke<ModelStatus>("enable_training_model", { runId, comfyDir: comfy, expectedActiveHash: model.hash, pythonPath }));
+      setModel(await invoke<ModelStatus>("enable_training_model", { runId, comfyDir: comfy, expectedActiveHash: model.hash, pythonPath, environmentDir }));
       setMessage("已生效，下次重绘使用新模型");
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }
@@ -106,7 +106,7 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     if (!selection || !result) return;
     setBusy(true);setError("");
     try {
-      await invoke("correct_training_label", { runId: result.meta.runId, sample: selection.sample, boxCoordinates: selection.box, label: part, pythonPath });
+      await invoke("correct_training_label", { runId: result.meta.runId, sample: selection.sample, boxCoordinates: selection.box, label: part, pythonPath, environmentDir });
       setMessage("已保存，可重新训练");
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }

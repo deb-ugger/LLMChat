@@ -1,4 +1,9 @@
 [[permission]]
 identifier = "allow-training"
 description = "Run the fixed local dataset trainer and inspect its environment."
-commands.allow = ["start_training", "cancel_training", "probe_training_env", "ensure_training_venv", "cancel_training_environment", "list_training_runs", "read_training_result", "training_model_status", "enable_training_model", "correct_training_label"]
+commands.allow = ["start_training", "cancel_training", "probe_training_env", "ensure_training_venv", "training_storage_info", "remove_legacy_training_environment", "cancel_training_environment", "list_training_runs", "read_training_result", "training_model_status", "enable_training_model", "correct_training_label"]
+
+[[permission]]
+identifier = "allow-training-storage"
+description = "Inspect training environment storage from settings."
+commands.allow = ["training_storage_info"]

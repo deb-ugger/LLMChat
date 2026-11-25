@@ -287,3 +287,10 @@
 .training-env-panel[hidden] {display:none;}
 .training-env-panel .training-env-checks li {grid-template-columns:minmax(110px,1fr) minmax(0,2fr);}
 .training-env-panel .training-env-checks b {overflow-wrap:anywhere;}
+.training-env-panel > .settings-card {margin:0;}
+.training-env-panel:has(> .settings-card) {max-height:min(65vh,520px);}
+.training-python-settings .game-context-controls {display:grid;grid-template-columns:minmax(0,1fr);gap:8px;}
+.training-python-settings .game-context-controls label {display:grid;gap:4px;}
+.training-python-settings .game-context-controls input {inline-size:100%;min-inline-size:0;box-sizing:border-box;}
+.game-action-confirm.training-storage-dialog {inline-size:min(760px,calc(100vw - 40px));}
+.training-storage-dialog .game-confirm-details {max-block-size:min(60vh,480px);}

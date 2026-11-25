@@ -16,6 +16,7 @@
     "allow-runtime-log",
     "allow-ollama-service",
     "allow-style-redraw",
+    "allow-training-storage",
     "shell:allow-open",
     {
       "identifier": "shell:allow-spawn",

@@ -5,7 +5,7 @@ use tauri::{ipc::Channel, Manager};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TrainingOptions { pub comfy_dir: String, pub limit: u32, pub python_path: Option<String> }
+pub struct TrainingOptions { pub comfy_dir: String, pub limit: u32, pub python_path: Option<String>, pub environment_dir: Option<String> }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingEvent {
@@ -19,6 +19,8 @@ pub struct EnvReport {
     python: Option<crate::training_python::TrainingPython>,
     base_python: Option<crate::training_python::TrainingPython>,
     system_environment: bool, estimated_bytes: u64,
+    diagnostic: Option<crate::training_diagnostics::TrainingFailure>,
+    storage: Option<crate::training_storage::Storage>,
 }
 #[derive(Serialize, Deserialize)]
 struct EnvCheck { name: String, ok: bool, detail: String }
@@ -65,9 +67,9 @@ fn write_check(directory: &Path) -> Result<(), String> {
         .map_err(error)
 }
 
-pub(super) fn probe(comfy: &str, resources: &Path, output: &Path, configured: Option<&str>) -> EnvReport {
+pub(super) fn probe(comfy: &str, resources: &Path, output: &Path, configured: Option<&str>, environment_dir: Option<&str>) -> EnvReport {
     let local = output.parent().unwrap_or(output);
-    let environment = crate::training_environment::resolve(local, configured);
+    let environment = crate::training_environment::resolve(local, configured, environment_dir);
     let available = environment.python.as_ref().or(environment.base.as_ref());
     let mut checks = vec![EnvCheck {
         name: "训练 Python".into(), ok: available.is_some(),
@@ -99,15 +101,15 @@ pub(super) fn probe(comfy: &str, resources: &Path, output: &Path, configured: Op
     EnvReport {
         ready: status=="ready", messages, checks, status, python: environment.python,
         base_python: environment.base, system_environment: environment.system,
-        estimated_bytes: 1_388_042_310,
+        estimated_bytes: 1_388_042_310, diagnostic: environment.diagnostic, storage: environment.storage,
     }
 }
 #[tauri::command]
-pub async fn probe_training_env(app: tauri::AppHandle, comfy_dir: String, python_path: Option<String>) -> Result<EnvReport, String> {
+pub async fn probe_training_env(app: tauri::AppHandle, comfy_dir: String, python_path: Option<String>, environment_dir: Option<String>) -> Result<EnvReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let resources = app.path().resource_dir().map_err(error)?.join("resources/training");
         let output = app.path().app_local_data_dir().map_err(error)?.join("training-runs");
-        Ok(probe(&comfy_dir, &resources, &output, python_path.as_deref()))
+        Ok(probe(&comfy_dir, &resources, &output, python_path.as_deref(), environment_dir.as_deref()))
     }).await.map_err(error)?
 }
 #[tauri::command]
@@ -125,7 +127,7 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
         let resources = resource(&app)?;
         let dataset = work(&app, &dataset_work_id)?;
         let output_root = app.path().app_local_data_dir().map_err(error)?.join("training-runs");
-        let env = probe(&options.comfy_dir, &resources, &output_root, options.python_path.as_deref());
+        let env = probe(&options.comfy_dir, &resources, &output_root, options.python_path.as_deref(), options.environment_dir.as_deref());
         if !env.ready { return Err(env.messages.join("\n")); }
         managed(&app.path().app_local_data_dir().map_err(error)?, &output_root)?;
         let id = format!("{}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_millis(), SEQUENCE.fetch_add(1,Ordering::Relaxed));
