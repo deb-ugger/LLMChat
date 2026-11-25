@@ -241,10 +241,11 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
   return { id: crypto.randomUUID(), name: input.name + " - " + mosaicModelLabels[input.model] + ".json", graph };
 }
 
-export async function cancelMosaicRedraw(promptId: string) {
-  // Match uuid.uuid5(NAMESPACE_URL, ...) in the expanded-mask workflow.
+export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
+  // Match the job identifier in repair_mosaic.
   const namespace = new Uint8Array([0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]);
-  const name = new TextEncoder().encode("urn:llmchat:mosaic:expanded:" + promptId);
+  const workflow = model === "2511" ? "aligned-edit" : "expanded";
+  const name = new TextEncoder().encode("urn:llmchat:mosaic:" + workflow + ":" + promptId);
   const input = new Uint8Array(namespace.length + name.length);
   input.set(namespace);
   input.set(name, namespace.length);

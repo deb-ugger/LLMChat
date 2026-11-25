@@ -588,9 +588,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const redrawWithConfirmation = async (input: Parameters<typeof redrawMosaic>[0]) => {
     const clone = (rect: typeof input.boxes[number]): typeof input.boxes[number] => [...rect];
     const evidence = { boxes: input.boxes.map(clone), keep: input.keep.map(clone), model: input.model };
-    if (input.promptId) localStorage.setItem(redrawPromptKey, input.promptId);
+    const activePrompt = input.promptId && input.model + ":" + input.promptId;
+    if (activePrompt) localStorage.setItem(redrawPromptKey, activePrompt);
     const blob = await redrawMosaic({ ...input, ...evidence });
-    if (input.promptId && localStorage.getItem(redrawPromptKey) === input.promptId)
+    if (activePrompt && localStorage.getItem(redrawPromptKey) === activePrompt)
       localStorage.removeItem(redrawPromptKey);
     renderedMosaics.current.set(blob, evidence);
     return blob;
@@ -1212,10 +1213,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }
 
   async function cancelRedrawPrompt() {
-    const promptId = localStorage.getItem(redrawPromptKey);
-    if (!promptId) return;
-    await cancelMosaicRedraw(promptId);
-    if (localStorage.getItem(redrawPromptKey) === promptId) localStorage.removeItem(redrawPromptKey);
+    const activePrompt = localStorage.getItem(redrawPromptKey);
+    if (!activePrompt) return;
+    const [modelOrLegacyId, promptId] = activePrompt.split(":", 2);
+    await cancelMosaicRedraw(promptId ?? modelOrLegacyId, modelOrLegacyId === "2511" ? "2511" : undefined);
+    if (localStorage.getItem(redrawPromptKey) === activePrompt) localStorage.removeItem(redrawPromptKey);
   }
 
   async function cancelRedrawTask() {

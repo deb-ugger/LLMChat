@@ -473,7 +473,14 @@ def match_mosaic_colors(crop, restored, generation, samples):
     return Image.fromarray(matched)
 
 
-def mosaic_workflow(source_name, reference_name, mask_name, steps, profile):
+def edit_mosaic_size(crop_size):
+    longest = max(crop_size)
+    scale = min(768, max(512, longest)) / longest
+    return tuple(max(16, round(side * scale / 16) * 16) for side in crop_size)
+
+
+def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None):
+    local_edit = profile["kind"] == "2511" and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
               "Match the colors, shading and brightness immediately around the repaired area in image 1. "
@@ -481,8 +488,14 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile):
     if mask_name is None:
         prompt = prompt.replace("within the masked area of image 1", "in image 1").replace(
             "outside the mask", "away from the pixelation")
+    if local_edit:
+        prompt += (" Follow the visible contours into the mask. Preserve the target's silhouette, proportions, "
+                   "placement, and occlusion boundaries. For human figures, keep anatomy and connected body parts coherent. "
+                   "Rebuild fine contours, texture, and shading transitions.")
     if reference_name:
-        prompt += " Use image 2 for style and retain the local colors of image 1."
+        prompt += (" Use image 2 only as a guide to linework and rendering style. "
+                   "Use image 1 for all proportions, placement and local colors." if local_edit
+                   else " Use image 2 for style and retain the local colors of image 1.")
     graph = workflow(source_name, reference_name, "", steps, None, profile, edit_prompt=prompt)
     if mask_name is not None:
         sampler = graph["13"]["inputs"]
@@ -490,6 +503,21 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile):
         graph["18"] = {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
         graph["19"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": sampler["latent_image"], "mask": ["18", 0]}}
         sampler["latent_image"] = ["19", 0]
+    if local_edit:
+        width, height = edit_mosaic_size(crop_size)
+        scale = {"width": width, "height": height, "crop": "disabled"}
+        graph["5"] = {"class_type": "ImageScale", "inputs": {
+            **scale, "image": ["4", 0], "upscale_method": "lanczos"}}
+        graph["26"] = {"class_type": "ImageScale", "inputs": {
+            **scale, "image": ["17", 0], "upscale_method": "nearest-exact"}}
+        graph["18"]["inputs"]["image"] = ["26", 0]
+        graph["7"]["inputs"]["prompt"] = "Flat color fill, missing texture, broken outlines, distorted proportions, duplicated forms."
+        # Reuse the aligned target latent. The style image stays in the vision encoder.
+        for encoder, conditioner, ref in (("6", "8", "27"), ("7", "9", "28")):
+            del graph[encoder]["inputs"]["vae"]
+            graph[ref] = {"class_type": "ReferenceLatent", "inputs": {
+                "conditioning": [encoder, 0], "latent": ["12", 0]}}
+            graph[conditioner]["inputs"]["conditioning"] = [ref, 0]
     return graph
 
 
@@ -518,7 +546,7 @@ async def prepare_mosaic_workflow(original, data, steps):
         source_name = await upload(original, workflow_input_name(profile.get("name", "")))
         mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
         reference_name = await upload(mosaic_reference_crop(reference, original, bounds)) if reference else None
-        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile)
+        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None)
         if masked:
             left, top, _, _ = bounds
             graph["20"] = {"class_type": "ImageCrop", "inputs": {
@@ -551,8 +579,9 @@ async def repair_mosaic(original, data, steps, workflow_times):
         argv = await ready(session, root, cancel_path)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
-            # The expanded crop cannot reuse a ComfyUI output from the original-mask workflow.
-            resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:llmchat:mosaic:expanded:" + prompt_id)) if prompt_id else None
+            # Recover only outputs produced with matching crop geometry.
+            workflow_key = "aligned-edit" if profile["kind"] == "2511" else "expanded"
+            resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
             raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
             if raw is None:
                 source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
@@ -561,7 +590,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
                 reference_name = None
                 if reference:
                     reference_name = await upload_image(session, mosaic_reference_crop(reference, original, bounds), subfolder=subfolder)
-                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile)
+                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size)
                 if subfolder:
                     graph["15"] = {"class_type": "SaveImage", "inputs": {
                         "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
