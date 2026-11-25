@@ -36,8 +36,9 @@ function ValidationImage({ row, snapshot }: { row: ValidationRow; snapshot: Anno
   </div>;
 }
 
-export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange }: {
+export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange, runState }: {
   datasetId: string; finishedRun?: string; comfy: string; onRetrain: () => void; onRunChange?: (run: TrainingRun | undefined) => void;
+  runState?: string;
 }) {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [runId, setRunId] = useState("");
@@ -118,7 +119,8 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
       {runs.map(run => <option key={run.runId} value={run.runId}>{time(run.createdAt)} · {run.report ? `${run.report.training_samples + run.report.validation_samples} 框 · ${percent(run.report.agreement)}` : run.state}
         {model?.source?.runId === run.runId ? " · 已启用" : ""}</option>)}
     </select></>}
-    {!runs.length && !error && <p className="training-no-results">还没有训练记录，左侧配置好后点开始训练</p>}
+    {!runs.length && !error && <p className="training-no-results">{runState === "running" ? "训练结束后这里出现结果"
+      : runState === "cancelled" ? "本次已中断，结果未生成；可重新开始" : "还没有训练记录，左侧配置好后点开始训练"}</p>}
     {error && <p role="alert" className="training-dataset-error">{error}</p>}
     {metrics && result && <>
       <div className="training-result-metrics">{[["验证准确率", metrics.accuracy], ["宏平均 F1", metrics.macroF1],

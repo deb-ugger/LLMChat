@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { readDatasetCatalog } from "../benchmark/trainingDatasets";
 import { TrainingResults } from "./TrainingResults";
 import { readableTrainingLog, type TrainingRun } from "../benchmark/trainingResults";
@@ -25,6 +25,8 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
   }, [datasetIds, dataset]);
   const [limit, setLimit] = useState(0);
   const [env, setEnv] = useState<EnvReport>();
+  const [showChecks, setShowChecks] = useState(false);
+  const checksId = useId();
   const [checkedComfy, setCheckedComfy] = useState("");
   const [checking, setChecking] = useState(false);
   const [slowCheck, setSlowCheck] = useState(false);
@@ -116,10 +118,11 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
           <p className="hint">0 表示全部已确认蒙版，需含男、女两类和至少三个场景。</p>
           <label>ComfyUI<span className="training-run-path">{comfy || "请先在设置中指定 ComfyUI 路径"}</span></label>
         </fieldset>
-        {env && <p role="status" className="training-env-status" data-ready={env.ready}>
-          {env.ready ? env.checks.every(check => check.ok) ? "7 项检查通过" : "6 项检查通过，模型目录检查未通过（仅影响启用）"
+        {env && <div className="training-env-summary"><p role="status" className="training-env-status" data-ready={env.ready}>
+          {env.ready ? env.checks.every(check => check.ok) ? "7 项检查通过" : "6 项检查通过，仅启用受限"
             : `${env.checks.filter(check => !check.ok).length} 项未通过，开始训练已禁用`}
-        </p>}
+        </p><button type="button" className="training-env-toggle" aria-expanded={showChecks} aria-controls={checksId}
+          onClick={() => setShowChecks(!showChecks)}>{showChecks ? "收起明细" : "查看明细"}</button></div>}
         {error && <p role="alert" className="training-env-status" data-ready="false">{error}</p>}
         <div className="training-dataset-actions">
           <button type="button" className="unity-btn" disabled={!comfy || checking || running} onClick={() => void probe()}>{checking ? slowCheck ? "仍在检查…" : "正在检查…" : "检查环境"}</button>
@@ -128,15 +131,6 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
             void invoke("cancel_training", { runId: event?.runId }).catch(error => setError(String(error)));
           }}>中断</button>}
         </div>
-        {env && <ul className="training-env-checks" aria-label="环境检查明细">
-          {env.checks.map(check => <li key={check.name} data-ok={check.ok}>
-            <span>{check.name}</span><b title={check.detail}>{check.ok ? "✓" : "✗"} {check.ok
-              ? ["Python", "torch", "torchvision"].includes(check.name) ? check.detail
-                : check.name === "预训练权重" ? check.detail.split("，")[0] : check.name === "ComfyUI 路径" ? "可用" : "可写"
-              : "未通过"}</b>
-            {!check.ok && <small>{check.detail}</small>}
-          </li>)}
-        </ul>}
       </>}
     </aside>
     <div className="training-run-output">
@@ -148,7 +142,19 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
         <pre ref={tail} className="training-run-log" data-expanded={expandedLogs} aria-label="训练日志">{(expandedLogs ? logs : logs.slice(-3)).map(readableTrainingLog).join("\n") || (historicalComplete ? "训练已完成" : "等待训练开始")}</pre>
         {expandedLogs && <details><summary>原始输出</summary><pre className="training-run-log" data-expanded="true">{logs.join("\n")}</pre></details>}
       </section>
+      <section id={checksId} className="training-env-panel" hidden={!showChecks || !env} aria-label="环境检查明细">
+        {env && <ul className="training-env-checks">
+          {env.checks.map(check => <li key={check.name} data-ok={check.ok}>
+            <span>{check.name}</span><b title={check.detail}>{check.ok ? "✓" : "✗"} {check.ok
+              ? ["Python", "torch", "torchvision"].includes(check.name) ? check.detail
+                : check.name === "预训练权重" ? check.detail.split("，")[0] : check.name === "ComfyUI 路径" ? "可用" : "可写"
+              : "未通过"}</b>
+            {!check.ok && <small>{check.detail}</small>}
+          </li>)}
+        </ul>}
+      </section>
       <TrainingResults datasetId={dataset} finishedRun={event?.state === "complete" ? event.runId : undefined} comfy={comfy}
+        runState={running ? "running" : event?.state}
         onRunChange={setSelectedRun} onRetrain={() => document.querySelector<HTMLSelectElement>(".training-run-fields select")?.focus()} />
     </div>
   </div>;
