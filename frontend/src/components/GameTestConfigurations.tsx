@@ -1,5 +1,5 @@
 import { MosaicScreeningFields } from "./game-mosaic/MosaicScreeningFields";
-import { mosaicRefineConcurrencyChoices, normalizeMosaicSettings } from "../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, normalizeMosaicSettings } from "../gameMosaic";
 import { useMemo, useState, type ReactNode } from "react";
 import type { GameConfigurationSetup } from "../gameAuxWindows";
 import { GAME_PROMPT_SCENES, useGamePromptCatalog, type GamePromptScene } from "../gamePrompts";
@@ -216,8 +216,8 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           <Select label="候选区域推理模型" value={mosaic.refineModel || "qwen3.5:latest"} choices={[...new Set(["qwen3.5:latest",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineModel=>updateMosaic({refineModel})}/>
           <Select label="纹理与漏检复核模型" value={mosaic.refineGuardModel || "qwen3-vl:8b-instruct"} choices={[...new Set(["qwen3-vl:8b-instruct",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineGuardModel=>updateMosaic({refineGuardModel})}/>
           <Count label="去码复筛并发" value={mosaic.refineConcurrency ?? 1} choices={mosaicRefineConcurrencyChoices} change={refineConcurrency=>updateMosaic({refineConcurrency})}/>
-          <Select label="去码模型" value={mosaic.model} choices={[{value:"turbo",label:"Qwen Image 2.1 Turbo"},{value:"2511",label:"Qwen Image Edit 2511"}]} change={model=>updateMosaic({model,steps:model==="turbo"?8:20})}/>
-          {mosaic.model==="2511" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
+          <Select label="去码模型" value={mosaic.model} choices={mosaicModelChoices} change={model=>updateMosaic({model,steps:mosaicDefaultSteps[model]})}/>
+          {mosaic.model!=="turbo" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
           <Flag label="保护已识别文字" value={mosaic.protect} change={protect=>updateMosaic({protect})}/>
         </Group>}
         <Group title="生成译图">{toggleModel("images", "layout", "排版方式", "本地原位排版")}</Group>

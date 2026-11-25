@@ -1796,7 +1796,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     }
     let detector: Awaited<ReturnType<typeof openDeploymentDetector>> | undefined;
     const savedDrafts = new Set<string>();
-    const redrawStyle = automaticMosaicRedrawStyle(usable, rows, (image, signal) => readSavedMosaicImage(image, signal, current.folder), signal);
+    const redrawStyle = automaticMosaicRedrawStyle(usable, rows, (image, signal) => readSavedMosaicImage(image, signal, current.folder), signal, preferences.model);
     try {
       for (const [index, image] of images.entries()) {
         signal.throwIfAborted();

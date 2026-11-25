@@ -12,7 +12,7 @@ import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
-import { mosaicRefineConcurrencyChoices, readMosaicSettings, type MosaicSettings } from "../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
@@ -1008,9 +1008,11 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
             </select></label>
           </>}
           {mosaicStep === "mosaicRedraw" && <>
-            <label>重绘模型<select value={config.mosaic.model} onChange={event => changeMosaic(config.id,
-              { model: event.target.value as MosaicSettings["model"], steps: event.target.value === "turbo" ? 8 : 20 })}>
-              <option value="turbo">Qwen Image 2.1 Turbo</option><option value="2511">Qwen Image Edit 2511</option>
+            <label>重绘模型<select value={config.mosaic.model} onChange={event => {
+              const model = event.target.value as MosaicSettings["model"];
+              changeMosaic(config.id, { model, steps: mosaicDefaultSteps[model] });
+            }}>
+              {mosaicModelChoices.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
             </select></label>
             <label>步数<input type="number" min={1} max={100} value={config.mosaic.steps}
               onChange={event => changeMosaic(config.id, { steps: Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)))) })} /></label>

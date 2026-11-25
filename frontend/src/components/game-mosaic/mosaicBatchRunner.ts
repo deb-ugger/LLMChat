@@ -1,5 +1,5 @@
 import { mosaicRunImageOutcome } from "../../benchmark/formalRunHistory";
-import { groupMosaicScenes, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
+import { groupMosaicScenes, mosaicDefaultSteps, mosaicModelLabels, mosaicSupportsReference, type MosaicBox, type MosaicScan } from "../../gameMosaic";
 import { mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
 import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
@@ -383,7 +383,9 @@ function createMosaicReferenceReader(readSaved: (image: UnityImage, signal: Abor
 }
 
 export function automaticMosaicRedrawStyle(usable: readonly UnityImage[], rows: Results,
-  readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal) {
+  readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
+  model: RedrawPlan["models"][number]) {
+  if (!mosaicSupportsReference(model)) return async (_image: UnityImage) => ({ seed: 1 });
   const references = mosaicRedrawReferences(usable, rows);
   const readReference = createMosaicReferenceReader(readSaved, signal);
   return async (image: UnityImage): Promise<{ seed: number; reference?: Blob }> => {
@@ -419,7 +421,8 @@ export function existingMosaicRedrawReferences(images: readonly UnityImage[], ro
 
 export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityImage[], rows: Results, protect: boolean) {
   const current = new Map(usable.map(image => [image.id, image]));
-  const references = mosaicRedrawReferences(usable, rows);
+  const usesReference = plan.models.some(mosaicSupportsReference);
+  const references = usesReference ? mosaicRedrawReferences(usable, rows) : new Map<string, UnityImage>();
   const targetIds = new Set(plan.targets.map(target => target.image.id));
   return plan.targets.every(({ image, boxes, keep, style }) => {
     const latest = current.get(image.id);
@@ -440,7 +443,7 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
 }
 
 export function mosaicRedrawStepCount(plan: Pick<RedrawPlan, "models" | "steps">, engine: RedrawPlan["models"][number]) {
-  return plan.models.length === 1 ? plan.steps : engine === "turbo" ? 8 : 20;
+  return plan.models.length === 1 ? plan.steps : mosaicDefaultSteps[engine];
 }
 
 export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal: AbortSignal, report: (progress: StepReport) => void,
@@ -550,7 +553,7 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
   }
   let detector: Awaited<ReturnType<typeof openDetector>> | undefined;
   const rescreened = new Set<string>();
-  const redrawStyle = automaticMosaicRedrawStyle(usable, rows, readSaved, signal);
+  const redrawStyle = automaticMosaicRedrawStyle(usable, rows, readSaved, signal, model);
   try {
     for (const [index, image] of unscreened.entries()) {
       signal.throwIfAborted();

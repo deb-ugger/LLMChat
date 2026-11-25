@@ -1,7 +1,7 @@
 import { MosaicScreeningFields } from "./MosaicScreeningFields";
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
-import { mosaicModelLabels, mosaicRefineConcurrencyChoices, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
 import { GameFlowCard, GameFlowNumberChip, GameFlowParameterGroup, GameFlowParameterValue, useGameFlowExpansion } from "../GameFlowCard";
 import { GameFlowPerformance } from "../GameFlowSequence";
@@ -92,6 +92,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const redrawStartLabel = redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount
     : (hasGroupAction ? "重绘已勾选 · " : "重绘本组所选 · ") + redraw.targetCount;
   const redrawStartHint = redraw.paused ? "按上一次重绘的图片及配置继续"
+    : model === "diffusion-cream" ? "使用蒙版和当前图片的周边内容重绘列表内已勾选的图片"
     : hasGroupAction ? "按图片组重绘已勾选图片，规则见下方「重绘规则」" : "重绘当前画风组内已勾选的图片";
   const stage = { screen, refine, redraw };
   const order = ["screen", "refine", "redraw"] as const;
@@ -269,13 +270,14 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           aria-label="清理重绘" disabled={actionsDisabled} onClick={() => void redraw.clear()}>清理</button>}
       </>, <>
         <GameFlowParameterGroup kind="generation" title="生成">
-          <label className="game-flow-field-wide">工作流<select aria-label="去码模型工作流" value={model} disabled={busy} onChange={event => {
-            const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: next === "turbo" ? 8 : 20 });
+          <label className="game-flow-field-wide">工作流<select aria-label="去码模型工作流" value={model} disabled={busy}
+            data-tooltip={redraw.paused ? "继续重绘使用原任务的工作流，当前选项用于新任务" : undefined} onChange={event => {
+            const next = event.target.value as MosaicModel; changePreferences({ model: next, steps: mosaicDefaultSteps[next] });
           }}>
-            <option value="turbo">{mosaicModelLabels.turbo}</option><option value="2511">{mosaicModelLabels["2511"]}</option>
+            {mosaicModelChoices.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
           </select></label>
           <div className="game-flow-chip-row">
-            {model === "2511" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
+            {model !== "turbo" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
               onChange={steps => changePreferences({ steps })} />}
           </div>
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}

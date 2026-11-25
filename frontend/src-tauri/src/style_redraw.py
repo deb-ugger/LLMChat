@@ -479,7 +479,46 @@ def edit_mosaic_size(crop_size):
     return tuple(max(16, round(side * scale / 16) * 16) for side in crop_size)
 
 
+MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit", "turbo": "expanded", "diffusion-cream": "diffusion-cream"}
+
+
+def diffusion_cream_workflow(source_name, mask_name, steps, seed, crop_size):
+    # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
+    scale = 1024 / max(crop_size)
+    width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
+
+    def node(kind, **inputs):
+        return {"class_type": kind, "inputs": inputs}
+
+    return {
+        "4": node("LoadImage", image=source_name),
+        "17": node("LoadImage", image=mask_name),
+        "18": node("ImageToMask", image=["17", 0], channel="red"),
+        "5": node("ImageAndMaskResizeNode", image=["4", 0], mask=["18", 0], width=width, height=height,
+                  resize_method="lanczos", crop="disabled", mask_blur_radius=0),
+        "30": node("CheckpointLoaderSimple", ckpt_name="animagine-xl-4.0-opt.safetensors"),
+        "6": node("CLIPTextEncode", clip=["30", 1],
+                  text="Anime game illustration, continuous linework, coherent proportions and shading, fine local texture"),
+        "7": node("CLIPTextEncode", clip=["30", 1],
+                  text="censored, mosaic artifacts, flat color fills, distorted proportions, broken outlines"),
+        "31": node("TilePreprocessor", image=["5", 0], pyrUp_iters=4, resolution=512),
+        "32": node("ACN_ControlNet++InputNode", image=["31", 0], control_type="tile"),
+        "33": node("ACN_ControlNet++LoaderAdvanced", plus_input=["32", 0], name="controlnet-union-sdxl-1.0.safetensors"),
+        "34": node("InpaintModelConditioning", positive=["6", 0], negative=["7", 0], vae=["30", 2],
+                   pixels=["5", 0], mask=["5", 1], noise_mask=True),
+        "35": node("ACN_AdvancedControlNetApply_v2", positive=["34", 0], negative=["34", 1], control_net=["33", 0],
+                   image=["33", 1], strength=1.0, start_percent=0.0, end_percent=1.0),
+        "13": node("KSampler", model=["30", 0], seed=seed, steps=steps, cfg=7, sampler_name="euler", scheduler="beta",
+                   positive=["35", 0], negative=["35", 1], latent_image=["34", 2], denoise=0.7),
+        "36": node("VAEDecode", samples=["13", 0], vae=["30", 2]),
+        "14": node("INPAINT_ColorMatch", target=["36", 0], reference=["5", 0], exclude_mask=["5", 1], strength=1.0),
+        "15": node("PreviewImage", images=["14", 0]),
+    }
+
+
 def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None):
+    if profile["kind"] == "diffusion-cream":
+        return diffusion_cream_workflow(source_name, mask_name, steps, profile.get("seed", 1), crop_size)
     local_edit = profile["kind"] == "2511" and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
@@ -530,9 +569,11 @@ def mosaic_reference_crop(reference, original, bounds):
 
 async def prepare_mosaic_workflow(original, data, steps):
     profile = data["profile"]
-    if profile["kind"] not in ("2511", "turbo"):
+    if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
     masked = bool(data["regions"])
+    if not masked and profile["kind"] == "diffusion-cream":
+        raise ValueError("使用 DiffusionCreamPy 前，请先为当前图片添加蒙版")
     if masked:
         bounds, crop, generation, blend, _ = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
     else:
@@ -569,7 +610,7 @@ async def prepare_mosaic_workflow(original, data, steps):
 
 async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
-    if profile["kind"] not in ("2511", "turbo"):
+    if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
     bounds, crop, generation, blend, samples = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
     reference = profile.get("referenceImage")
@@ -580,7 +621,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
             # Recover only outputs produced with matching crop geometry.
-            workflow_key = "aligned-edit" if profile["kind"] == "2511" else "expanded"
+            workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
             raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
             if raw is None:
@@ -598,7 +639,8 @@ async def repair_mosaic(original, data, steps, workflow_times):
                                             resume_id=resume_id, old_history=old_history, cancel_path=cancel_path)
     with Image.open(io.BytesIO(raw)) as output:
         restored = output.convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
-    restored = match_mosaic_colors(crop, restored, generation, samples)
+    if profile["kind"] != "diffusion-cream":
+        restored = match_mosaic_colors(crop, restored, generation, samples)
     restored.putalpha(crop.getchannel("A"))
     result = original.copy()
     result.paste(Image.composite(restored, crop, blend), bounds)

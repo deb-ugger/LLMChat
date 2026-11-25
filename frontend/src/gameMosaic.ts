@@ -9,10 +9,15 @@ import { recordGameWorkflowTiming } from "./gameModelPerformance";
 import type { UnityImage } from "./unityOffline";
 
 export type MosaicBox = [left: number, top: number, right: number, bottom: number];
-export type MosaicModel = "2511" | "turbo";
+export type MosaicModel = "2511" | "turbo" | "diffusion-cream";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
-  "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo",
+  "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo", "diffusion-cream": "DiffusionCreamPy · 动漫局部修复",
 };
+export const mosaicModelChoices = (["turbo", "2511", "diffusion-cream"] as const).map(value => ({ value, label: mosaicModelLabels[value] }));
+export const mosaicDefaultSteps: Record<MosaicModel, number> = { turbo: 8, "2511": 20, "diffusion-cream": 16 };
+export const mosaicSupportsReference = (model: MosaicModel) => model !== "diffusion-cream";
+export const isMosaicModel = (value: unknown): value is MosaicModel =>
+  mosaicModelChoices.some(choice => choice.value === value);
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };
 type SceneInput = Pick<UnityImage, "id" | "name" | "file" | "width" | "height"> & { signature: number[] };
 
@@ -68,7 +73,9 @@ export function gameDetectorFile(root: string, file?: File) {
 }
 export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
   const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
-  return { ...defaultMosaicSettings, ...value, detector: value?.detector === "grid" ? "grid" : "anime",
+  const model = isMosaicModel(value?.model) ? value.model : defaultMosaicSettings.model;
+  return { ...defaultMosaicSettings, ...value, model, steps: value?.steps ?? mosaicDefaultSteps[model],
+    detector: value?.detector === "grid" ? "grid" : "anime",
     screening: normalizeMosaicScreening(value?.screening),
     concurrency: legacy ? 2 : value?.concurrency ?? 2,
     refineConcurrency: mosaicRefineConcurrency(value?.refineConcurrency),
@@ -213,6 +220,7 @@ async function mosaicRedrawDirectory() {
 }
 
 async function mosaicWeights(directory: string, model: MosaicModel) {
+  if (model === "diffusion-cream") return;
   const fields = ["model", "clip", "vae"] as const;
   let saved: Partial<Weights> = {};
   try { saved = JSON.parse(localStorage.getItem("llmchat-redraw-profiles") || "{}")?.[model] || {}; }
@@ -235,7 +243,8 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
   const graph = await invoke<MosaicComfyWorkflow["graph"]>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic-workflow", image: await encoded(input.source), progress: new Channel<string>(),
     regions: input.boxes.map(box => ({ box })),
-    profile: { ...weights, kind: input.model, referenceImage: input.reference && await encoded(input.reference),
+    profile: { ...weights, kind: input.model,
+      referenceImage: mosaicSupportsReference(input.model) && input.reference ? await encoded(input.reference) : undefined,
       keep: input.keep, seed: input.seed, name: input.name },
   });
   return { id: crypto.randomUUID(), name: input.name + " - " + mosaicModelLabels[input.model] + ".json", graph };
@@ -244,7 +253,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
   // Match the job identifier in repair_mosaic.
   const namespace = new Uint8Array([0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]);
-  const workflow = model === "2511" ? "aligned-edit" : "expanded";
+  const workflow = model === "2511" ? "aligned-edit" : model === "diffusion-cream" ? "diffusion-cream" : "expanded";
   const name = new TextEncoder().encode("urn:llmchat:mosaic:" + workflow + ":" + promptId);
   const input = new Uint8Array(namespace.length + name.length);
   input.set(namespace);
@@ -263,7 +272,7 @@ export async function redrawMosaic(input: MosaicRedrawInput & {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
   const directory = await mosaicRedrawDirectory();
   const image = await encoded(input.source);
-  const referenceImage = input.reference && await encoded(input.reference);
+  const referenceImage = mosaicSupportsReference(input.model) && input.reference ? await encoded(input.reference) : undefined;
   input.signal.throwIfAborted();
   const progress = new Channel<string>();
   progress.onmessage = detail => { if (!input.signal.aborted) input.progress(detail); };
