@@ -1,11 +1,29 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
+import { getFixedMenuPoint } from "../../viewportLayout";
+import { showAppNotice } from "../AppNotice";
 import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageView, type GameImageViews } from "../GameImageViewer";
 import { UnityDescriptionSelect } from "../UnityDescriptionSelect";
 import type { MosaicPreviewProps, ResultVersion } from "./mosaicWorkbenchTypes";
 
 const redrawModels = Object.keys(mosaicModelLabels) as MosaicModel[];
+const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+
+async function clipboardPng(blob: Blob): Promise<Blob> {
+  const header = new Uint8Array(await blob.slice(0, pngSignature.length).arrayBuffer());
+  if (pngSignature.every((byte, index) => header[index] === byte)) {
+    return blob.type === "image/png" ? blob : blob.slice(0, blob.size, "image/png");
+  }
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
+    return await canvas.convertToBlob({ type: "image/png" });
+  } finally {
+    bitmap.close();
+  }
+}
 
 function MosaicImageCanvas({ width, editing = false, onBackground, children }: {
   width?: number; editing?: boolean; onBackground?: () => void; children: ReactNode;
@@ -146,16 +164,17 @@ function MosaicResultImage({ src, alt }: { src: string; alt: string }) {
   </div>;
 }
 
-function MosaicResultVersion({ version, imageName, disabledReason, replacing, asReference, onApprove, onOpen }: {
+function MosaicResultVersion({ version, imageName, disabledReason, replacing, asReference, onApprove, onOpen, onContextMenu }: {
   version: ResultVersion; imageName: string;
   disabledReason?: string; replacing: boolean; asReference: boolean; onApprove: (blob: Blob) => void; onOpen?: () => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
 }) {
   const url = useImageBlobUrl(version.blob);
   const modelName = mosaicModelLabels[version.model];
   const adoptLabel = asReference ? "采用为本组参考" : replacing ? "替换已采用图" : "采用此版";
   return <div className="game-mosaic-result-version">
     <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined}
-      fallback={<p className="hint">正在读取图片…</p>}>
+      onContextMenu={url ? onContextMenu : undefined} fallback={<p className="hint">正在读取图片…</p>}>
       {url && <MosaicResultImage src={url} alt={`${imageName} · ${modelName} 去码结果`} />}
     </GameImagePreviewFrame>
     <button type="button" className="unity-btn" aria-label={adoptLabel + " · " + modelName}
@@ -175,6 +194,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const redrawMenuId = useId();
   const redrawMenu = useRef<HTMLDivElement>(null);
   const maskMenuId = useId();
+  const copyMenu = useRef<HTMLDivElement>(null);
+  const copySource = useRef<Blob | null>(null);
   const [viewer, setViewer] = useState<{ showResult: boolean; version?: string } | null>(null);
   const [openingComfy, setOpeningComfy] = useState(false);
 
@@ -200,6 +221,34 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
     if (editing || !active) return;
     setViewer(id === "original" ? { showResult: false } : { showResult: true, version: id });
   };
+
+  function openCopyMenu(event: ReactMouseEvent<HTMLElement>, blob?: Blob) {
+    const menu = copyMenu.current;
+    if (!blob || !menu || (event.target instanceof Element && event.target.closest("button"))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const atPointer = event.clientX !== 0 || event.clientY !== 0;
+    const { x, y } = getFixedMenuPoint(atPointer ? event.clientX : bounds.left,
+      atPointer ? event.clientY : bounds.top, 166, 55);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    copySource.current = blob;
+    menu.showPopover();
+    menu.querySelector("button")?.focus({ preventScroll: true });
+  }
+
+  async function copyPreviewImage() {
+    const blob = copySource.current;
+    copyMenu.current?.hidePopover();
+    if (!blob) return;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": clipboardPng(blob) })]);
+      showAppNotice("已复制图片");
+    } catch (error) {
+      showAppNotice("复制图片失败：" + (error instanceof Error ? error.message : String(error)), "error");
+    }
+  }
 
   function previewViews(image: NonNullable<typeof active>, version?: string): GameImageViews {
     const dimensions = { width: image.width, height: image.height };
@@ -331,6 +380,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         className="unity-image-previews"
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
         <GameImagePreviewFrame keyboardPane className="game-mosaic-original-frame" aria-label="原图编辑区"
+          onContextMenu={originalUrl ? event => openCopyMenu(event, original?.blob) : undefined}
           onClick={event => {
             if (!(event.target as Element).closest(".game-mosaic-image-area, button")) deselectMask();
           }}
@@ -366,15 +416,22 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             {imageToolbar}
           </div>
         </GameImagePreviewFrame>
-        {showSaved ? <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label="已采用去码图" onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined} fallback={confirmed?.error
+        {showSaved ? <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label="已采用去码图"
+          onDoubleClick={!editing && savedUrl ? () => openPreview("saved") : undefined}
+          onContextMenu={savedUrl ? event => openCopyMenu(event, confirmed?.blob) : undefined} fallback={confirmed?.error
           ? <p className="game-mosaic-error" role="alert">{confirmed.error}</p> : <p className="hint">正在读取图片…</p>}>
           {savedUrl && <MosaicResultImage key={active.id} src={savedUrl} alt={`${active.name} 已采用去码图`} />}
         </GameImagePreviewFrame> : preferredVersion ? (
           <MosaicResultVersion key={preferredVersion.id} version={preferredVersion}
             imageName={active.name} replacing={activeSaved} asReference={preferredVersion.blob === referenceCandidate}
             disabledReason={busyReason} onApprove={onApprove}
+            onContextMenu={event => openCopyMenu(event, preferredVersion.blob)}
             onOpen={editing ? undefined : () => openPreview(preferredVersion.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
+      </div>
+      <div key={active.id} ref={copyMenu} className="unity-gallery-menu" popover="auto" role="menu"
+        aria-label="预览图片操作" style={{ inset: "auto", margin: 0 }}>
+        <button type="button" role="menuitem" onClick={() => void copyPreviewImage()}>复制图片</button>
       </div>
       {footer}
     </section>}
