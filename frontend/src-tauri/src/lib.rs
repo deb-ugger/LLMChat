@@ -1,6 +1,7 @@
 mod build_close;
 mod build_speed_test;
 mod train_dataset;
+mod training_results;
 mod clipboard;
 mod game_image_zip;
 mod style_redraw;
@@ -866,6 +867,11 @@ pub fn run() {
             train_dataset::start_training,
             train_dataset::cancel_training,
             train_dataset::probe_training_env,
+            training_results::list_training_runs,
+            training_results::read_training_result,
+            training_results::training_model_status,
+            training_results::enable_training_model,
+            training_results::correct_training_label,
             ollama::ollama_service_status,
             ollama::ollama_runtime_status,
             ollama::ollama_service_start,

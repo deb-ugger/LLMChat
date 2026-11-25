@@ -220,3 +220,26 @@
 .training-run-progress {display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;}
 .training-run-progress progress {width:100%;accent-color:var(--signal);height:8px;}
 .training-dataset-placeholder:has(.training-run-workspace) {padding:0;flex:1;min-height:0;}
+
+.training-run-workspace {grid-template-columns:180px minmax(280px,1fr) minmax(390px,38%);}
+.training-results {overflow:auto;padding:14px;display:flex;flex-direction:column;gap:12px;border-inline-start:1px solid var(--border);background:var(--bg-panel);min-width:0;}
+.training-results select {width:100%;min-width:0;padding:6px;background:var(--bg-panel);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);}
+.training-results > * {flex-shrink:0;}
+.training-results select[size] {height:100px;min-height:100px;}
+.training-results table {width:100%;border-collapse:collapse;font-size:var(--fs-caption);font-variant-numeric:tabular-nums;}
+.training-results th,.training-results td {padding:5px 4px;border-bottom:1px solid var(--border);text-align:right;}
+.training-results th:first-child {text-align:left;}
+.training-results caption {text-align:left;margin-bottom:6px;color:var(--text-muted);}
+.training-result-metrics {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.training-result-metrics > div {display:grid;gap:4px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;}
+.training-result-metrics span {font-size:var(--fs-caption);color:var(--text-muted);}
+.training-result-metrics strong {font-family:var(--mono);font-size:var(--fs-title);}
+.training-model-comparison {border-top:1px solid var(--border);padding-top:10px;}
+.training-model-comparison dl {font-size:var(--fs-caption);overflow-wrap:anywhere;}
+.training-model-comparison dd {margin:4px 0 10px;}
+.training-validation-images {display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.training-validation-images figure {margin:0;min-width:0;}
+.training-validation-images img {width:100%;height:120px;object-fit:contain;background:var(--bg-muted);}
+.training-validation-images figcaption {font-size:var(--fs-caption);overflow-wrap:anywhere;}
+.training-validation-detail p {font-size:var(--fs-caption);overflow-wrap:anywhere;}
+@media(width < 900px){.training-run-workspace{grid-template-columns:150px minmax(0,1fr);overflow:auto}.training-results{grid-column:1/-1;overflow:visible}}

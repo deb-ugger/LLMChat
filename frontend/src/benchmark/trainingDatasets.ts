@@ -96,7 +96,7 @@ export function partFor(dataset: TrainingDataset, hash: string, box: MosaicBox) 
   return dataset.parts[boxKey(hash, box)];
 }
 
-function csvRows(text: string) {
+export function csvRows(text: string) {
   const rows: string[][] = [];
   let row: string[] = [], cell = "", quoted = false;
   for (let index = 0; index < text.length; index++) {

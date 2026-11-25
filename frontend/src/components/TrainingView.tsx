@@ -1,6 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { readDatasetCatalog } from "../benchmark/trainingDatasets";
+import { TrainingResults } from "./TrainingResults";
+import { readableTrainingLog } from "../benchmark/trainingResults";
 
 type TrainingEvent = { runId: string; state: string; phase: string; current: number; total: number; message: string; outputDir: string };
 type EnvReport = { ready: boolean; messages: string[] };
@@ -90,12 +92,11 @@ export function TrainingView() {
           <progress max={progress.total} value={progress.current} aria-label="训练进度" />
         </div>
         <h3>日志</h3>
-        <pre ref={tail} className="training-run-log" aria-label="训练日志">{logs.join("\n") || "等待训练开始"}</pre>
+        <details><summary>原始输出</summary><pre className="training-run-log">{logs.join("\n")}</pre></details>
+        <pre ref={tail} className="training-run-log" aria-label="训练日志">{logs.map(readableTrainingLog).join("\n") || "等待训练开始"}</pre>
       </>}
     </section>
-    <aside className="training-dataset-details"><h3>本次运行</h3><p>{state}</p>
-      <p className="hint">产物目录</p><p className="training-run-path">{event?.outputDir || "开始训练后生成"}</p>
-      <p className="hint">训练完成后保留模型和验证报告，结果与启用将在下一阶段接入。</p>
-    </aside>
+    <TrainingResults datasetId={dataset} finishedRun={event?.state === "complete" ? event.runId : undefined} comfy={comfy}
+      onRetrain={() => document.querySelector<HTMLSelectElement>(".training-run-fields select")?.focus()} />
   </div>;
 }

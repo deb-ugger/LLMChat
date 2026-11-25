@@ -13,6 +13,6 @@ if (!(Test-Path -LiteralPath $weights)) {
 if (!(Get-FileHash -LiteralPath $weights -Algorithm SHA256).Hash.StartsWith('047DCFF4')) {
     throw '训练预训练权重校验失败'
 }
-foreach ($name in @('mosaic-region-training.ps1', 'train-mosaic-region-classifier.py')) {
+foreach ($name in @('mosaic-region-training.ps1', 'train-mosaic-region-classifier.py', 'training-results.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $destination $name)
 }

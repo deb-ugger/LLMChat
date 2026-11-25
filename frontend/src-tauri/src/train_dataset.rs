@@ -20,20 +20,20 @@ static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn error(value: impl std::fmt::Display) -> String { value.to_string() }
-fn resource(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(super) fn resource(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let path = app.path().resource_dir().map_err(error)?.join("resources/training");
     for file in ["mosaic-region-training.ps1", "train-mosaic-region-classifier.py", "torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth"] {
         if !path.join(file).is_file() { return Err(format!("训练资源缺失：{file}，请重新安装完整程序")); }
     }
     path.canonicalize().map_err(error)
 }
-fn managed(root: &Path, child: &Path) -> Result<PathBuf, String> {
+pub(super) fn managed(root: &Path, child: &Path) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(error)?;
     let path = child.canonicalize().map_err(error)?;
     if !path.starts_with(&root) { return Err("数据集或产物路径超出受管目录".into()); }
     Ok(path)
 }
-fn work(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+pub(super) fn work(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
     if id.len() != 36 || id.chars().enumerate().any(|(i,c)| if [8,13,18,23].contains(&i) { c != '-' } else { !c.is_ascii_hexdigit() }) {
         return Err("数据集工作副本标识无效".into());
     }
@@ -101,12 +101,17 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
         let output = output_root.join(format!("run-{id}"));
         fs::create_dir(&output).map_err(error)?;
         let output = managed(&output_root, &output)?;
+        let snapshot = crate::training_results::snapshot(&dataset, &output)?;
+        let mut metadata = serde_json::json!({"runId": id, "datasetWorkId": dataset_work_id,
+            "createdAt": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_millis() as u64,
+            "state": "running", "limit": options.limit});
+        crate::training_results::write_metadata(&output.join("run.json"), &metadata)?;
         let job = Arc::new(win::job()?);
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut command = Command::new("powershell.exe");
         command.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(resources.join("mosaic-region-training.ps1")).args(["-Action", "TrainOnly", "-Comfy"]).arg(options.comfy_dir)
-            .arg("-Dataset").arg(dataset).arg("-Output").arg(&output).arg("-Limit").arg(options.limit.to_string())
+            .arg("-Dataset").arg(snapshot).arg("-Output").arg(&output).arg("-Limit").arg(options.limit.to_string())
             .env("TORCH_HOME", resources.join("torch")).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         win::suspended(&mut command);
         let mut child = command.spawn().map_err(error)?;
@@ -154,7 +159,10 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
             if let Ok(mut active) = ACTIVE.lock() { *active = None; }
             drop(job);
             drop(_exclusive);
-            emit(state, "finished", 0, 0, message);
+            metadata["state"] = serde_json::json!(state);
+            let saved = crate::training_results::write_metadata(&output.join("run.json"), &metadata);
+            if let Err(e) = saved { emit("failed", "finished", 0, 0, e); }
+            else { emit(state, "finished", 0, 0, message); }
         });
         Ok(run_id)
     }).await.map_err(error)?
@@ -162,7 +170,7 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
 
 // The suspended parent is assigned before it can launch Python.
 #[cfg(windows)]
-mod win {
+pub(super) mod win {
     use super::*;
     use std::{ffi::c_void, os::windows::{io::AsRawHandle, process::CommandExt, fs::OpenOptionsExt}};
     type Raw = *mut c_void;
