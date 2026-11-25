@@ -92,7 +92,6 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
   const redrawStartLabel = redraw.paused ? "继续重绘 · 剩 " + redraw.remainingCount
     : (hasGroupAction ? "重绘已勾选 · " : "重绘本组所选 · ") + redraw.targetCount;
   const redrawStartHint = redraw.paused ? "按上一次重绘的图片及配置继续"
-    : model === "diffusion-cream" ? "使用蒙版和当前图片的周边内容重绘列表内已勾选的图片"
     : hasGroupAction ? "按图片组重绘已勾选图片，规则见下方「重绘规则」" : "重绘当前画风组内已勾选的图片";
   const stage = { screen, refine, redraw };
   const order = ["screen", "refine", "redraw"] as const;

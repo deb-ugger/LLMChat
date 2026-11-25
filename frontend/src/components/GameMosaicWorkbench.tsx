@@ -11,7 +11,7 @@ import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffe
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
 import { beginGameStep, clearGamePerformance, finishFormalGameStep, finishGameStep, recordGameCacheHit, recordGameRequest, gameStepSelections, measureGameAsync, reportGameStepItems, stepPerformance, sumModelServiceTiming, type FormalRunSummary, type StepPerformance } from "../gameModelPerformance";
-import { cancelMosaicRedraw, isMosaicModel, mosaicSupportsReference, mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, openMosaicComfyWorkflowEvent, prepareMosaicComfyWorkflow, type MosaicModel } from "../gameMosaic";
+import { cancelMosaicRedraw, isMosaicModel, mosaicRefineConcurrency, readMosaicSettings, saveMosaicSettings, clearGameDetectorFile, gameDetectorFile, openDeploymentDetector, loadMosaicDetector, matchesMosaicDetectorKey, mosaicDetectorKey, mosaicInputKey, mosaicModelLabels, redrawMosaic, createMosaicGridScanner, openMosaicComfyWorkflowEvent, prepareMosaicComfyWorkflow, type MosaicModel } from "../gameMosaic";
 import type { UnityImage } from "../unityOffline";
 import { deploymentMetricScope, measureDeploymentStage } from "../unityWorkflow";
 import { showAppNotice } from "./AppNotice";
@@ -982,17 +982,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       return;
     }
     const groups = new Map<string, RedrawPlan["targets"]>();
-    const usesReference = models.some(mosaicSupportsReference);
     for (const image of usableTargets) {
       const style = mosaicRedrawStyle(image, rows, redrawReferences);
-      if (mode !== "regular" || !usesReference) style.reference = undefined;
+      if (mode !== "regular") style.reference = undefined;
       const batch = groups.get(style.group) ?? [];
       batch.push({ image, boxes: resultFor(rows, image).boxes, keep: keepText(image, protect), pending: new Set(models), style });
       groups.set(style.group, batch);
     }
-    const groupReferences = mode === "automatic" && usesReference ? new Map([...groups].map(([group, batch]) =>
+    const groupReferences = mode === "automatic" ? new Map([...groups].map(([group, batch]) =>
       [group, existingRedraw.references.get(group) ?? { image: batch[0].image, source: "generate" as const }])) : undefined;
-    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide: mode === "reference" && usesReference, groupReferences });
+    startRedraw({ targets: [...groups.values()].flat(), models, steps, referenceGuide: mode === "reference", groupReferences });
   }
 
   function redrawCurrent(models: MosaicModel[]) {
@@ -1015,7 +1014,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const { seed, reference } = mosaicRedrawStyle(active, rows, redrawReferences);
       const workflow = await prepareMosaicComfyWorkflow({
         name: active.name, source, boxes: activeResult.boxes, keep: keepText(active, protect), model, steps, seed,
-        reference: mosaicSupportsReference(model) && reference ? await readSaved(reference, new AbortController().signal) : undefined,
+        reference: reference && await readSaved(reference, new AbortController().signal),
       });
       window.dispatchEvent(new CustomEvent(openMosaicComfyWorkflowEvent, { detail: workflow }));
     } catch (error) {
@@ -1141,7 +1140,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     if (!canRedrawImage(row)) { awaitingReview++; continue; }
     listRedraw.push(image);
   }
-  const redrawGroup = selected.filter(image => (!mosaicSupportsReference(model) || image.id !== reference?.id) &&
+  const redrawGroup = selected.filter(image => image.id !== reference?.id &&
     resultFor(rows, image).boxes.length && canRedrawImage(resultFor(rows, image)));
   const redrawSkipped = [
     noMask && noMask + " 张缺蒙版", awaitingReview && awaitingReview + " 张待复筛", alreadyGenerated && alreadyGenerated + " 张已生成",
@@ -1375,7 +1374,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const guideReason = redrawBlocked ?? pendingRedrawReason;
   const guideCandidateReason = guideReason ?? (!activeResult?.boxes.length ? "请先为当前图片保存蒙版"
     : active && !canRedrawImage(resultFor(rows, active)) ? "请先完成当前图片的视觉复筛" : undefined);
-  const referenceFlow = !mosaicSupportsReference(model) || !active || members.length < 2 ? undefined
+  const referenceFlow = !active || members.length < 2 ? undefined
     : reference ? {
       detail: "参考图：" + reference.name + " · 剩余可重绘 " + guideRemaining.length + " 张",
       label: "按参考重绘本组剩余 · " + guideRemaining.length + " 张",

@@ -1,6 +1,7 @@
 """Single-image ComfyUI redraw worker. stdin/stdout use UTF-8 JSON lines."""
 import asyncio
 import base64
+import hashlib
 import io
 import os
 import json
@@ -482,7 +483,7 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit", "turbo": "expanded", "diffusion-cream": "diffusion-cream"}
 
 
-def diffusion_cream_workflow(source_name, mask_name, steps, seed, crop_size):
+def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size):
     # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
     scale = 1024 / max(crop_size)
     width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
@@ -490,7 +491,7 @@ def diffusion_cream_workflow(source_name, mask_name, steps, seed, crop_size):
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
 
-    return {
+    graph = {
         "4": node("LoadImage", image=source_name),
         "17": node("LoadImage", image=mask_name),
         "18": node("ImageToMask", image=["17", 0], channel="red"),
@@ -514,11 +515,21 @@ def diffusion_cream_workflow(source_name, mask_name, steps, seed, crop_size):
         "14": node("INPAINT_ColorMatch", target=["36", 0], reference=["5", 0], exclude_mask=["5", 1], strength=1.0),
         "15": node("PreviewImage", images=["14", 0]),
     }
+    if reference_name:
+        graph["16"] = node("LoadImage", image=reference_name)
+        graph["37"] = node("CLIPVisionLoader", clip_name="CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors")
+        graph["38"] = node("IPAdapterModelLoader", ipadapter_file="ip-adapter-plus_sdxl_vit-h.safetensors")
+        graph["39"] = node("IPAdapterEncoder", ipadapter=["38", 0], image=["16", 0], clip_vision=["37", 0], weight=1.0)
+        graph["40"] = node("IPAdapterEmbeds", model=["30", 0], ipadapter=["38", 0], pos_embed=["39", 0],
+                           neg_embed=["39", 1], attn_mask=["5", 1], weight=0.35, weight_type="style transfer",
+                           start_at=0.4, end_at=0.85, embeds_scaling="V only")
+        graph["13"]["inputs"]["model"] = ["40", 0]
+    return graph
 
 
 def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None):
     if profile["kind"] == "diffusion-cream":
-        return diffusion_cream_workflow(source_name, mask_name, steps, profile.get("seed", 1), crop_size)
+        return diffusion_cream_workflow(source_name, reference_name, mask_name, steps, profile.get("seed", 1), crop_size)
     local_edit = profile["kind"] == "2511" and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
@@ -560,11 +571,17 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
     return graph
 
 
-def mosaic_reference_crop(reference, original, bounds):
+def mosaic_reference_input(reference, original, bounds, kind):
     with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as image:
+        if kind == "diffusion-cream":
+            reference_image = image.convert("RGB")
+            reference_image.thumbnail((640, 640), Image.Resampling.LANCZOS)
+            # Reuse the ComfyUI image and vision-encoder cache for later images in the group.
+            digest = hashlib.sha256(png(reference_image)).hexdigest()
+            return reference_image, f"llmchat-style-{digest}.png"
         ref_bounds = tuple(round(value * (image.width / original.width if index % 2 == 0 else image.height / original.height))
                            for index, value in enumerate(bounds))
-        return image.crop(ref_bounds).convert("RGB")
+        return image.crop(ref_bounds).convert("RGB"), None
 
 
 async def prepare_mosaic_workflow(original, data, steps):
@@ -586,7 +603,7 @@ async def prepare_mosaic_workflow(original, data, steps):
 
         source_name = await upload(original, workflow_input_name(profile.get("name", "")))
         mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
-        reference_name = await upload(mosaic_reference_crop(reference, original, bounds)) if reference else None
+        reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
         graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None)
         if masked:
             left, top, _, _ = bounds
@@ -630,7 +647,8 @@ async def repair_mosaic(original, data, steps, workflow_times):
                 mask_name = await upload_image(session, noise_mask, subfolder=subfolder)
                 reference_name = None
                 if reference:
-                    reference_name = await upload_image(session, mosaic_reference_crop(reference, original, bounds), subfolder=subfolder)
+                    reference_image, filename = mosaic_reference_input(reference, original, bounds, profile["kind"])
+                    reference_name = await upload_image(session, reference_image, filename=filename, subfolder=subfolder)
                 graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size)
                 if subfolder:
                     graph["15"] = {"class_type": "SaveImage", "inputs": {

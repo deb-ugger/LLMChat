@@ -15,7 +15,6 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
 };
 export const mosaicModelChoices = (["turbo", "2511", "diffusion-cream"] as const).map(value => ({ value, label: mosaicModelLabels[value] }));
 export const mosaicDefaultSteps: Record<MosaicModel, number> = { turbo: 8, "2511": 20, "diffusion-cream": 16 };
-export const mosaicSupportsReference = (model: MosaicModel) => model !== "diffusion-cream";
 export const isMosaicModel = (value: unknown): value is MosaicModel =>
   mosaicModelChoices.some(choice => choice.value === value);
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };
@@ -244,7 +243,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
     directory, steps: input.steps, mode: "mosaic-workflow", image: await encoded(input.source), progress: new Channel<string>(),
     regions: input.boxes.map(box => ({ box })),
     profile: { ...weights, kind: input.model,
-      referenceImage: mosaicSupportsReference(input.model) && input.reference ? await encoded(input.reference) : undefined,
+      referenceImage: input.reference && await encoded(input.reference),
       keep: input.keep, seed: input.seed, name: input.name },
   });
   return { id: crypto.randomUUID(), name: input.name + " - " + mosaicModelLabels[input.model] + ".json", graph };
@@ -272,7 +271,7 @@ export async function redrawMosaic(input: MosaicRedrawInput & {
   if (!isTauri()) throw new Error("图片去码需要桌面端的本地 ComfyUI");
   const directory = await mosaicRedrawDirectory();
   const image = await encoded(input.source);
-  const referenceImage = mosaicSupportsReference(input.model) && input.reference ? await encoded(input.reference) : undefined;
+  const referenceImage = input.reference && await encoded(input.reference);
   input.signal.throwIfAborted();
   const progress = new Channel<string>();
   progress.onmessage = detail => { if (!input.signal.aborted) input.progress(detail); };
