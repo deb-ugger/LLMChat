@@ -3,6 +3,7 @@ param(
     [string]$Owner = "manual-build-$PID",
     [string]$Proxy = '',
     [switch]$NoLaunch,
+    [switch]$Distribution,
     [switch]$ForceClose,
     [string]$FrontendPreviewDirectory,
     [switch]$Full,
@@ -162,6 +163,7 @@ try {
     } while ($true)
 
     Complete-BuildStage 'Lock wait'
+    if ($Distribution -and ($IntegrationPreview -or $FrontendPreviewDirectory)) { throw 'Distribution mode cannot be combined with a frontend or integration preview.' }
     if ($IntegrationPreview) {
         if ($FrontendPreviewDirectory -or $Full -or $PreviewPort -eq 17800) {
             throw 'Use -IntegrationPreview by itself and select a port other than the standard 17800.'
@@ -206,7 +208,7 @@ try {
     }
     $targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $projectRoot 'frontend/src-tauri/target' }
     $desktopCache = Get-PortableDesktopCacheArguments $targetRoot
-    $backendOnly = !$Full -and (Test-BuildCache @desktopCache)
+    $backendOnly = !$Distribution -and !$Full -and (Test-BuildCache @desktopCache)
     if ($backendOnly) {
         Assert-BuildTools @('cmake')
         Write-BuildLog 'Build mode: backend only'
@@ -290,7 +292,8 @@ try {
     if ($backendOnly) {
         Invoke-BuildScript 'make-portable.ps1' @('-BackendOnly')
     } else {
-        Invoke-BuildScript 'make-portable.ps1'
+        $portableArguments = if ($Distribution) { @('-Distribution') } else { @() }
+        Invoke-BuildScript 'make-portable.ps1' $portableArguments
     }
     $pairs = @(
         @((Join-Path $targetRoot 'release\llmchat.exe'), (Join-Path $projectRoot 'dist-portable\llmchat.exe')),

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$BackendOnly)
+param([switch]$BackendOnly, [switch]$Distribution)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "build-incremental.ps1")
@@ -36,6 +36,49 @@ function Write-PortableUpdateManifest {
     Write-Output ('Updated {0} program/resource files.' -f $script:BuildCopiedFiles.Count)
 }
 
+# Distribution is explicit: a local app update must retain its installed venv.
+function Remove-PortableTrainingRuntime {
+    $outputItem = Get-Item -LiteralPath $out
+    if ($outputItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Portable output must not be a linked directory: $out" }
+    $outputRoot = [IO.Path]::GetFullPath($outputItem.FullName).TrimEnd('\')
+    $runtimeNames = @('training-venv', 'training-venv-cache', 'training-venv-tmp')
+    $logNames = @('training-logs', 'training-venv-logs')
+    $targets = @()
+    foreach ($name in @($runtimeNames + $logNames)) {
+        $path = [IO.Path]::GetFullPath((Join-Path $outputRoot $name))
+        if (!(Test-Path -LiteralPath $path)) { continue }
+        $item = Get-Item -LiteralPath $path -Force
+        $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
+        if (!$resolved.StartsWith($outputRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            !$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing a training runtime path outside the portable output: $path"
+        }
+        if (@(Get-ChildItem -LiteralPath $path -Recurse -Force -Attributes ReparsePoint).Count) {
+            throw "Training runtime contains linked entries; inspect it before distribution: $path"
+        }
+        $targets += [pscustomobject]@{ Name = $name; Path = $resolved }
+    }
+    $savedLogs = Join-Path $root ('tmp/portable-runtime-logs/{0:yyyyMMdd-HHmmss-fff}-{1}' -f (Get-Date), $PID)
+    foreach ($target in $targets) {
+        if ($target.Name -in $logNames) {
+            New-Item -ItemType Directory -Path $savedLogs -Force | Out-Null
+            $destination = [IO.Path]::GetFullPath((Join-Path $savedLogs $target.Name))
+            $savedRoot = [IO.Path]::GetFullPath((Join-Path $root 'tmp/portable-runtime-logs')).TrimEnd('\') + '\'
+            if (!$destination.StartsWith($savedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime log destination is outside the build records directory.' }
+            Move-Item -LiteralPath $target.Path -Destination $destination
+            Write-Output "Excluded runtime logs (preserved): $($target.Path) -> $destination"
+        } else {
+            Remove-Item -LiteralPath $target.Path -Recurse -Force
+            Write-Output "Excluded training runtime: $($target.Path)"
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath $outputRoot -Directory -Force -Filter 'training-venv*').Count) {
+        throw 'Portable distribution still contains training-venv* directories; inspect the remaining entries.'
+    }
+}
+
+if ($Distribution -and $BackendOnly) { throw 'A distribution requires a full portable package, not a backend-only update.' }
+
 if ($BackendOnly) {
     if (!(Test-Path -LiteralPath (Join-Path $out 'llmchat.exe') -PathType Leaf)) { throw 'A full portable desktop build is required before updating just the backend.' }
     if (!(Test-Path -LiteralPath $sidecarNamed -PathType Leaf)) { throw "Missing freshly built backend: $sidecarNamed" }
@@ -57,11 +100,15 @@ foreach ($group in @('ocr', 'ort', 'manga-ort', 'wtp', 'mosaic-detector')) {
     }
 }
 
+$training = Join-Path $root 'frontend/src-tauri/resources/training'
+if (!(Test-Path -LiteralPath (Join-Path $training 'requirements.txt') -PathType Leaf)) { throw 'Training requirements.txt is missing; run scripts/prepare-training.ps1.' }
+
 & node (Join-Path $root 'frontend/build/bundledAssets.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare the bundled Noto CJK font.' }
 Stop-PortableProcesses
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+if ($Distribution) { Remove-PortableTrainingRuntime }
 Copy-BuildFile (Join-Path $PSScriptRoot 'portable-build.cmd') (Join-Path $out 'build.cmd')
 
 # Only refresh binaries/resources. Never wipe user data next to the portable app:
@@ -140,7 +187,6 @@ if (Test-Path -LiteralPath $sidecarNamed -PathType Leaf) {
     Publish-PortableBackend $sidecarRelease
 }
 
-$training = Join-Path $root 'frontend/src-tauri/resources/training'
 if (!(Test-Path (Join-Path $training 'torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth'))) { throw '请先运行 scripts/prepare-training.ps1' }
 Copy-BuildTree $training (Join-Path $out 'resources/training')
 
