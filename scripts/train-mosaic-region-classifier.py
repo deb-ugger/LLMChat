@@ -277,17 +277,21 @@ def train_classifier(args, samples, records):
         y = torch.tensor([labels.index(r["part"]) for r in rows])
         return torch.nn.functional.normalize(x), y
 
+    print('PROGRESS {"phase":"features","current":0,"total":1}', flush=True)
     train_x, train_y = features(train)
     test_x, test_y = features(test)
+    print('PROGRESS {"phase":"features","current":1,"total":1}', flush=True)
     head = torch.nn.Linear(train_x.shape[1], len(labels))
     optimizer = torch.optim.Adam(head.parameters(), lr=.03, weight_decay=.001)
     counts = torch.bincount(train_y, minlength=len(labels)).float()
     loss_fn = torch.nn.CrossEntropyLoss(weight=counts.sum() / counts)
-    for _ in range(160):
+    for step in range(160):
         optimizer.zero_grad()
         loss = loss_fn(head(train_x), train_y)
         loss.backward()
         optimizer.step()
+        if (step + 1) % 5 == 0 or step == 159:
+            print("PROGRESS " + json.dumps({"phase": "fit", "current": step + 1, "total": 160}), flush=True)
     actual = test_y.tolist()
     with torch.inference_mode():
         scores, predictions = head(test_x).softmax(dim=1).max(dim=1)

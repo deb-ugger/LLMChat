@@ -30,7 +30,7 @@
     }
   },
   "bundle": {
-    "resources": ["resources/ffmpeg/*", "resources/unity/*", "resources/unity/font-symbols/*", "resources/wolf/*", "resources/web-assets/**/*"],
+    "resources": ["resources/ffmpeg/*", "resources/unity/*", "resources/unity/font-symbols/*", "resources/wolf/*", "resources/web-assets/**/*", "resources/training/**/*"],
     "active": true,
     "targets": [],
     "icon": [

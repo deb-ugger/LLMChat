@@ -140,6 +140,10 @@ if (Test-Path -LiteralPath $sidecarNamed -PathType Leaf) {
     Publish-PortableBackend $sidecarRelease
 }
 
+$training = Join-Path $root 'frontend/src-tauri/resources/training'
+if (!(Test-Path (Join-Path $training 'torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth'))) { throw '请先运行 scripts/prepare-training.ps1' }
+Copy-BuildTree $training (Join-Path $out 'resources/training')
+
 # Also sync font/tool caches dirs (created on first fix-font download)
 New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\bepinex") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $out "resources\fonts") | Out-Null

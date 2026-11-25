@@ -3,5 +3,5 @@
   "identifier": "game-benchmark",
   "description": "Permissions for the local game benchmark window",
   "windows": ["game-benchmark"],
-  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-toggle-maximize", "core:window:allow-destroy", "allow-runtime-log", "allow-build-speed-test", "allow-ollama-service", "dialog:allow-open", "allow-read-file-bytes"]
+  "permissions": ["core:default", "core:window:allow-close", "core:window:allow-start-dragging", "core:window:allow-minimize", "core:window:allow-toggle-maximize", "core:window:allow-destroy", "allow-runtime-log", "allow-build-speed-test", "allow-training", "allow-ollama-service", "dialog:allow-open", "allow-read-file-bytes"]
 }

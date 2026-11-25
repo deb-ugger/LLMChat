@@ -208,3 +208,15 @@
   .training-dataset-gallery { min-block-size: 400px; }
   .training-dataset-details { grid-column: 1 / -1; border-inline-start: 0; border-block-start: 1px solid var(--border); }
 }
+
+.training-run-workspace {display:grid;grid-template-columns:220px minmax(0,1fr) 260px;flex:1;min-height:0;height:100%;}
+.training-run-main {padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px;min-width:0;}
+.training-run-fields {border:0;padding:0;margin:0;display:grid;gap:12px;}
+.training-run-fields label {display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:8px;}
+.training-run-fields select,.training-run-fields input {max-width:100%;min-width:0;background:var(--bg-panel);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:var(--radius-sm);}
+.training-run-fields input {width:100px;}
+.training-run-log {min-height:160px;flex:1;overflow:auto;background:var(--bg-muted);padding:10px;font-size:var(--fs-caption);white-space:pre-wrap;overflow-wrap:anywhere;}
+.training-run-path {overflow-wrap:anywhere;font-size:var(--fs-caption);}
+.training-run-progress {display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;}
+.training-run-progress progress {width:100%;accent-color:var(--signal);height:8px;}
+.training-dataset-placeholder:has(.training-run-workspace) {padding:0;flex:1;min-height:0;}

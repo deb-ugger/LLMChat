@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-training"
+description = "Run the fixed local dataset trainer and inspect its environment."
+commands.allow = ["start_training", "cancel_training", "probe_training_env"]

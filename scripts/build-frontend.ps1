@@ -13,6 +13,7 @@ if ($OutputRoot) {
     $env:LLMCHAT_FRONTEND_OUTPUT_ROOT = $null
 }
 if ($ApiBase) { $env:VITE_API_BASE = $ApiBase }
+& (Join-Path $PSScriptRoot 'prepare-training.ps1')
 $clock = [Diagnostics.Stopwatch]::StartNew()
 try { & (Join-Path $PSScriptRoot 'prepare-mosaic-detector.ps1') }
 finally { Write-Output ('Frontend detector preparation: {0:N1}s' -f $clock.Elapsed.TotalSeconds) }

@@ -1,5 +1,6 @@
 mod build_close;
 mod build_speed_test;
+mod train_dataset;
 mod clipboard;
 mod game_image_zip;
 mod style_redraw;
@@ -862,6 +863,9 @@ pub fn run() {
         .manage(ollama::OllamaChild::default())
         .invoke_handler(tauri::generate_handler![
             build_speed_test::run_build_speed_test,
+            train_dataset::start_training,
+            train_dataset::cancel_training,
+            train_dataset::probe_training_env,
             ollama::ollama_service_status,
             ollama::ollama_runtime_status,
             ollama::ollama_service_start,

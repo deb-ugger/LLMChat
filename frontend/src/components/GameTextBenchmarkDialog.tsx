@@ -150,7 +150,7 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
     </div>
     <div className="game-benchmark-module" id={tabId + "-datasets-panel"} role="tabpanel"
       aria-labelledby={tabId + "-datasets"} hidden={module !== "datasets"}>
-      {module === "datasets" && <TrainingDatasetsPage channel={benchmarkChannel} />}
+      <TrainingDatasetsPage channel={benchmarkChannel} />
     </div>
   </main>;
   return browser ? createPortal(page, document.body) : page;

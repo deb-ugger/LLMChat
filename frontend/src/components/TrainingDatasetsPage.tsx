@@ -1,3 +1,4 @@
+import { TrainingView } from "./TrainingView";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useId, useRef, useState, type PointerEvent } from "react";
@@ -216,7 +217,7 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
     </div>
     {error && <p className="training-dataset-error" role="alert">{error}</p>}
     <div className="training-dataset-placeholder" id={`${id}-training-panel`} role="tabpanel" aria-labelledby={`${id}-training`} hidden={view !== "training"}>
-      训练能力将在下一阶段接入
+      <TrainingView />
     </div>
     <div className="training-dataset-workspace" id={`${id}-dataset-panel`} role="tabpanel" aria-labelledby={`${id}-datasets`} hidden={view !== "datasets"}>
       <aside className="training-dataset-library" aria-label="数据集列表">
