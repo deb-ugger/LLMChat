@@ -36,9 +36,9 @@ function ValidationImage({ row, snapshot }: { row: ValidationRow; snapshot: Anno
   </div>;
 }
 
-export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange, runState }: {
+export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRunChange, runState, pythonPath }: {
   datasetId: string; finishedRun?: string; comfy: string; onRetrain: () => void; onRunChange?: (run: TrainingRun | undefined) => void;
-  runState?: string;
+  runState?: string; pythonPath?: string;
 }) {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [runId, setRunId] = useState("");
@@ -78,10 +78,10 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
 
   useEffect(() => {
     let active = true;setModel(undefined);
-    if (comfy) void invoke<ModelStatus>("training_model_status", { comfyDir: comfy }).then(value => { if (active) setModel(value); })
+    if (comfy) void invoke<ModelStatus>("training_model_status", { comfyDir: comfy, pythonPath }).then(value => { if (active) setModel(value); })
       .catch(error => { if (active) setError(String(error)); });
     return () => { active = false; };
-  }, [comfy, runId]);
+  }, [comfy, runId, pythonPath]);
 
   useEffect(() => {
     onRunChange?.(result ? { ...result.meta, report: result.report } : undefined);
@@ -96,7 +96,7 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     if (!model || !runId) return;
     setBusy(true);setError("");
     try {
-      setModel(await invoke<ModelStatus>("enable_training_model", { runId, comfyDir: comfy, expectedActiveHash: model.hash }));
+      setModel(await invoke<ModelStatus>("enable_training_model", { runId, comfyDir: comfy, expectedActiveHash: model.hash, pythonPath }));
       setMessage("已生效，下次重绘使用新模型");
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }
@@ -106,7 +106,7 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     if (!selection || !result) return;
     setBusy(true);setError("");
     try {
-      await invoke("correct_training_label", { runId: result.meta.runId, sample: selection.sample, boxCoordinates: selection.box, label: part, comfyDir: comfy });
+      await invoke("correct_training_label", { runId: result.meta.runId, sample: selection.sample, boxCoordinates: selection.box, label: part, pythonPath });
       setMessage("已保存，可重新训练");
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }
@@ -144,12 +144,12 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
         <p>真值 {label(selection.expected)} · 预测 {label(selection.prediction)} · 置信度 {percent(selection.confidence)}</p><p>场景 {selection.scene}</p>
         <div className="training-dataset-actions"><select aria-label="更正部位" value={part} onChange={event => setPart(event.target.value)}>
           {Object.entries(datasetParts).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select>
-          <button type="button" className="unity-btn" disabled={busy || !comfy} onClick={() => void correct()}>保存标签</button>
+          <button type="button" className="unity-btn" disabled={busy} onClick={() => void correct()}>保存标签</button>
           <button type="button" className="unity-btn" onClick={onRetrain}>返回训练</button></div>
         {message === "已保存，可重新训练" && <p role="status">{message}</p>}
       </section>}
       <section className="training-model-comparison"><h3>启用对照</h3>
-        <dl><dt>当前模型</dt><dd>{model ? model.hash ? model.source ? `${model.source.runId} · ${time(model.source.createdAt)} · ${percent(model.source.accuracy)}` : "来源未知" : "尚未启用" : "正在读取…"}</dd>
+        <dl><dt>当前模型</dt><dd>{!comfy ? "启用模型时请配置 ComfyUI 模型目录" : model ? model.hash ? model.source ? `${model.source.runId} · ${time(model.source.createdAt)} · ${percent(model.source.accuracy)}` : "来源未知" : "尚未启用" : "正在读取…"}</dd>
           <dt>待启用模型</dt><dd>{result.meta.runId} · {time(result.meta.createdAt)} · {percent(result.report.agreement)}</dd></dl>
         {model?.hash && <p className="training-run-path">当前 SHA-256 {model.hash}</p>}
         <button type="button" className="unity-btn unity-btn-primary" disabled={!model || busy || enabled} onClick={() => void enable()}>{enabled ? "已启用" : "启用为线上模型"}</button>

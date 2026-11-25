@@ -1,6 +1,7 @@
 import { writeOutput } from "../appOutput";
 import { normalizeProvider, ocrLangToTranslateSource, withDefaults } from "../settingsDefaults";
 import { LlmRuntimeSettings } from "./LlmRuntimeSettings";
+import { TrainingPythonSettings } from "./TrainingPythonSettings";
 import { FeatureIcon } from "./FeatureIcon";
 import { GamePromptPoolPanel } from "./GamePromptPoolPanel";
 import { createPortal } from "react-dom";
@@ -4103,7 +4104,7 @@ export function SettingsView({
               }}
             />
           </>}</RetainedSettingsTab>
-        <RetainedSettingsTab active={tab === "unity"}>{<><LlmRuntimeSettings/><GamePromptPoolPanel notify={notify}/>
+        <RetainedSettingsTab active={tab === "unity"}>{<><TrainingPythonSettings/><LlmRuntimeSettings/><GamePromptPoolPanel notify={notify}/>
           <UnitySettingsPanel
             ref={unityPanelRef}
             active={active && tab === "unity"}

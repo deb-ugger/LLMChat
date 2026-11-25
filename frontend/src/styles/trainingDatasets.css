@@ -285,3 +285,5 @@
 .training-env-toggle:focus-visible {outline:2px solid var(--signal);outline-offset:2px;}
 .training-env-panel {flex-shrink:0;max-height:min(42vh,330px);overflow:auto;padding:8px 14px;border-bottom:1px solid var(--border);}
 .training-env-panel[hidden] {display:none;}
+.training-env-panel .training-env-checks li {grid-template-columns:minmax(110px,1fr) minmax(0,2fr);}
+.training-env-panel .training-env-checks b {overflow-wrap:anywhere;}

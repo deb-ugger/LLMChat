@@ -1,6 +1,8 @@
 mod build_close;
 mod build_speed_test;
 mod train_dataset;
+mod training_python;
+mod training_environment;
 mod training_results;
 mod clipboard;
 mod game_image_zip;
@@ -867,6 +869,8 @@ pub fn run() {
             train_dataset::start_training,
             train_dataset::cancel_training,
             train_dataset::probe_training_env,
+            training_environment::ensure_training_venv,
+            training_environment::cancel_training_environment,
             training_results::list_training_runs,
             training_results::read_training_result,
             training_results::training_model_status,

@@ -1,0 +1,7 @@
+--index-url https://mirrors.aliyun.com/pypi/simple/
+--extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu/
+--find-links https://mirrors.aliyun.com/pytorch-wheels/cpu/
+torch==2.6.0+cpu
+torchvision==0.21.0+cpu
+Pillow>=10.0.0
+numpy>=1.26.0
