@@ -11,7 +11,7 @@ import { requestBenchmarkWindow } from "../gameBenchmarkWindow";
 import type { MosaicBox } from "../gameMosaic";
 import "../styles/trainingDatasets.css";
 
-const pageSize = 12;
+const pageSizes = [24, 48, 96];
 const verdicts = ["present", "none", "unmarked"] as const;
 type Filter = DatasetVerdict | "all";
 
@@ -123,6 +123,7 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
   const [search, setSearch] = useState("");
   const [layout, setLayout] = useState<"grid" | "list">("grid");
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(48);
   const [focusedId, setFocusedId] = useState("");
   const [checked, setChecked] = useState(new Set<string>());
   const [busy, setBusy] = useState("");
@@ -253,7 +254,7 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
         {!catalog.length && <p className="training-dataset-empty hint">{desktop ? "打开已有数据集，或从图片集新建。" : "请在桌面版中管理数据集。"}</p>}
       </aside>
       <div className="training-dataset-gallery">
-        <div className="training-dataset-toolbar">
+        <div className="training-dataset-toolbar" style={{ flexShrink: 0 }}>
           <div className="training-dataset-toolbar-row">
             <div className="training-dataset-switch" role="group" aria-label="用途">
               {datasetPurposes.map(item => <button key={item} type="button" className="unity-btn" aria-pressed={purpose === item}
@@ -275,6 +276,23 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
             </div>
             <span className="training-dataset-result-count" aria-live="polite">{images.length} 张</span>
           </div>
+          <nav className="training-dataset-toolbar-row" aria-label="数据集分页">
+            <div className="training-dataset-actions">
+              <label><input type="checkbox" disabled={!visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
+                onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />选择本页</label>
+              <select className="unity-btn" aria-label="每页图片数量" value={pageSize} onChange={event => {
+                setPageSize(Number(event.target.value)); setPage(0); setFocusedId("");
+              }}>{pageSizes.map(size => <option value={size} key={size}>每页 {size} 张</option>)}</select>
+              <span className="hint" aria-live="polite">显示 {images.length ? currentPage * pageSize + 1 : 0}–{Math.min((currentPage + 1) * pageSize, images.length)} 张</span>
+            </div>
+            <div className="training-dataset-actions">
+              <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => { setPage(currentPage - 1); setFocusedId(""); }}>上一页</button>
+              <select className="unity-btn" aria-label="跳转到数据集页" disabled={!images.length} value={currentPage} onChange={event => {
+                setPage(Number(event.target.value)); setFocusedId("");
+              }}>{Array.from({ length: pages }, (_, index) => <option value={index} key={index}>第 {images.length ? index + 1 : 0} / {images.length ? pages : 0} 页</option>)}</select>
+              <button type="button" className="unity-btn" disabled={currentPage + 1 >= pages} onClick={() => { setPage(currentPage + 1); setFocusedId(""); }}>下一页</button>
+            </div>
+          </nav>
         </div>
         {dataset && visible.length ? <ul className="training-dataset-images" data-layout={layout}>
           {visible.map(image => <li key={image.id} className="training-dataset-tile" data-active={focused?.id === image.id}>
@@ -286,15 +304,6 @@ export function TrainingDatasetsPage({ channel }: { channel?: BroadcastChannel }
               onChange={event => toggleChecked([image.sourceHash], event.target.checked)} />
           </li>)}
         </ul> : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "选择数据集后查看图片。"}</p>}
-        <div className="training-dataset-pagination">
-          <label><input type="checkbox" disabled={!visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
-            onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />选择本页</label>
-          <div className="training-dataset-actions">
-            <button type="button" className="unity-btn" disabled={currentPage === 0} onClick={() => { setPage(currentPage - 1); setFocusedId(""); }}>上一页</button>
-            <span>{images.length ? currentPage + 1 : 0} / {images.length ? pages : 0}</span>
-            <button type="button" className="unity-btn" disabled={currentPage + 1 >= pages} onClick={() => { setPage(currentPage + 1); setFocusedId(""); }}>下一页</button>
-          </div>
-        </div>
       </div>
       <aside className="training-dataset-details" aria-label="图片详情">
         <section>
