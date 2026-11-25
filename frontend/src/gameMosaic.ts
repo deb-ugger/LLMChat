@@ -14,7 +14,7 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
   "2511": "Qwen Image Edit 2511", turbo: "Qwen Image 2.1 Turbo", "diffusion-cream": "DiffusionCreamPy · 动漫局部修复",
 };
 export const mosaicModelChoices = (["turbo", "2511", "diffusion-cream"] as const).map(value => ({ value, label: mosaicModelLabels[value] }));
-export const mosaicDefaultSteps: Record<MosaicModel, number> = { turbo: 8, "2511": 20, "diffusion-cream": 16 };
+export const mosaicDefaultSteps: Record<MosaicModel, number> = { turbo: 8, "2511": 20, "diffusion-cream": 28 };
 export const isMosaicModel = (value: unknown): value is MosaicModel =>
   mosaicModelChoices.some(choice => choice.value === value);
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };

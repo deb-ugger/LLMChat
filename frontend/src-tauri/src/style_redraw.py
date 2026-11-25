@@ -343,7 +343,7 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
         raise TimeoutError("等待 ComfyUI 结果超时")
 
 
-def mosaic_redraw_area(original, regions, protected):
+def mosaic_redraw_area(original, regions, protected, preserve_edges=False):
     from scipy import ndimage
 
     boxes = [region["box"] for region in regions]
@@ -383,6 +383,14 @@ def mosaic_redraw_area(original, regions, protected):
     generation = editable & (distance <= expansion)
     blend = np.clip(1 - distance / feather, 0, 1)
     blend = blend * blend * (3 - 2 * blend)
+    if preserve_edges and ((distance > 0) & (distance < feather) & editable).any():
+        rgb = ndimage.gaussian_filter(np.asarray(crop.convert("RGB"), dtype=np.float32), (.8, .8, 0))
+        strength = np.hypot(ndimage.sobel(rgb, axis=0), ndimage.sobel(rgb, axis=1)).max(axis=2) / 8
+        edges = np.clip((strength - 4) / 14, 0, 1)
+        edges = ndimage.gaussian_filter(ndimage.maximum_filter(edges, size=3), .8)
+        ramp = np.minimum(distance / feather, 1)
+        # Keep clean contours in the transition band, with a smooth return to the original blend.
+        blend *= 1 - .7 * edges * (4 * ramp * (1 - ramp)) ** 2
     blend[~editable] = 0
     # Sample intact, nearly opaque pixels within the generated border.
     sample_limit = expansion - max(1, expansion // 6)
@@ -483,9 +491,9 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit", "turbo": "expanded", "diffusion-cream": "diffusion-cream"}
 
 
-def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size):
+def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name):
     # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
-    scale = 1024 / max(crop_size)
+    scale = 1152 / max(crop_size)
     width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
     guide_blur = max(31, min(97, round(min(width, height) * .073)))
 
@@ -503,9 +511,12 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                   text="Anime game illustration, continuous linework, coherent proportions and shading, fine local texture"),
         "7": node("CLIPTextEncode", clip=["30", 1],
                   text="censored, mosaic artifacts, flat color fills, distorted proportions, broken outlines"),
-        # Suppress grid edges in both guides while preserving the target's coarse shapes and colors.
-        "41": node("INPAINT_MaskedBlur", image=["5", 0], mask=["5", 1], blur=guide_blur, falloff=0),
-        "31": node("TilePreprocessor", image=["41", 0], pyrUp_iters=4, resolution=512),
+        # Suppress grid edges within the core and keep the transition band's original contours in both guides.
+        "43": node("LoadImage", image=guide_mask_name),
+        "44": node("ImageScale", image=["43", 0], width=width, height=height, upscale_method="nearest-exact", crop="disabled"),
+        "45": node("ImageToMask", image=["44", 0], channel="red"),
+        "41": node("INPAINT_MaskedBlur", image=["5", 0], mask=["45", 0], blur=guide_blur, falloff=0),
+        "31": node("TilePreprocessor", image=["41", 0], pyrUp_iters=3, resolution=512),
         "32": node("ACN_ControlNet++InputNode", image=["31", 0], control_type="tile"),
         "33": node("ACN_ControlNet++LoaderAdvanced", plus_input=["32", 0], name="controlnet-union-sdxl-1.0.safetensors"),
         "34": node("InpaintModelConditioning", positive=["6", 0], negative=["7", 0], vae=["30", 2],
@@ -530,9 +541,10 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
     return graph
 
 
-def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None):
+def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None):
     if profile["kind"] == "diffusion-cream":
-        return diffusion_cream_workflow(source_name, reference_name, mask_name, steps, profile.get("seed", 1), crop_size)
+        return diffusion_cream_workflow(source_name, reference_name, mask_name, steps,
+                                        profile.get("seed", 1), crop_size, guide_mask_name)
     local_edit = profile["kind"] == "2511" and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
@@ -587,6 +599,10 @@ def mosaic_reference_input(reference, original, bounds, kind):
         return image.crop(ref_bounds).convert("RGB"), None
 
 
+def mosaic_core_mask(blend):
+    return blend.point([0] * 255 + [255])
+
+
 async def prepare_mosaic_workflow(original, data, steps):
     profile = data["profile"]
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
@@ -595,7 +611,8 @@ async def prepare_mosaic_workflow(original, data, steps):
     if not masked and profile["kind"] == "diffusion-cream":
         raise ValueError("使用 DiffusionCreamPy 前，请先为当前图片添加蒙版")
     if masked:
-        bounds, crop, generation, blend, _ = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
+        bounds, crop, generation, blend, _ = mosaic_redraw_area(
+            original, data["regions"], profile.get("keep", []), preserve_edges=profile["kind"] == "diffusion-cream")
     else:
         bounds = (0, 0, original.width, original.height)
     reference = profile.get("referenceImage")
@@ -606,9 +623,12 @@ async def prepare_mosaic_workflow(original, data, steps):
 
         source_name = await upload(original, workflow_input_name(profile.get("name", "")))
         mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
+        guide_mask_name = await upload(mosaic_core_mask(blend)) if profile["kind"] == "diffusion-cream" else None
         reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
-        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None)
+        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None, guide_mask_name)
         graph["4"]["_meta"] = {"title": "目标原图"}
+        if guide_mask_name:
+            graph["43"]["_meta"] = {"title": "结构预处理蒙版"}
         if reference_name:
             graph["16"]["_meta"] = {"title": "画风参考图"}
         if masked:
@@ -636,7 +656,9 @@ async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
-    bounds, crop, generation, blend, samples = mosaic_redraw_area(original, data["regions"], profile.get("keep", []))
+    preserve_edges = profile["kind"] == "diffusion-cream"
+    bounds, crop, generation, blend, samples = mosaic_redraw_area(
+        original, data["regions"], profile.get("keep", []), preserve_edges=preserve_edges)
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])
@@ -648,20 +670,20 @@ async def repair_mosaic(original, data, steps, workflow_times):
             workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
             raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
-            if raw is not None and profile["kind"] == "diffusion-cream":
-                guide = old_history["prompt"][2].get("41", {}).get("class_type")
-                if guide != "INPAINT_MaskedBlur":
+            if raw is not None and preserve_edges:
+                if "43" not in old_history["prompt"][2]:
                     raw = None
                     workflow_times.clear()
             if raw is None:
                 source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
                 noise_mask = Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB")
                 mask_name = await upload_image(session, noise_mask, subfolder=subfolder)
+                guide_mask_name = await upload_image(session, mosaic_core_mask(blend), subfolder=subfolder) if preserve_edges else None
                 reference_name = None
                 if reference:
                     reference_image, filename = mosaic_reference_input(reference, original, bounds, profile["kind"])
                     reference_name = await upload_image(session, reference_image, filename=filename, subfolder=subfolder)
-                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size)
+                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_mask_name)
                 if subfolder:
                     graph["15"] = {"class_type": "SaveImage", "inputs": {
                         "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
