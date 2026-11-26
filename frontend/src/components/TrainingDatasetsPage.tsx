@@ -2,6 +2,7 @@ import { TrainingView } from "./TrainingView";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import type { AnnotatedImage } from "../benchmark/imageSampleSet";
 import { copyTrainingDataset, datasetManifestIn, datasetPurposeLabels, datasetPurposes, datasetVerdict,
   datasetVerdictLabels, importTrainingDataset, labelDatasetImages, openTrainingDataset, partFor, readDatasetCatalog,
@@ -51,7 +52,20 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [search, setSearch] = useState("");
   const [more, setMore] = useState(false);
   const [conditions, setConditions] = useState({ ...emptyDatasetFilters });
-  const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null);
+  const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null), workspaceRef = useRef<HTMLDivElement>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const listMaxWidth = workspaceWidth > 0 ? Math.min(560, Math.floor(workspaceWidth * 0.55)) : 560;
+  const listMinWidth = Math.min(200, listMaxWidth);
+  const listWidth = usePersistedWidth("llmchat-training-dataset-list-width", 320, listMinWidth, listMaxWidth, "guide");
+  useLayoutEffect(() => {
+    const element = workspaceRef.current;
+    if (!element) return;
+    const update = () => { if (element.clientWidth > 0) setWorkspaceWidth(element.clientWidth); };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [view]);
   const keyboardFocus = useRef<"list" | "canvas" | undefined>(undefined);
   const [preview, setPreview] = useState<AnnotatedImage>();
   const [listOpen, setListOpen] = useState(false);
@@ -461,7 +475,8 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
           </select></label>}
         </fieldset>
       </div>
-      <div className="training-dataset-workspace" data-list-open={listOpen}>
+      <div ref={workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
+        style={{ ["--training-dataset-list-width" as string]: `${listWidth.width}px` }}>
         <aside className="training-dataset-image-list" id={id + "-image-list"} aria-label="图片列表">
           <header className="training-dataset-list-head">
             <h3>图片列表</h3>
@@ -526,13 +541,24 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             </nav>
           </footer>
         </aside>
-        {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
-          image={focused} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={busyRef.current}
-          readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
-          masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
-          onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
-          onPreview={() => setPreview(focused)} onContextMenu={event => openImageMenu(event, focused)} />
-          : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
+        <button type="button" className="unity-col-resizer training-dataset-list-divider" role="separator" aria-orientation="vertical"
+          aria-controls={id + "-image-list"} aria-label="调整图片列表宽度" data-tooltip="拖动调整图片列表宽度"
+          aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
+          onMouseDown={event => listWidth.beginResize(event, "grow-right")} onKeyDown={event => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              listWidth.setWidth(listWidth.width + (event.key === "ArrowRight" ? 16 : -16));
+            }
+          }} />
+        <div className="training-dataset-detail">
+          {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
+            image={focused} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={busyRef.current}
+            readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
+            masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
+            onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
+            onPreview={() => setPreview(focused)} onContextMenu={event => openImageMenu(event, focused)} />
+            : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
+        </div>
       </div>
     </div>
     <div ref={imageMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="样本图片操作" style={{ inset: "auto", margin: 0 }}>
