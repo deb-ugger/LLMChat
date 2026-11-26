@@ -92,19 +92,6 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   const zoom = manualZoom ?? fit;
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const displaySize = useMemo(() => ({
-    width: image.width * zoom,
-    height: image.height * zoom,
-  }), [image.width, image.height, zoom]);
-  const canvasPadding = useMemo(() => {
-    const vw = viewportSize.width || 1;
-    const vh = viewportSize.height || 1;
-    const { width: iw, height: ih } = displaySize;
-    const slack = 56;
-    const padX = iw <= vw ? Math.max(12, (vw - iw) / 2) : Math.max(slack, Math.min(vw * 0.45, iw * 0.35));
-    const padY = ih <= vh ? Math.max(12, (vh - ih) / 2) : Math.max(slack, Math.min(vh * 0.45, ih * 0.35));
-    return { padX, padY };
-  }, [viewportSize, displaySize]);
   const [panScroll, setPanScroll] = useState({ left: 0, top: 0 });
   const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>();
   const anchor = useRef<{ x: number; y: number; clientX: number; clientY: number } | undefined>(undefined);
@@ -198,7 +185,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       view.scrollTop = (view.scrollHeight - view.clientHeight) / 2;
     }
     syncCanvasScroll();
-  }, [zoom, viewportSize, canvasPadding, picture.url]);
+  }, [zoom, viewportSize, picture.url]);
   useEffect(() => {
     const view = viewport.current;
     if (!view) return;
@@ -378,25 +365,22 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     </header>
     <div className="training-dataset-editor-main">
     <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
-    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => { if (!pan.current) syncCanvasScroll(); }} onContextMenu={onContextMenu}
+    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing && !hasSelection ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => { if (!pan.current) syncCanvasScroll(); }} onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
         pointerHit.current = -1;
-        if (busy) return;
-        if (event.button !== 0 && event.button !== 1) return;
+        if (event.button !== 0 || busy) return;
         const target = event.target as Element;
-        const middlePan = event.button === 1;
         const edge = target.getAttribute("data-mosaic-resize");
         const hit = edge && selectedRef.current >= 0 ? String(selectedRef.current) : target.closest("[data-mosaic-box]")?.getAttribute("data-mosaic-box") ?? undefined;
         pointerHit.current = hit === undefined ? -1 : Number(hit);
         const index = drawing ? undefined : hit;
         const wasSelected = index !== undefined && selectedRef.current === Number(index);
-        if (index !== undefined && !middlePan) selectMask(Number(index));
+        if (index !== undefined) selectMask(Number(index));
         const inside = bitmap.current?.contains(event.target as Node);
-        if (!drawing && (middlePan || index === undefined)) {
+        if (index === undefined && (!drawing || !editable)) {
           event.preventDefault(); event.currentTarget.focus({ preventScroll: true }); event.currentTarget.setPointerCapture(event.pointerId);
-          if (!middlePan) selectMask(-1);
-          setPanning(true);
+          selectMask(-1); setPanning(true);
           pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop }; return;
         }
         if (!editable || !inside) return;
@@ -413,9 +397,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}>
       <div className="training-dataset-canvas-track" style={{
-        paddingLeft: canvasPadding.padX, paddingRight: canvasPadding.padX,
-        paddingTop: canvasPadding.padY, paddingBottom: canvasPadding.padY,
-      }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: displaySize.width, height: displaySize.height, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
+        paddingInline: viewportSize.width,
+        paddingBlock: viewportSize.height,
+      }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: image.width * zoom, height: image.height * zoom, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         <svg viewBox={`0 0 ${image.width} ${image.height}`} className={editable ? "is-editing" : undefined} aria-label="去码蒙版"
           style={tool === "select" ? { cursor: panning ? "grabbing" : "grab" } : undefined}>
@@ -478,7 +462,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     </section>
     </div>
     <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
-      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白或中键平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
+      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
         event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);
