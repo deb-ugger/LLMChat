@@ -261,7 +261,7 @@
 .training-dataset-tile:is(:hover, :focus-within, [data-checked=true]) > input { opacity: 1; }
 
 .training-dataset-images[data-layout=thumbnails] {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(max(120px, calc((100% - 16px) / 6)), 1fr));
   gap: 8px;
   padding: 8px;
 }
@@ -445,7 +445,7 @@
 .training-dataset-editor .unity-btn { min-block-size: 26px; block-size: 26px; padding: 0 7px; font-size: var(--fs-caption); }
 .training-dataset-canvas {
   flex: 1 1 0;
-  min-block-size: 0;
+  min-block-size: min(280px, 42vh);
   position: relative;
   margin: 10px 12px 0;
   overflow: auto;
