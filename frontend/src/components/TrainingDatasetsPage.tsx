@@ -86,8 +86,6 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const writer: DatasetWriter = writeTrainingDatasetFile;
   const datasetPicker = useRef<HTMLDivElement>(null), batchMenu = useRef<HTMLDivElement>(null);
   const datasetMenu = useRef<HTMLDivElement>(null);
-  const listClickTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => { if (listClickTimer.current !== undefined) clearTimeout(listClickTimer.current); }, []);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [maskCounts, setMaskCounts] = useState<Record<string, number | null>>({});
   const requestedCounts = useRef(new Set<string>());
@@ -235,31 +233,24 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
       .finally(() => { busyRef.current = false; setBusy(""); });
   }
 
-  function toggleChecked(hashes: string[], selected: boolean) {
+  function toggleChecked(hashes: string[], selected?: boolean) {
     setChecked(previous => {
       const next = new Set(previous);
-      for (const hash of hashes) selected ? next.add(hash) : next.delete(hash);
+      for (const hash of hashes) (selected ?? !next.has(hash)) ? next.add(hash) : next.delete(hash);
       return next;
     });
   }
 
   function pickListImage(image: AnnotatedImage, event: ReactMouseEvent) {
     if (blocked) return;
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      toggleChecked([image.sourceHash], !checked.has(image.sourceHash));
-      return;
-    }
-    if (event.detail > 1) return;
-    clearTimeout(listClickTimer.current);
-    listClickTimer.current = setTimeout(() => {
-      toggleChecked([image.sourceHash], !checked.has(image.sourceHash));
-    }, 220);
+    if (event.ctrlKey || event.metaKey) event.preventDefault();
+    if (event.detail > 2) return;
+    // A double-click produces two click events before opening the image, restoring its initial checked state.
+    toggleChecked([image.sourceHash]);
   }
 
   function openListImage(image: AnnotatedImage) {
     if (blocked) return;
-    clearTimeout(listClickTimer.current);
     keyboardFocus.current = "canvas";
     setFocusedId(image.id);
   }
@@ -346,8 +337,10 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   function jumpToPage(value: string) {
     if (blocked || !images.length) return;
     const parsed = Number.parseInt(value.trim(), 10);
-    if (!Number.isFinite(parsed)) return;
-    navigateImage((Math.max(1, Math.min(pages, parsed)) - 1) * pageSize, "list");
+    if (!Number.isFinite(parsed)) { setPageJump(String(currentPage + 1)); return; }
+    const target = Math.max(1, Math.min(pages, parsed));
+    setPageJump(String(target));
+    if (target !== currentPage + 1) navigateImage((target - 1) * pageSize, "list");
   }
 
   function annotateParts(reference: DatasetReference) {
