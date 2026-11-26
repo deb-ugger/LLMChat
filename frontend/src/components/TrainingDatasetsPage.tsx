@@ -57,7 +57,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [purpose, setPurpose] = useState<DatasetPurpose>("mosaic");
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  const [more, setMore] = useState(false);
+
   const [conditions, setConditions] = useState({ ...emptyDatasetFilters });
   const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null), workspaceRef = useRef<HTMLDivElement>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
@@ -96,6 +96,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const writer: DatasetWriter = writeTrainingDatasetFile;
   const datasetPicker = useRef<HTMLDivElement>(null), batchMenu = useRef<HTMLDivElement>(null);
   const datasetMenu = useRef<HTMLDivElement>(null);
+  const advancedFiltersMenu = useRef<HTMLDivElement>(null);
   const [maskCounts, setMaskCounts] = useState<Record<string, number | null>>({});
   const requestedCounts = useRef(new Set<string>());
   const [menuReference, setMenuReference] = useState<DatasetReference>();
@@ -203,16 +204,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   function openDatasetMenu(event: ReactMouseEvent<HTMLElement>, reference: DatasetReference) {
     event.preventDefault();
     event.stopPropagation();
-    if (blocked || !datasetMenu.current) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const pointer = event.clientX !== 0 || event.clientY !== 0;
-    const { x, y } = getFixedMenuPoint(pointer ? event.clientX : bounds.left,
-      pointer ? event.clientY : bounds.bottom, 190, 150);
-    datasetMenu.current.style.left = x + "px";
-    datasetMenu.current.style.top = y + "px";
-    setMenuReference(reference);
-    datasetMenu.current.showPopover();
-    datasetMenu.current.querySelector("button")?.focus({ preventScroll: true });
+    openDatasetOpsMenu(event, reference);
   }
 
   function rename() {
@@ -341,7 +333,9 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       const next = await openTrainingDataset(reference.path, reference.workId);
       if (reference.path !== datasetRef.current?.reference.path) updateUndoHistory([]);
       setPurpose("mosaic"); setFilter("all"); setSearch(""); setConditions({ ...emptyDatasetFilters, masks: "unmarked-parts" });
-      setMore(true); resetSelection(); setPreview(undefined); setView("datasets"); return next;
+      resetSelection(); setPreview(undefined); setView("datasets");
+      requestAnimationFrame(() => advancedFiltersMenu.current?.showPopover());
+      return next;
     }, false);
   }
 
@@ -387,6 +381,18 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [view, blocked, focused, preview, renaming, deleting, deletingDataset, images, currentPage, pageSize, pages, checked]);
 
+  function openDatasetOpsMenu(event: ReactMouseEvent<HTMLElement>, reference?: DatasetReference) {
+    if (blocked || !datasetMenu.current) return;
+    setMenuReference(reference ?? dataset?.reference);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const pointer = event.clientX !== 0 || event.clientY !== 0;
+  const { x, y } = getFixedMenuPoint(pointer ? event.clientX : bounds.left, pointer ? event.clientY : bounds.bottom, 220, 320);
+    datasetMenu.current.style.left = x + "px";
+    datasetMenu.current.style.top = y + "px";
+    datasetMenu.current.showPopover();
+    datasetMenu.current.querySelector("button")?.focus({ preventScroll: true });
+  }
+
   function openImageMenu(event: ReactMouseEvent<HTMLElement>, image: AnnotatedImage) {
     event.preventDefault(); event.stopPropagation();
     if (blocked || !imageMenu.current) return;
@@ -407,21 +413,43 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       {busy && <span className="hint" role="status">{busy}</span>}
     </div>
     {error && !renaming && <p className="training-dataset-error" role="alert">{error}</p>}
-    <div ref={datasetMenu} popover="auto" className="unity-gallery-menu" role="menu"
+    <div ref={datasetMenu} id={id + "-dataset-ops"} popover="auto" className="unity-gallery-menu training-dataset-ops-menu" role="menu"
       aria-label="数据集操作" style={{ inset: "auto", margin: 0 }}>
-      <button type="button" role="menuitem" onClick={() => {
+      <p className="training-dataset-ops-label" role="presentation">数据集库</p>
+      <button type="button" role="menuitem" disabled={!desktop || blocked} onClick={() => {
         datasetMenu.current?.hidePopover();
-        if (menuReference) void api.revealPath(menuReference.path).catch(error => showAppNotice(String(error), "error"));
-      }}>打开所在文件夹</button>
-      <button type="button" role="menuitem" onClick={() => {
+        datasetPicker.current?.hidePopover();
+        openDirectory();
+      }}>浏览本地目录…</button>
+      <button type="button" role="menuitem" disabled={!desktop || blocked} onClick={() => {
         datasetMenu.current?.hidePopover();
-        if (menuReference) {
+        importInput.current?.click();
+      }}>从图片集导入</button>
+      {menuReference && <>
+        <hr className="training-dataset-ops-divider" />
+        <p className="training-dataset-ops-label" role="presentation" title={menuReference.title}>当前条目</p>
+        <button type="button" role="menuitem" onClick={() => {
+          datasetMenu.current?.hidePopover();
+          void api.revealPath(menuReference.path).catch(error => showAppNotice(String(error), "error"));
+        }}>打开所在文件夹</button>
+        <button type="button" role="menuitem" disabled={!!busy} onClick={() => {
+          datasetMenu.current?.hidePopover();
           setError(""); setRenameTitle(menuReference.title); setRenaming(menuReference);
-        }
-      }}>重命名</button>
-      <button type="button" role="menuitem" disabled={!!busy} onClick={() => {
-        datasetMenu.current?.hidePopover(); setDeletingDataset(menuReference);
-      }}>删除数据集</button>
+        }}>重命名</button>
+        <button type="button" role="menuitem" disabled={!!busy} onClick={() => {
+          datasetMenu.current?.hidePopover(); setDeletingDataset(menuReference);
+        }}>删除数据集</button>
+      </>}
+      {dataset && menuReference?.path === dataset.reference.path && <>
+        <hr className="training-dataset-ops-divider" />
+        <p className="training-dataset-ops-label" role="presentation">当前打开的数据集</p>
+        <button type="button" role="menuitem" disabled={!desktop || blocked}
+          data-tooltip="共用图片，单独保存标注；要求位于同一磁盘分区。直接修改图片内容会影响共用副本。"
+          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(true); }}>新建标注副本</button>
+        <button type="button" role="menuitem" disabled={!desktop || blocked}
+          data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况"
+          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(false); }}>复制全部图片</button>
+      </>}
     </div>
     {deletingDataset && <GameDialog title="删除数据集" description={deletingDataset.workId
       ? `将「${deletingDataset.title}」的工作副本图片和标注移入系统回收站，并从列表移除。共用图片的其他副本仍可使用。`
@@ -451,13 +479,18 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
         <div className="training-dataset-command-row">
           <button type="button" className="unity-btn training-dataset-list-toggle" aria-controls={id + "-image-list"}
             aria-expanded={listOpen} onClick={() => setListOpen(!listOpen)}>列表</button>
-          <button type="button" className="unity-btn training-dataset-picker-trigger" popoverTarget={id + "-catalog"} disabled={blocked}
-            onClick={event => { positionWindowPopover(event.currentTarget, datasetPicker.current); loadCatalogCounts(); }}
-            onContextMenu={event => { if (dataset) openDatasetMenu(event, dataset.reference); }}>
-            <span title={dataset?.reference.title}>{dataset ? `数据集：${dataset.reference.title}` : "选择数据集"}</span>
-            {dataset && <small>· {dataset.reference.count} 张 · {maskCounts[dataset.reference.path]} 蒙版</small>}
-            <span aria-hidden="true">▾</span>
-          </button>
+          <div className="training-dataset-command-primary">
+            <button type="button" className="unity-btn training-dataset-picker-trigger" popoverTarget={id + "-catalog"} disabled={blocked}
+              onClick={event => { positionWindowPopover(event.currentTarget, datasetPicker.current); loadCatalogCounts(); }}
+              onContextMenu={event => { if (dataset) openDatasetMenu(event, dataset.reference); }}>
+              <span title={dataset?.reference.title}>{dataset ? dataset.reference.title : "选择数据集"}</span>
+              {dataset && <small>· {dataset.reference.count} 张 · {maskCounts[dataset.reference.path]} 蒙版</small>}
+              <span aria-hidden="true">▾</span>
+            </button>
+            <button type="button" className="unity-btn training-dataset-ops-trigger" disabled={blocked}
+              data-tooltip="导入、副本、打开文件夹、重命名与删除等数据集操作"
+              onClick={event => openDatasetOpsMenu(event)}>数据集操作 ▾</button>
+          </div>
           <div ref={datasetPicker} id={id + "-catalog"} popover="auto" className="training-dataset-catalog" aria-label="选择数据集">
             {catalog.map(reference => <button key={reference.path} type="button" className="training-dataset-catalog-item"
               aria-current={reference.path === dataset?.reference.path} onClick={() => openReference(reference)}
@@ -465,15 +498,11 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               <span title={reference.title}>{reference.title}</span>
               <small>· {reference.count} 张 · {maskCounts[reference.path] ?? (maskCounts[reference.path] === null ? "—" : "…")} 蒙版</small>
             </button>)}
-            <button type="button" className="training-dataset-catalog-item" disabled={!desktop} onClick={openDirectory}>打开目录</button>
+            <button type="button" className="training-dataset-catalog-item" disabled={!desktop} onClick={openDirectory}>浏览本地目录…</button>
+            <button type="button" className="training-dataset-catalog-item" disabled={blocked}
+              onClick={event => { datasetPicker.current?.hidePopover(); openDatasetOpsMenu(event); }}>数据集操作…</button>
           </div>
           <div className="training-dataset-actions training-dataset-commands">
-            <button type="button" className="unity-btn" aria-expanded={more} aria-controls={id + "-filters"} onClick={() => setMore(!more)}>更多筛选</button>
-            <button type="button" className="unity-btn" disabled={!desktop || blocked} onClick={() => importInput.current?.click()}>从图片集导入</button>
-            <button type="button" className="unity-btn" disabled={!desktop || !dataset || blocked}
-              data-tooltip="共用图片，单独保存标注；要求位于同一磁盘分区。直接修改图片内容会影响共用副本。" onClick={() => duplicate(true)}>新建标注副本</button>
-            <button type="button" className="unity-btn" disabled={!desktop || !dataset || blocked}
-              data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况" onClick={() => duplicate(false)}>复制全部图片</button>
             <button type="button" className="unity-btn unity-btn-primary" disabled={!canSave}
               data-tooltip={hasUnsavedChanges ? undefined : "当前没有未保存的更改"}
               onClick={() => void confirmSaved()}>保存</button>
@@ -486,21 +515,31 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             }} />
         </div>
         <fieldset className="training-dataset-toolbar-row" disabled={blocked} aria-label="图片筛选">
-          <div className="training-dataset-switch" role="group" aria-label="用途">
-            {datasetPurposes.map(item => <button key={item} type="button" className="unity-btn" aria-pressed={purpose === item}
-              onClick={() => { setPurpose(item); setFilter("all"); resetSelection(); }}>{datasetPurposeLabels[item]}</button>)}
-          </div>
-          <div className="training-dataset-switch" role="group" aria-label="标注状态">
-            {(["all", ...verdicts] as const).map(item => <button key={item} type="button" className="unity-btn" aria-pressed={filter === item}
-              onClick={() => { setFilter(item); resetSelection(); }}>{item === "all" ? "全部" : datasetVerdictLabels[purpose][item]}</button>)}
-          </div>
+          <label className="training-dataset-filter-field">用途
+            <select aria-label="用途" value={purpose} onChange={event => {
+              setPurpose(event.target.value as DatasetPurpose); setFilter("all"); resetSelection();
+            }}>{datasetPurposes.map(item => <option key={item} value={item}>{datasetPurposeLabels[item]}</option>)}</select>
+          </label>
+          <label className="training-dataset-filter-field">标注
+            <select aria-label="标注状态" value={filter} onChange={event => {
+              setFilter(event.target.value as Filter); resetSelection();
+            }}>
+              <option value="all">全部</option>
+              {verdicts.map(item => <option key={item} value={item}>{datasetVerdictLabels[purpose][item]}</option>)}
+            </select>
+          </label>
           <input type="search" aria-label="搜索文件名" placeholder="搜索文件名" value={search}
             onChange={event => { setSearch(event.target.value); resetSelection(); }} />
+          <button type="button" className="unity-btn training-dataset-advanced-trigger" disabled={blocked}
+            popoverTarget={id + "-advanced-filters"}
+            onClick={event => positionWindowPopover(event.currentTarget, advancedFiltersMenu.current)}>
+            高级筛选{conditionCount > 0 ? ` (${conditionCount})` : ""} ▾
+          </button>
           {conditionCount > 0 && <button type="button" className="unity-btn" onClick={() => {
             setConditions({ ...emptyDatasetFilters }); setFilter("all"); setSearch(""); resetSelection();
-          }}>清除全部</button>}
+          }}>清除</button>}
         </fieldset>
-        <fieldset className="training-dataset-filters" id={id + "-filters"} aria-label="更多筛选" disabled={blocked} hidden={!more}>
+        <div ref={advancedFiltersMenu} id={id + "-advanced-filters"} popover="auto" className="training-dataset-filters training-dataset-filters-popover" role="group" aria-label="高级筛选">
           {(["width", "height"] as const).map(axis => <label key={axis}>{axis === "width" ? "宽度" : "高度"}
             <input type="number" min={0} aria-label={axis === "width" ? "最小宽度" : "最小高度"} placeholder="最小"
               value={conditions[axis + "Min" as "widthMin"]} onChange={event => { setConditions({ ...conditions, [axis + "Min"]: event.target.value }); resetSelection(); }} />
@@ -517,7 +556,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
           {hasAdoption && <label>采用<select aria-label="采用筛选" value={conditions.adopted} onChange={event => { setConditions({ ...conditions, adopted: event.target.value as typeof conditions.adopted }); resetSelection(); }}>
             <option value="all">全部</option><option value="yes">已采用</option><option value="no">未采用</option>
           </select></label>}
-        </fieldset>
+        </div>
       </div>
       <div ref={workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
         style={{ ["--training-dataset-list-width" as string]: `${listWidth.width}px` }}>
