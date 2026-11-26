@@ -123,7 +123,8 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
   onBuildRunning?: (running: boolean) => void; benchmarkChannel?: BroadcastChannel; browser?: boolean;
 }) {
   const [module, setModule] = useRememberedBenchmarkChoice("llmchat-benchmark-module", "game", ["game", "build", "datasets"]);
-  const [headerTools, setHeaderTools] = useState<HTMLDivElement | null>(null);
+  const [gameHeaderTools, setGameHeaderTools] = useState<HTMLDivElement | null>(null);
+  const [datasetHeaderTools, setDatasetHeaderTools] = useState<HTMLDivElement | null>(null);
   const tabId = useId();
   const page = <main className={"game-benchmark-page" + (browser ? " game-benchmark-browser-fallback" : "")}>
     <header className="game-benchmark-page-header"><h2>记录与测试</h2>
@@ -135,12 +136,13 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
         <button type="button" role="tab" id={tabId + "-datasets"} aria-controls={tabId + "-datasets-panel"}
           aria-selected={module === "datasets"} onClick={() => setModule("datasets")}>训练与数据集</button>
       </div>
-      <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game" && module !== "datasets"} />
+      <div className="game-benchmark-header-tools" ref={setGameHeaderTools} hidden={module !== "game"} />
+      <div className="game-benchmark-header-tools" ref={setDatasetHeaderTools} hidden={module !== "datasets"} />
       {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
     </header>
     <div className="game-benchmark-module" id={tabId + "-game-panel"} role="tabpanel"
       aria-labelledby={tabId + "-game"} hidden={module !== "game"}>
-      <BenchmarkHeader.Provider value={headerTools}>
+      <BenchmarkHeader.Provider value={gameHeaderTools}>
         {gameView}
       </BenchmarkHeader.Provider>
     </div>
@@ -150,7 +152,7 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
     </div>
     <div className="game-benchmark-module" id={tabId + "-datasets-panel"} role="tabpanel"
       aria-labelledby={tabId + "-datasets"} hidden={module !== "datasets"}>
-      <TrainingDatasetsPage channel={benchmarkChannel} headerTools={headerTools} />
+      <TrainingDatasetsPage channel={benchmarkChannel} headerTools={datasetHeaderTools} />
     </div>
   </main>;
   return browser ? createPortal(page, document.body) : page;

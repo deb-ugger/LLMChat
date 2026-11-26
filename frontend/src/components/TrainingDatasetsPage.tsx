@@ -16,6 +16,8 @@ import { showAppNotice } from "./AppNotice";
 import { copyText } from "../clipboard";
 import { SamplePicture, TrainingDatasetImage, copyDatasetPicture, useSamplePicture, type DatasetMask } from "./TrainingDatasetImage";
 import { GameImageViewer } from "./GameImageViewer";
+import { UnityIconButton } from "./UnityIconButton";
+import { UnityActionIcon } from "./UnityActionIcon";
 import "../styles/trainingDatasets.css";
 
 const pageSizes = [24, 48, 96];
@@ -114,7 +116,10 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const pages = Math.max(1, Math.ceil(images.length / pageSize));
   const currentPage = Math.min(page, pages - 1);
   const visible = images.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
-  const focused = visible.find(image => image.id === focusedId) ?? visible[0];
+  const focused = focusedId ? images.find(image => image.id === focusedId) : undefined;
+  const focusedGalleryIndex = focused ? images.indexOf(focused) + 1 : 0;
+  const [pageJump, setPageJump] = useState("1");
+  useEffect(() => { setPageJump(String(currentPage + 1)); }, [currentPage]);
   const scenes = [...new Set(dataset?.data.images.map(image => image.scene).filter((value): value is string => !!value))];
   const hasAdoption = dataset?.data.images.some(image => typeof image.adopted === "boolean");
   const conditionCount = Number(!!(conditions.widthMin || conditions.widthMax)) + Number(!!(conditions.heightMin || conditions.heightMax)) +
@@ -249,6 +254,16 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     });
   }
 
+  function pickListImage(image: AnnotatedImage, event: ReactMouseEvent) {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      toggleChecked([image.sourceHash], !checked.has(image.sourceHash));
+      if (focused?.id !== image.id) setFocusedId(image.id);
+      return;
+    }
+    setFocusedId(current => current === image.id ? "" : image.id);
+  }
+
   function label(verdict: DatasetVerdict) {
     if (!dataset || !editable || !targets.size) return;
     run("正在保存标注…", () => saveDatasetLabels(dataset, labelDatasetImages(dataset, targets, purpose, verdict), dataset.parts, writer), false, true);
@@ -322,10 +337,17 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   function navigateImage(index: number, focus?: "list" | "canvas") {
     const next = Math.max(0, Math.min(images.length - 1, index));
     const image = images[next];
-    if (blocked || !image || image.id === focused?.id) return;
+    if (blocked || !image) return;
     keyboardFocus.current = focus;
     setPage(Math.floor(next / pageSize));
     setFocusedId(image.id);
+  }
+
+  function jumpToPage(value: string) {
+    if (blocked || !images.length) return;
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (!Number.isFinite(parsed)) return;
+    navigateImage((Math.max(1, Math.min(pages, parsed)) - 1) * pageSize, "list");
   }
 
   function annotateParts(reference: DatasetReference) {
@@ -410,14 +432,9 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
       <button type="button" id={`${id}-datasets`} aria-controls={`${id}-dataset-panel`} role="tab" aria-selected={view === "datasets"} onClick={() => setView("datasets")}>数据集</button>
       <button type="button" id={`${id}-training`} aria-controls={`${id}-training-panel`} role="tab" aria-selected={view === "training"} disabled={blocked} onClick={() => setView("training")}>训练</button>
     </div>
-    {view === "datasets" && <button type="button" className="unity-btn unity-btn-primary training-dataset-save-icon" disabled={!canSave}
-      aria-label="保存标注" data-tooltip={hasUnsavedChanges ? "保存标注" : "当前没有未保存的更改"}
-      onClick={() => void confirmSaved()}>
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9"
-        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M5 20h14a2 2 0 0 0 2-2v-10l-5-4H9L5 10v10z" /><path d="M9 6h6v4H9V6z" />
-      </svg>
-    </button>}
+    {view === "datasets" && <UnityIconButton className="training-dataset-save-icon unity-project-save"
+      title={hasUnsavedChanges ? "保存标注" : "当前没有未保存的更改"} disabled={!canSave}
+      onClick={() => void confirmSaved()}><UnityActionIcon kind="save" /></UnityIconButton>}
   </div>, headerTools) : null;
 
   return <section className="training-dataset-page">
@@ -581,10 +598,35 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
         style={{ ["--training-dataset-list-width" as string]: `${listWidth.width}px` }}>
         <aside className="training-dataset-image-list" style={{ maxInlineSize: listMaxWidth }} id={id + "-image-list"} aria-label="图片列表">
           <header className="training-dataset-list-head">
-            <h3>图片列表</h3>
-            <span className="training-dataset-range" aria-live="polite">
-              {images.length ? currentPage * pageSize + 1 : 0}–{Math.min((currentPage + 1) * pageSize, images.length)} / {images.length}
-            </span>
+            <nav className="training-dataset-pagination training-dataset-list-nav" aria-label="数据集分页">
+              <select className="unity-btn" aria-label="每页图片数量" disabled={blocked} value={pageSize} onChange={event => {
+                setPageSize(Number(event.target.value)); setPage(0); setFocusedId("");
+              }}>{pageSizes.map(size => <option value={size} key={size}>每页 {size}</option>)}</select>
+              <button type="button" className="unity-btn" disabled={blocked || currentPage === 0} aria-label="上一页"
+                onClick={() => navigateImage((currentPage - 1) * pageSize, "list")}>‹</button>
+              <label className="training-dataset-page-jump">
+                第<input type="number" className="unity-btn" aria-label="页码" min={1} max={Math.max(1, pages)} disabled={blocked || !images.length}
+                  value={pageJump} onChange={event => setPageJump(event.target.value)}
+                  onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); jumpToPage(pageJump); } }}
+                  onBlur={() => jumpToPage(pageJump)} />/ {pages || 1} 页
+              </label>
+              <button type="button" className="unity-btn" disabled={blocked || currentPage + 1 >= pages} aria-label="下一页"
+                onClick={() => navigateImage((currentPage + 1) * pageSize, "list")}>›</button>
+            </nav>
+            <div className="training-dataset-pagination training-dataset-list-batch" aria-label="批量选择">
+              <label><input type="checkbox" disabled={blocked || !visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
+                onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />本页</label>
+              <span className="training-dataset-result-count" aria-live="polite">已选 {checked.size} 张</span>
+              <button type="button" className="unity-btn" disabled={blocked || !dataset} popoverTarget={id + "-batch"}
+                onClick={event => positionWindowPopover(event.currentTarget, batchMenu.current)}>批量打标</button>
+              <div ref={batchMenu} id={id + "-batch"} popover="auto" className="training-dataset-batch" aria-label="批量打标">
+                {verdicts.map(verdict => <button key={verdict} type="button" className="training-dataset-catalog-item" disabled={blocked || !editable || !targets.size}
+                  onClick={() => { batchMenu.current?.hidePopover(); label(verdict); }}>
+                  {verdict === "unmarked" ? "清除标注" : `标记${datasetVerdictLabels[purpose][verdict]}`}
+                </button>)}
+                {dataset && !editable && <p className="hint">创建标注副本后可打标。</p>}
+              </div>
+            </div>
             <div className="training-dataset-switch" role="group" aria-label="图片列表展示方式">
               <button type="button" className="unity-btn" aria-pressed={layout === "list"} onClick={() => setLayout("list")}>列表</button>
               <button type="button" className="unity-btn" aria-pressed={layout === "thumbnails"} onClick={() => setLayout("thumbnails")}>缩略图</button>
@@ -600,7 +642,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               return <li key={image.id} className="training-dataset-tile" data-active={active} data-checked={checked.has(image.sourceHash)}
                 onContextMenu={event => openImageMenu(event, image)}>
                 <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={active ? 0 : -1}
-                  aria-pressed={active} disabled={blocked} onClick={() => setFocusedId(image.id)}>
+                  aria-pressed={active} disabled={blocked} onClick={event => pickListImage(image, event)}>
                   <span className="training-dataset-thumbnail"><SamplePicture image={image} read={dataset.data.read} /></span>
                   <span className="training-dataset-tile-meta">
                     <strong title={image.name}>{image.name}</strong>
@@ -613,35 +655,6 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               </li>;
             })}
           </ul>
-          <footer className="training-dataset-list-footer">
-            <div className="training-dataset-pagination" aria-label="批量选择">
-              <label><input type="checkbox" disabled={blocked || !visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
-                onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />本页</label>
-              <span className="training-dataset-result-count" aria-live="polite">已选 {checked.size} 张</span>
-              <button type="button" className="unity-btn" disabled={blocked || !dataset} popoverTarget={id + "-batch"}
-                onClick={event => positionWindowPopover(event.currentTarget, batchMenu.current)}>批量打标</button>
-              <div ref={batchMenu} id={id + "-batch"} popover="auto" className="training-dataset-batch" aria-label="批量打标">
-                {verdicts.map(verdict => <button key={verdict} type="button" className="training-dataset-catalog-item" disabled={blocked || !editable || !targets.size}
-                  onClick={() => { batchMenu.current?.hidePopover(); label(verdict); }}>
-                  {verdict === "unmarked" ? "清除标注" : `标记${datasetVerdictLabels[purpose][verdict]}`}
-                </button>)}
-                {dataset && !editable && <p className="hint">创建标注副本后可打标。</p>}
-              </div>
-            </div>
-            <nav className="training-dataset-pagination" aria-label="数据集分页">
-              <select className="unity-btn" aria-label="每页图片数量" disabled={blocked} value={pageSize} onChange={event => {
-                setPageSize(Number(event.target.value)); setPage(0); setFocusedId("");
-              }}>{pageSizes.map(size => <option value={size} key={size}>每页 {size} 张</option>)}</select>
-              <button type="button" className="unity-btn" disabled={blocked || currentPage === 0} aria-label="上一页"
-                onClick={() => navigateImage((currentPage - 1) * pageSize)}>‹</button>
-              <select className="unity-btn" aria-label="跳转到数据集页" disabled={blocked || !images.length} value={currentPage}
-                onChange={event => navigateImage(Number(event.target.value) * pageSize)}>
-                {Array.from({ length: pages }, (_, index) => <option value={index} key={index}>{images.length ? index + 1 : 0} / {images.length ? pages : 0}</option>)}
-              </select>
-              <button type="button" className="unity-btn" disabled={blocked || currentPage + 1 >= pages} aria-label="下一页"
-                onClick={() => navigateImage((currentPage + 1) * pageSize)}>›</button>
-            </nav>
-          </footer>
         </aside>
         <button type="button" className="unity-col-resizer training-dataset-list-divider" role="separator" aria-orientation="vertical"
           aria-controls={id + "-image-list"} aria-label="调整图片列表宽度" data-tooltip="拖动调整图片列表宽度"
@@ -654,7 +667,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
           }} />
         <div className="training-dataset-detail">
           {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
-            image={focused} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked}
+            image={focused} galleryIndex={focusedGalleryIndex} galleryTotal={images.length} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked}
             readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
             masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
             onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
