@@ -181,17 +181,10 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       <div className="training-dataset-editor-identity">
         <strong title={image.sourceDirectory || image.file}>{image.name}</strong>
         <span>{image.width} × {image.height}</span>
+        <span className="hint">已标部位 {known} / {drafts.length} 框</span>
       </div>
-      <div className="training-dataset-zoom">
-        <button className="unity-btn" type="button" aria-label="缩小标注画布" onClick={() => setManualZoom(Math.max(.01, zoom - Math.min(.25, zoom * .25)))}>−</button>
-        <button className="unity-btn" type="button" aria-label="恢复100%比例" onClick={() => setManualZoom(1)}>{Math.round(zoom*100)}%</button>
-        <button className="unity-btn" type="button" aria-label="放大标注画布" onClick={() => setManualZoom(zoom + Math.min(.25, zoom * .25))}>+</button>
-        <button className="unity-btn" type="button" aria-pressed={manualZoom === undefined} onClick={() => setManualZoom(undefined)}>适应</button>
-      </div>
-      <button className="unity-btn" type="button" disabled={!canUndo || busy} onClick={onUndo} data-tooltip="撤销标注 · Ctrl+Z">撤销</button>
-      <button className="unity-btn" type="button" onClick={onPreview}>查看原图</button>
-      <span className="hint">已标部位 {known} / {drafts.length} 框</span>
     </header>
+    <div className="training-dataset-editor-main">
     <div ref={viewport} tabIndex={0} className="training-dataset-canvas" aria-label="图片画布" onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
@@ -213,6 +206,16 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}
       onLostPointerCapture={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}>
+      <aside className="training-dataset-canvas-tools" role="group" aria-label="标注画布工具" onDoubleClick={event => event.stopPropagation()}>
+        <div className="training-dataset-zoom">
+          <button className="unity-btn" type="button" aria-label="缩小标注画布" onClick={() => setManualZoom(Math.max(.01, zoom - Math.min(.25, zoom * .25)))}>−</button>
+          <button className="unity-btn" type="button" aria-label="恢复100%比例" onClick={() => setManualZoom(1)}>{Math.round(zoom*100)}%</button>
+          <button className="unity-btn" type="button" aria-label="放大标注画布" onClick={() => setManualZoom(zoom + Math.min(.25, zoom * .25))}>+</button>
+          <button className="unity-btn" type="button" aria-pressed={manualZoom === undefined} onClick={() => setManualZoom(undefined)}>适应</button>
+        </div>
+        <button className="unity-btn" type="button" disabled={!canUndo || busy} onClick={onUndo} data-tooltip="撤销标注 · Ctrl+Z">撤销</button>
+        <button className="unity-btn" type="button" onClick={onPreview} data-tooltip="全屏查看原图">原图</button>
+      </aside>
       <div className="training-dataset-canvas-track"><div ref={bitmap} className="training-dataset-canvas-image" style={{width:image.width*zoom,height:image.height*zoom}}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         {drafts.map((mask,index) => <span key={index} className="training-dataset-canvas-mask" role="button" tabIndex={0}
@@ -232,8 +235,6 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         </span>)}
       </div></div>
     </div>
-    <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
-      : saving ? "正在写入工作副本…" : editable ? "拖空白处画框，双击框改部位；改动自动写入 · Ctrl+Z 撤销" : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <section className="training-dataset-regions" aria-label="区域清单">
       <div ref={table} className="training-dataset-region-table"><table><thead><tr>
         <th>#</th><th>部位</th><th>左</th><th>上</th><th>右</th><th>下</th><th>操作</th>
@@ -246,6 +247,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         <td><button type="button" className="unity-btn" disabled={!editable || busy} onClick={event => {event.stopPropagation();remove(index);}}>删除</button></td>
       </tr>)}</tbody></table>{!drafts.length && <p className="hint">暂无蒙版框</p>}</div>
     </section>
+    </div>
+    <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
+      : saving ? "正在写入工作副本…" : editable ? "拖空白处画框，双击框改部位；改动自动写入 · Ctrl+Z 撤销" : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
         event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);
