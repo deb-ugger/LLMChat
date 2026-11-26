@@ -47,7 +47,11 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [confirmingSave, setConfirmingSave] = useState(false);
   const maskWriteCount = useRef(0), undoRef = useRef<TrainingDataset[]>([]);
   function setCurrentDataset(value: TrainingDataset | undefined) { datasetRef.current = value; setDataset(value); }
-  function updateUndoHistory(value: TrainingDataset[] | ((previous: TrainingDataset[]) => TrainingDataset[])) {
+  const redoRef = useRef<TrainingDataset[]>([]);
+  const [redoHistory, setRedoHistory] = useState<TrainingDataset[]>([]);
+  function updateRedoHistory(value: TrainingDataset[]) { redoRef.current = value; setRedoHistory(value); }
+  function updateUndoHistory(value: TrainingDataset[] | ((previous: TrainingDataset[]) => TrainingDataset[]), resetRedo = true) {
+    if (resetRedo) updateRedoHistory([]);
     undoRef.current = typeof value === "function" ? value(undoRef.current) : value; setUndoHistory(undoRef.current);
   }
   const [purpose, setPurpose] = useState<DatasetPurpose>("mosaic");
@@ -290,7 +294,20 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       const current = datasetRef.current, previous = undoRef.current.at(-1);
       if (!current || !previous || previous.reference.path !== current.reference.path) return;
       const restored = await saveDatasetLabels(current, previous.data.annotations.samples, previous.parts, writer);
-      updateUndoHistory(history => history.slice(0, -1)); return restored;
+      updateRedoHistory([...redoRef.current.slice(-99), current]);
+      updateUndoHistory(history => history.slice(0, -1), false); return restored;
+    }, false);
+  }
+
+  function redoEdit() {
+    if (busyRef.current || !datasetRef.current) return;
+    run("正在重做标注…", async () => {
+      await maskWrites.current.catch(() => {});
+      const current = datasetRef.current, next = redoRef.current.at(-1);
+      if (!current || !next || next.reference.path !== current.reference.path) return;
+      const restored = await saveDatasetLabels(current, next.data.annotations.samples, next.parts, writer);
+      updateUndoHistory(history => [...history.slice(-99), current], false);
+      updateRedoHistory(redoRef.current.slice(0, -1)); return restored;
     }, false);
   }
 
@@ -332,13 +349,15 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (view !== "datasets" || maskWriteFailed || (busy && busy !== "正在写入标注…") || preview || deleting || deletingDataset || renaming || event.isComposing ||
-          !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "z" ||
-          (event.target instanceof Element && event.target.closest("input,textarea,[contenteditable]")) || (!undoHistory.length && !maskWriteCount.current)) return;
-      event.preventDefault(); event.stopPropagation(); undoEdit();
+          event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || !["z", "y"].includes(event.key.toLowerCase()) ||
+          (event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable]"))) return;
+      const redo = event.shiftKey || event.key.toLowerCase() === "y";
+      if (!(redo ? redoHistory.length : undoHistory.length || maskWriteCount.current)) return;
+      event.preventDefault(); event.stopPropagation(); (redo ? redoEdit : undoEdit)();
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [view, busy, maskWriteFailed, preview, deleting, deletingDataset, renaming, undoHistory, dataset]);
+  }, [view, busy, maskWriteFailed, preview, deleting, deletingDataset, renaming, undoHistory, redoHistory, dataset]);
 
   useEffect(() => {
     if (view !== "datasets") return;
@@ -581,6 +600,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
             masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
             onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
+            onRedo={redoEdit} canRedo={!blocked && !!redoHistory.length}
             onPreview={() => setPreview(focused)} onContextMenu={event => openImageMenu(event, focused)} />
             : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
         </div>
