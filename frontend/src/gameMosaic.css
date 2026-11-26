@@ -338,8 +338,23 @@ input.game-mosaic-threshold[type="number"] {
   flex: 1 1 0;
   min-height: 0;
   margin-block: 0 var(--space-1);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-2);
   row-gap: var(--space-2);
   grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+.game-mosaic-workbench .unity-image-previews > * {
+  min-block-size: 0;
+  min-inline-size: 0;
+  block-size: 100%;
+}
+.game-mosaic-workbench .unity-image-previews .game-mosaic-preview-viewport {
+  block-size: 100%;
+}
+.game-mosaic-workbench .unity-image-previews:has(> .game-mosaic-result-version) {
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
 }
 
 .game-mosaic-workbench .unity-image-previews figure {
