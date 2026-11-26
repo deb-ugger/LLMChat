@@ -69,8 +69,8 @@
   min-inline-size: 0;
 }
 .training-dataset-work-start {
-  flex: 1 1 auto;
-  max-inline-size: min(52%, 460px);
+  flex: 0 1 auto;
+  max-inline-size: min(100%, 28rem);
 }
 .training-dataset-work-end {
   flex: 0 1 auto;
@@ -95,8 +95,8 @@
 }
 .training-dataset-command-primary .training-dataset-picker-trigger {
   flex: 1 1 auto;
-  min-inline-size: 7rem;
-  max-inline-size: 260px;
+  min-inline-size: 6.5rem;
+  max-inline-size: 12.5rem;
 }
 .training-dataset-command-dataset-actions { display: flex; flex: none; gap: 4px; }
 .training-dataset-save-icon {
@@ -124,7 +124,8 @@
 }
 .training-dataset-filter-bar .training-dataset-search-field {
   flex: 0 0 auto;
-  inline-size: clamp(128px, 12vw, 188px);
+  inline-size: 9.75rem;
+  max-inline-size: 9.75rem;
 }
 .training-dataset-filter-bar .training-dataset-filter-actions { margin-inline-start: 0; }
 .training-dataset-filter-bar[data-disabled] { opacity: 0.55; pointer-events: none; }
@@ -519,7 +520,7 @@
 
 @media (width < 820px) {
   .training-dataset-command-row { flex-wrap: wrap; }
-  .training-dataset-command-primary .training-dataset-picker-trigger { max-inline-size: min(100%, 240px); }
+  .training-dataset-command-primary .training-dataset-picker-trigger { max-inline-size: min(100%, 11.5rem); }
   .training-dataset-commands { flex: 1 1 100%; justify-content: flex-start; }
   .training-dataset-list-toggle.unity-btn { display: inline-flex; }
   .training-dataset-list-divider { display: none; }
