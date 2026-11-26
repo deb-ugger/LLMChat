@@ -78,3 +78,40 @@ pub fn remove_training_dataset_image(app: tauri::AppHandle, dataset_work_id: Str
     crate::train_dataset::managed(&images, &path)?;
     fs::remove_file(path).map_err(|error| format!("删除工作副本图片失败：{error}"))
 }
+
+fn checked_dataset_directory(directory: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    if !directory.is_absolute() || directory.file_name().and_then(|name| name.to_str()) != Some(id) {
+        return Err("数据集删除路径无效".into());
+    }
+    if !directory.exists() { return Ok(None); }
+    let parent = directory.parent().ok_or("数据集目录无效")?.canonicalize().map_err(|error| error.to_string())?;
+    let resolved = directory.canonicalize().map_err(|error| error.to_string())?;
+    if resolved != parent.join(id) || !resolved.is_dir() {
+        return Err("数据集删除路径超出工作副本目录".into());
+    }
+    Ok(Some(resolved))
+}
+
+#[tauri::command]
+pub async fn remove_training_dataset(app: tauri::AppHandle, dataset_work_id: String) -> Result<(), String> {
+    let directory = crate::train_dataset::training_dataset_directory(app, dataset_work_id.clone())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _exclusive = crate::train_dataset::win::exclusive()?;
+        if checked_dataset_directory(&directory, &dataset_work_id)?.is_none() { return Ok(()); }
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{core::PCWSTR, Win32::UI::Shell::{
+            SHFileOperationW, SHFILEOPSTRUCTW, FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+        }};
+        let paths: Vec<u16> = directory.as_os_str().encode_wide().chain([0, 0]).collect();
+        let mut operation = SHFILEOPSTRUCTW {
+            wFunc: FO_DELETE, pFrom: PCWSTR(paths.as_ptr()),
+            fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT).0 as u16,
+            ..Default::default()
+        };
+        let result = unsafe { SHFileOperationW(&mut operation) };
+        if result != 0 || operation.fAnyOperationsAborted.as_bool() {
+            return Err(format!("删除数据集失败，系统返回码 {result}"));
+        }
+        Ok(())
+    }).await.map_err(|error| error.to_string())?
+}

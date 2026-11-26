@@ -73,6 +73,22 @@ export function rememberDataset(reference: DatasetReference) {
   return items;
 }
 
+
+export async function removeTrainingDataset(reference: DatasetReference) {
+  if (reference.workId) {
+    const path = `${await workingPath(reference.workId)}/${manifestFile}`;
+    if (canonicalPath(reference.path).toLowerCase() !== path.toLowerCase()) {
+      throw new Error("数据集工作副本路径无效");
+    }
+    await invoke<void>("remove_training_dataset", { datasetWorkId: reference.workId });
+  }
+  const remaining = readDatasetCatalog().filter(item =>
+    canonicalPath(item.path).toLowerCase() !== canonicalPath(reference.path).toLowerCase());
+  localStorage.setItem(catalogKey, JSON.stringify(remaining));
+  window.dispatchEvent(new Event("llmchat-training-datasets-changed"));
+  return remaining;
+}
+
 export function datasetVerdict(annotation: SampleAnnotation, purpose: DatasetPurpose): DatasetVerdict {
   const state = annotation[purpose]?.state;
   return state === "present" || state === "none" ? state : "unmarked";

@@ -5,7 +5,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import type { AnnotatedImage } from "../benchmark/imageSampleSet";
 import { copyTrainingDataset, datasetManifestIn, datasetParts, datasetPurposeLabels, datasetPurposes, datasetVerdict,
   datasetVerdictLabels, importTrainingDataset, labelDatasetImages, openTrainingDataset, partFor, readDatasetCatalog,
-  rememberDataset, renameTrainingDataset, saveDatasetLabels, saveDatasetMasks, removeDatasetImage, emptyDatasetFilters, matchesDatasetFilters, writeTrainingDatasetFile, type DatasetPurpose,
+  rememberDataset, renameTrainingDataset, removeTrainingDataset, saveDatasetLabels, saveDatasetMasks, removeDatasetImage, emptyDatasetFilters, matchesDatasetFilters, writeTrainingDatasetFile, type DatasetPurpose,
   type DatasetReference, type DatasetVerdict, type DatasetWriter, type TrainingDataset } from "../benchmark/trainingDatasets";
 import { api } from "../api";
 import { getFixedMenuPoint } from "../viewportLayout";
@@ -98,6 +98,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const datasetMenu = useRef<HTMLDivElement>(null);
   const [menuReference, setMenuReference] = useState<DatasetReference>();
   const [renaming, setRenaming] = useState<DatasetReference>();
+  const [deletingDataset, setDeletingDataset] = useState<DatasetReference>();
   const [renameTitle, setRenameTitle] = useState("");
   const editable = desktop && !!dataset?.reference.workId;
   const query = search.trim().toLowerCase();
@@ -120,7 +121,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     if (view !== "datasets") return;
     const key = (event: KeyboardEvent) => {
       const grid = list.current, active = document.activeElement;
-      if (!grid || busy || preview || deleting || event.isComposing || event.ctrlKey || event.metaKey || event.altKey ||
+      if (!grid || busy || preview || deleting || deletingDataset || renaming || event.isComposing || event.ctrlKey || event.metaKey || event.altKey ||
         (active instanceof Element && active.closest("input,textarea,select,[contenteditable=true]")) ||
         !(grid.contains(active) || grid.matches(":hover"))) return;
       const index = Math.max(0, images.findIndex(image => image.id === focused?.id));
@@ -148,7 +149,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [view, busy, preview, deleting, images, focused, layout, currentPage, pageSize, pages, checked]);
+  }, [view, busy, preview, deleting, deletingDataset, renaming, images, focused, layout, currentPage, pageSize, pages, checked]);
   const targets = checked.size ? checked : new Set(focused ? [focused.sourceHash] : []);
 
   function apply(next: TrainingDataset, select = true) {
@@ -213,7 +214,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     const bounds = event.currentTarget.getBoundingClientRect();
     const pointer = event.clientX !== 0 || event.clientY !== 0;
     const { x, y } = getFixedMenuPoint(pointer ? event.clientX : bounds.left,
-      pointer ? event.clientY : bounds.bottom, 190, 100);
+      pointer ? event.clientY : bounds.bottom, 190, 150);
     datasetMenu.current.style.left = x + "px";
     datasetMenu.current.style.top = y + "px";
     setMenuReference(reference);
@@ -232,6 +233,22 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       setRenaming(undefined);
       return current ? renamed : undefined;
     }, false);
+  }
+
+  function deleteDataset() {
+    if (!deletingDataset || busyRef.current) return;
+    const reference = deletingDataset;
+    busyRef.current = true;
+    setBusy("正在删除数据集…");
+    void removeTrainingDataset(reference).then(remaining => {
+      setCatalog(remaining);
+      if (dataset?.reference.path === reference.path) {
+        setDataset(undefined); resetSelection(); setPreview(undefined); setMenuImage(undefined);
+      }
+      setDeletingDataset(undefined);
+      showAppNotice(reference.workId ? "已删除数据集" : "已从列表移除数据集");
+    }).catch(error => showAppNotice(String(error), "error"))
+      .finally(() => { busyRef.current = false; setBusy(""); });
   }
 
   function toggleChecked(hashes: string[], selected: boolean) {
@@ -287,7 +304,17 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
           setError(""); setRenameTitle(menuReference.title); setRenaming(menuReference);
         }
       }}>重命名</button>
+      <button type="button" role="menuitem" disabled={!!busy} onClick={() => {
+        datasetMenu.current?.hidePopover(); setDeletingDataset(menuReference);
+      }}>删除数据集</button>
     </div>
+    {deletingDataset && <GameDialog title="删除数据集" description={deletingDataset.workId
+      ? `将「${deletingDataset.title}」的工作副本图片和标注移入系统回收站，并从列表移除。共用图片的其他副本仍可使用。`
+      : `将「${deletingDataset.title}」从列表移除，原始图片和标注保留在原目录。`}
+      disabled={!!busy} onCancel={() => setDeletingDataset(undefined)}>
+      <button type="button" className="game-confirm-cancel" disabled={!!busy} onClick={() => setDeletingDataset(undefined)}>取消</button>
+      <button type="button" className="game-confirm-accept" disabled={!!busy} onClick={deleteDataset}>确认删除</button>
+    </GameDialog>}
     {renaming && <GameDialog title="重命名数据集" description={renaming.title} disabled={!!busy}
       onCancel={() => setRenaming(undefined)} details={<form id={`${id}-rename`} onSubmit={event => {
         event.preventDefault(); rename();
@@ -357,6 +384,8 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy}
               data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况"
               onClick={() => duplicate(false)}>复制全部图片</button>
+            <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy}
+              onClick={() => setDeletingDataset(dataset?.reference)}>删除数据集</button>
           </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {

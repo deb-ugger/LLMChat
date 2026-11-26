@@ -1,9 +1,9 @@
 [[permission]]
 identifier = "allow-training"
 description = "Run the fixed local dataset trainer and inspect its environment."
-commands.allow = ["start_training", "cancel_training", "probe_training_env", "ensure_training_venv", "training_storage_info", "training_dataset_directory", "write_training_dataset_file", "remove_training_dataset_image", "link_training_dataset_images", "clear_training_pip_cache", "remove_legacy_training_environment", "cancel_training_environment", "list_training_runs", "read_training_result", "training_model_status", "enable_training_model", "correct_training_label"]
+commands.allow = ["start_training", "cancel_training", "probe_training_env", "ensure_training_venv", "training_storage_info", "training_dataset_directory", "write_training_dataset_file", "remove_training_dataset_image", "remove_training_dataset", "link_training_dataset_images", "clear_training_pip_cache", "remove_legacy_training_environment", "cancel_training_environment", "list_training_runs", "read_training_result", "training_model_status", "enable_training_model", "correct_training_label"]
 
 [[permission]]
 identifier = "allow-training-storage"
 description = "Manage training storage and dataset work files."
-commands.allow = ["training_storage_info", "training_dataset_directory", "write_training_dataset_file", "remove_training_dataset_image", "link_training_dataset_images", "clear_training_pip_cache"]
+commands.allow = ["training_storage_info", "training_dataset_directory", "write_training_dataset_file", "remove_training_dataset_image", "remove_training_dataset", "link_training_dataset_images", "clear_training_pip_cache"]
