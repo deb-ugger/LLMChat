@@ -403,15 +403,25 @@
   block-size: 0;
 }
 .training-dataset-list-head {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 6px 10px;
-  padding: 5px 8px;
+  display: grid;
+  gap: 0;
+  padding: 0;
   border-block-end: 1px solid var(--border);
 }
-.training-dataset-list-nav { flex: 1 1 auto; min-inline-size: min(100%, 15rem); }
-.training-dataset-list-batch { flex: 1 1 auto; min-inline-size: min(100%, 12rem); }
-.training-dataset-list-head .training-dataset-switch { margin-inline-start: auto; }
+.training-dataset-list-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 5px 8px;
+}
+.training-dataset-list-head-row-pagination {
+  border-block-end: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-panel) 90%, var(--bg-muted));
+}
+.training-dataset-list-nav { flex: 1 1 auto; min-inline-size: min(100%, 14rem); }
+.training-dataset-list-batch { flex: 1 1 auto; min-inline-size: min(100%, 10rem); }
+.training-dataset-list-head-row-actions .training-dataset-switch { margin-inline-start: auto; }
 .training-dataset-page-jump {
   display: inline-flex;
   align-items: center;
@@ -419,13 +429,21 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.training-dataset-page-jump input {
+.training-dataset-page-jump input,
+.training-dataset-page-input {
   box-sizing: border-box;
-  inline-size: 2.75rem;
+  inline-size: 2.6rem;
   min-block-size: 24px;
   padding-inline: 4px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.training-dataset-page-jump input::-webkit-outer-spin-button,
+.training-dataset-page-jump input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .training-dataset-page h3 { font-size: var(--fs-section); margin: 0; font-weight: 600; }
 
@@ -468,6 +486,9 @@
 .training-dataset-sample:disabled { cursor: default; }
 .training-dataset-sample:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
 .training-dataset-tile[data-active=true] { background: color-mix(in srgb, #fff 10%, var(--bg)); }
+.training-dataset-images[data-layout=list] .training-dataset-tile[data-checked=true] {
+  background: color-mix(in srgb, var(--dataset-selection) 9%, var(--bg));
+}
 .training-dataset-images[data-layout=list] .training-dataset-tile[data-active=true] {
   box-shadow: inset 2px 0 #fff;
 }
@@ -511,10 +532,41 @@
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-active=true] {
-  border-color: #fff;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 28%, transparent);
+.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-checked=true] {
+  border-color: var(--dataset-selection);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dataset-selection) 50%, transparent);
 }
+.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-checked=true]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: color-mix(in srgb, var(--dataset-selection) 16%, transparent);
+  pointer-events: none;
+}
+.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-active=true]:not([data-checked=true]) {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, #fff 85%, transparent);
+}
+.training-dataset-check-badge {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 5px;
+  background: var(--dataset-selection);
+  color: light-dark(#fff, #271a0c);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 1px 4px #0004;
+}
+.training-dataset-images[data-layout=thumbnails] .training-dataset-tile > input { display: none; }
+.training-dataset-images[data-layout=list] .training-dataset-tile > input { opacity: 1; }
 .training-dataset-images[data-layout=thumbnails] .training-dataset-sample {
   grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
   gap: 0;

@@ -86,6 +86,8 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const writer: DatasetWriter = writeTrainingDatasetFile;
   const datasetPicker = useRef<HTMLDivElement>(null), batchMenu = useRef<HTMLDivElement>(null);
   const datasetMenu = useRef<HTMLDivElement>(null);
+  const listClickTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => { if (listClickTimer.current !== undefined) clearTimeout(listClickTimer.current); }, []);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [maskCounts, setMaskCounts] = useState<Record<string, number | null>>({});
   const requestedCounts = useRef(new Set<string>());
@@ -113,7 +115,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     Number(!!conditions.source) + Number(!!conditions.scene) + Number(conditions.masks !== "all") + Number(conditions.adopted !== "all") + Number(filter !== "all") + Number(!!query);
   const targets = checked.size ? checked : new Set(focused ? [focused.sourceHash] : []);
   useLayoutEffect(() => {
-    const button = list.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+    const button = focusedId ? list.current?.querySelector<HTMLButtonElement>(`[data-image-id="${CSS.escape(focusedId)}"]`) : undefined;
     if (button?.getClientRects().length) button.scrollIntoView({ block: "nearest" });
     if (keyboardFocus.current === "list") button?.focus({ preventScroll: true });
     if (keyboardFocus.current === "canvas") panel.current?.querySelector<HTMLElement>(".training-dataset-canvas")?.focus({ preventScroll: true });
@@ -242,13 +244,24 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   }
 
   function pickListImage(image: AnnotatedImage, event: ReactMouseEvent) {
+    if (blocked) return;
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
       toggleChecked([image.sourceHash], !checked.has(image.sourceHash));
-      if (focused?.id !== image.id) setFocusedId(image.id);
       return;
     }
-    setFocusedId(current => current === image.id ? "" : image.id);
+    if (event.detail > 1) return;
+    clearTimeout(listClickTimer.current);
+    listClickTimer.current = setTimeout(() => {
+      toggleChecked([image.sourceHash], !checked.has(image.sourceHash));
+    }, 220);
+  }
+
+  function openListImage(image: AnnotatedImage) {
+    if (blocked) return;
+    clearTimeout(listClickTimer.current);
+    keyboardFocus.current = "canvas";
+    setFocusedId(image.id);
   }
 
   function label(verdict: DatasetVerdict) {
@@ -585,6 +598,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
         style={{ ["--training-dataset-list-width" as string]: `${listSplit.width}px` }}>
         <aside className="training-dataset-image-list" style={{ maxInlineSize: listSplit.maxWidth }} id={id + "-image-list"} aria-label="图片列表">
           <header className="training-dataset-list-head">
+            <div className="training-dataset-list-head-row training-dataset-list-head-row-pagination">
             <nav className="training-dataset-pagination training-dataset-list-nav" aria-label="数据集分页">
               <select className="unity-btn" aria-label="每页图片数量" disabled={blocked} value={pageSize} onChange={event => {
                 setPageSize(Number(event.target.value)); setPage(0); setFocusedId("");
@@ -592,14 +606,17 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               <button type="button" className="unity-btn" disabled={blocked || currentPage === 0} aria-label="上一页"
                 onClick={() => navigateImage((currentPage - 1) * pageSize, "list")}>‹</button>
               <label className="training-dataset-page-jump">
-                第<input type="number" className="unity-btn" aria-label="页码" min={1} max={Math.max(1, pages)} disabled={blocked || !images.length}
-                  value={pageJump} onChange={event => setPageJump(event.target.value)}
+                第<input type="text" inputMode="numeric" className="unity-btn training-dataset-page-input" aria-label="页码"
+                  disabled={blocked || !images.length} value={pageJump}
+                  onChange={event => setPageJump(event.target.value.replace(/\D/g, ""))}
                   onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); jumpToPage(pageJump); } }}
                   onBlur={() => jumpToPage(pageJump)} />/ {pages || 1} 页
               </label>
               <button type="button" className="unity-btn" disabled={blocked || currentPage + 1 >= pages} aria-label="下一页"
                 onClick={() => navigateImage((currentPage + 1) * pageSize, "list")}>›</button>
             </nav>
+            </div>
+            <div className="training-dataset-list-head-row training-dataset-list-head-row-actions">
             <div className="training-dataset-pagination training-dataset-list-batch" aria-label="批量选择">
               <label><input type="checkbox" disabled={blocked || !visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
                 onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />本页</label>
@@ -618,6 +635,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               <button type="button" className="unity-btn" aria-pressed={layout === "list"} onClick={() => setLayout("list")}>列表</button>
               <button type="button" className="unity-btn" aria-pressed={layout === "thumbnails"} onClick={() => setLayout("thumbnails")}>缩略图</button>
             </div>
+            </div>
           </header>
           <ul ref={list} aria-label="数据集图片" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
             className="training-dataset-images" data-layout={layout}>
@@ -626,10 +644,13 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               const boxes = image.annotation.mosaic?.boxes?.length ?? 0;
               const status = purpose === "mosaic" && boxes ? `${boxes} 蒙版` : datasetVerdictLabels[purpose][verdict];
               const active = focused?.id === image.id;
-              return <li key={image.id} className="training-dataset-tile" data-active={active} data-checked={checked.has(image.sourceHash)}
+              const picked = checked.has(image.sourceHash);
+              return <li key={image.id} className="training-dataset-tile" data-active={active} data-checked={picked}
                 onContextMenu={event => openImageMenu(event, image)}>
                 <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={active ? 0 : -1}
-                  aria-pressed={active} disabled={blocked} onClick={event => pickListImage(image, event)}>
+                  aria-pressed={picked} aria-current={active ? "true" : undefined} disabled={blocked}
+                  data-tooltip="单击勾选；双击查看并标注"
+                  onClick={event => pickListImage(image, event)} onDoubleClick={() => openListImage(image)}>
                   <span className="training-dataset-thumbnail"><SamplePicture image={image} read={dataset.data.read} /></span>
                   <span className="training-dataset-tile-meta">
                     <strong title={image.name}>{image.name}</strong>
@@ -637,7 +658,9 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
                   </span>
                   <span className="training-dataset-status-dot" data-marked={verdict !== "unmarked"} aria-hidden="true" />
                 </button>
-                <input type="checkbox" aria-label={`选择 ${image.name}`} checked={checked.has(image.sourceHash)} disabled={blocked}
+                {picked && layout === "thumbnails" && <span className="training-dataset-check-badge" aria-hidden="true">✓</span>}
+                <input type="checkbox" aria-label={`选择 ${image.name}`} checked={picked} disabled={blocked}
+                  onClick={event => event.stopPropagation()}
                   onChange={event => toggleChecked([image.sourceHash], event.target.checked)} />
               </li>;
             })}
