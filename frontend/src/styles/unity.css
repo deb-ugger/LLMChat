@@ -4551,3 +4551,42 @@ input.game-flow-chip-value[type="number"]:focus{outline:none;border-color:var(--
 input.game-flow-chip-value::-webkit-outer-spin-button,.game-flow-chip-value::-webkit-inner-spin-button{
   appearance:none;-webkit-appearance:none;margin:0}
 .game-flow-progress-track > .unity-progress-track{flex:1 1 auto;min-inline-size:0}
+
+/* Text filtering/translation forms only; the controls keep their existing state bindings. */
+.game-flow-grouped-fields .game-text-parameters { display:grid;gap:10px;min-inline-size:0; }
+.game-text-parameters .game-flow-param-section[aria-labelledby] + .game-flow-param-section[aria-labelledby] { margin-block-start:0;padding-block-start:9px; }
+.game-text-parameters .game-flow-param-section > h6 { color:var(--text-muted);font-size:10px;letter-spacing:1.1px; }
+.game-text-screen-fields,.game-text-parameters [data-parameter-group="scope"] > .game-flow-group-fields { display:grid;grid-template-columns:minmax(0,1fr);gap:8px 14px;align-items:center; }
+.game-text-parameters :is(.game-text-screen-fields > label,[data-parameter-group="scope"] .game-flow-group-fields > label) { display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;min-inline-size:0;position:relative;color:var(--text-muted);font-size:11.5px; }
+.game-text-parameters label { text-align:start; }
+.game-text-parameters label > :is(select,.searchable-select,.unity-description-select) { inline-size:100%;min-inline-size:0; }
+.game-processing-segment { display:flex;align-items:center;gap:8px;inline-size:max-content;max-inline-size:100%;color:var(--text-muted);font-size:11.5px; }
+.game-processing-segment-options { display:inline-flex;inline-size:max-content;flex:none;padding:2px;border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--bg-muted); }
+.game-processing-segment-options > button { inline-size:auto;flex:none;min-block-size:26px;padding:2px 11px;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--text-muted);font:inherit;white-space:nowrap;cursor:pointer; }
+.game-processing-segment-options > button[aria-pressed="true"] { color:var(--text);background:var(--bg-panel);font-weight:600; }
+.game-processing-segment-options > button:hover:enabled { background:var(--bg-hover);color:var(--text); }
+.game-processing-segment-options > button:focus-visible { outline:2px solid var(--signal);outline-offset:-2px; }
+.game-processing-segment-options > button:disabled { cursor:not-allowed; }
+.game-text-parameters [data-parameter-group="models"] > .game-flow-group-fields { display:grid;grid-template-columns:minmax(0,1fr);gap:8px; }
+.game-text-parameters .game-flow-group-fields > .game-model-prompt-row { display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 8px;align-items:center; }
+.game-text-parameters .game-model-prompt-row > .game-model-column,
+.game-text-parameters .game-model-prompt-row .game-model-controls { display:contents; }
+.game-text-parameters .game-model-head { display:block;grid-column:1;grid-row:1;min-inline-size:0;max-inline-size:none;color:var(--text-muted); }
+.game-text-parameters .game-model-head > span { white-space:nowrap; }
+.game-text-parameters .game-model-filter { grid-column:2;grid-row:1;min-inline-size:0; }
+.game-text-parameters .game-model-prompt-row .game-flow-chip { display:grid;grid-template-columns:72px 54px;gap:8px;grid-column:1/-1;grid-row:2;align-items:center;justify-content:start;color:var(--text-muted); }
+.game-text-parameters .game-model-prompt-row .game-flow-chip-value { box-sizing:border-box;inline-size:54px;min-inline-size:0;text-align:start; }
+.game-text-parameters .game-flow-group-fields .game-model-prompt-row > label { display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;grid-column:1/-1;grid-row:3;align-items:center;min-inline-size:0;color:var(--text-muted);font-size:11.5px; }
+.game-text-parameters .game-flow-chip-row { display:flex;flex-wrap:wrap;gap:8px 20px;min-inline-size:0; }
+.game-text-parameters .game-flow-chip-row > label { color:var(--text-muted);white-space:nowrap; }
+.game-flow-grouped-fields:has(.game-text-parameters) > [data-parameter-group="actions"] { margin-block-start:9px;padding-block-start:9px;border-block-start:1px solid var(--border);align-items:center; }
+.game-flow-grouped-fields:has(.game-text-parameters) > [data-parameter-group="actions"] > button:nth-last-child(2) { margin-inline-start:auto; }
+@media (min-width:1100px) {
+  @container game-flow-card (width >= 680px) {
+    .game-text-screen-fields { grid-template-columns:max-content minmax(0,1fr) minmax(0,1fr); }
+    .game-text-parameters [data-parameter-group="scope"] > .game-flow-group-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .game-text-parameters .game-flow-group-fields > .game-model-prompt-row { grid-template-columns:72px minmax(0,1fr) 100px minmax(0,1.1fr); }
+    .game-text-parameters .game-model-prompt-row .game-flow-chip { grid-column:3;grid-row:1;grid-template-columns:auto 54px; }
+    .game-text-parameters .game-flow-group-fields .game-model-prompt-row > label { grid-column:4;grid-row:1;grid-template-columns:42px minmax(0,1fr); }
+  }
+}

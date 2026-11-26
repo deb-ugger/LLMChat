@@ -13,9 +13,9 @@ import { showAppNotice } from "./AppNotice";
 import { GamePageNumber } from "./GamePageNumber";
 import { wrapGameTextToSource, validateGameNaturalLines } from "../gameTextLayout";
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
-import { GameFlowParameterGroup } from "./GameFlowCard";
 import { GameFlowSequence, type GameStepConfigurationCommit } from "./GameFlowSequence";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, recommendedGameModels, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
+import { GameTextParameters } from "./GameTextParameters";
 import { gameAvailableModels, GameModelSelect, GameProcessingMethod, GameTranslationMethod } from "./GameTranslationTabs";
 import { GameTextScreenedEditor, GameTextScreenedSource } from "./GameTextScreening";
 import { unityLanguageScope } from "../unityWorkflow";
@@ -732,7 +732,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         stop: state === "screening" ? () => controller.current?.abort() : undefined,
         runLabel: state === "screen-stopped" ? "继续" : "开始", runDisabled: busy && state !== "screening",
         clear: !busy && (screenStarted || screenComplete) ? () => void clearScreen() : undefined },
-      { id: "translate", title: "翻译正文", groupedParameters: true,
+      { id: "translate", title: "翻译正文", groupedParameters: true, hideConfigurationShortcut: true,
         models: options.kind === "engine" ? [] : [
         {role:"names",id:options.nameModel || options.model}, {role:"text",id:options.model}, {role:"dialogue",id:options.dialogueModel || options.model},
       ], summary: options.kind === "engine" ? "翻译引擎" : options.model.split("/").pop(),
@@ -743,40 +743,31 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         runDisabled: !running && (busy || options.kind !== "engine" && !models.includes(options.model)),
         clear: !busy && textCleanupAvailable ? () => void resetTranslation(true) : undefined },
     ]}><div className="unity-translation-settings game-flow-parameter-layout">
-    {configured === "screen" && <>
-      <GameFlowParameterGroup kind="scope" title="范围与方式">
-        <GameProcessingMethod label="筛选方式" localLabel="本地筛选" value={options.screeningModel === undefined ? "local" : "llm"}
-          disabled={configLocked} onChange={method => setOptions(current => ({ ...current, screeningModel: method === "llm" ? "" : undefined }))} />
-        {languageFields}
-      </GameFlowParameterGroup>
-      {options.screeningModel !== undefined && <GameFlowParameterGroup kind="models" title="模型">
-        <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={models} value={options.screeningModel}
-          disabled={configLocked} onChange={model => setOptions(current => ({ ...current, screeningModel: model }))} />
-      </GameFlowParameterGroup>}
-      <GameFlowParameterGroup kind="runtime" title="运行"><div className="game-flow-chip-row">{languageSwitches}</div></GameFlowParameterGroup>
-    </>}
-    {configured === "translate" && <>
-      <GameFlowParameterGroup kind="scope" title="范围与方式">
-        <GameTranslationMethod kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })} />
-        {languageFields}
+    {configured === "screen" && <GameTextParameters step="screen"
+      method={<GameProcessingMethod segmented label="筛选方式" localLabel="本地筛选" value={options.screeningModel === undefined ? "local" : "llm"}
+          disabled={configLocked} onChange={method => setOptions(current => ({ ...current, screeningModel: method === "llm" ? "" : undefined }))} />}
+      languages={languageFields}
+      models={options.screeningModel !== undefined && <GameModelSelect label="文本筛选模型" promptKey="textScreen" models={models} value={options.screeningModel}
+          disabled={configLocked} onChange={model => setOptions(current => ({ ...current, screeningModel: model }))} />}
+      switches={languageSwitches} />}
+    {configured === "translate" && <GameTextParameters step="translate"
+      method={<GameTranslationMethod segmented kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })} />}
+      languages={languageFields} wrapping={<>
         <label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label>
         {options.joinLines && wrapMode !== "natural" && <label>断行方式<select value={options.lineMode || "local"} disabled={configLocked} onChange={e=>setOptions({...options,lineMode:e.target.value as GameTextOptions["lineMode"]})}><option value="local">本地智能断行</option><option value="ratio">按比例断行</option><option value="wtp">WtP 断句</option><option value="model">大模型断行</option></select></label>}
-      </GameFlowParameterGroup>
-      <GameFlowParameterGroup kind="models" title="模型">
+      </>}
+      modelTitle={options.kind === "engine" ? "翻译引擎" : "每类模型"}
+      models={<>
         {options.kind !== "engine" ? <>
-          <GameModelSelect label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={configLocked} onChange={model => setOptions({ ...options, model })} />
-          <GameModelSelect optional label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={configLocked} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
-          <GameModelSelect optional label="术语模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
+          <GameModelSelect compactLabel="常规文本" label="常规文本模型" promptKey="text" models={models} value={options.model} disabled={configLocked} onChange={model => setOptions({ ...options, model })} />
+          <GameModelSelect optional compactLabel="对白" label="对白模型（可选）" promptKey="dialogue" models={models} value={options.dialogueModel || ""} disabled={configLocked} onChange={dialogueModel => setOptions({ ...options, dialogueModel })} />
+          <GameModelSelect optional compactLabel="术语" label="术语模型（可选）" promptKey="names" models={models} value={options.nameModel || ""} disabled={configLocked} onChange={nameModel => setOptions({ ...options, nameModel })} />
         </> : <UnityEngineList choices={engines} keys={parseEngineKeys(settings.translateEngineKeys)} disabled={configLocked} expanded={expanded} onExpandedChange={setExpanded} onChange={setEngines} />}
         {options.joinLines && wrapMode !== "natural" && options.lineMode === "model" && <GameModelSelect label="断行辅助模型" promptKey="line" models={models} value={options.lineModel || settings.model} disabled={configLocked} onChange={lineModel=>setOptions({...options,lineModel})}/>}
-      </GameFlowParameterGroup>
-      <GameFlowParameterGroup kind="runtime" title="运行">
-        <div className="game-flow-chip-row">
-          {languageSwitches}
-          {options.kind !== "engine" && <label data-tooltip={GAME_CONTEXT_HINT + " 词典型工程仅有独立原文时，使用条目自身的语境。"}><input type="checkbox" role="switch" checked={!!options.includeContext} disabled={configLocked} onChange={event => setOptions({ ...options, includeContext: event.target.checked })} />附带上下文</label>}
-        </div>
-      </GameFlowParameterGroup>
-    </>}
+      </>}
+      switches={<>{languageSwitches}
+        {options.kind !== "engine" && <label data-tooltip={GAME_CONTEXT_HINT + " 词典型工程仅有独立原文时，使用条目自身的语境。"}><input type="checkbox" role="switch" checked={!!options.includeContext} disabled={configLocked} onChange={event => setOptions({ ...options, includeContext: event.target.checked })} />附带上下文</label>}
+      </>} />}
     </div></GameFlowSequence></GamePromptContext.Provider>{batchResults && <div className="unity-step-batch">{batchResults}</div>}</div>
     </div>, controls)}
     {results && createPortal(<section hidden={!visible} ref={root} data-game-drop-zone="text" {...drop.handlers} className="unity-offline-workbench game-text-workbench"><div className="unity-offline-toolbar"><div className="unity-result-filters"><strong>文本与译文</strong><GameTextFileMenu kind="download" active={active&&visible} disabled={busy||!entries.length} options={[

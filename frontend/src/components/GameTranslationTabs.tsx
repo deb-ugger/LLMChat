@@ -10,16 +10,23 @@ import type { Settings } from "../api";
 import type { GameTranslationKind } from "../unityTranslation";
 import { SearchableSelect } from "./SearchableSelect";
 
-export function GameTranslationMethod({ kind, disabled, onChange }: {
-  kind: GameTranslationKind; disabled: boolean; onChange: (kind: GameTranslationKind) => void;
+export function GameTranslationMethod({ kind, disabled, onChange, segmented = false }: {
+  kind: GameTranslationKind; disabled: boolean; onChange: (kind: GameTranslationKind) => void; segmented?: boolean;
 }) {
-  return <GameProcessingMethod label="翻译方式" localLabel="翻译引擎" value={kind !== "engine" ? "llm" : "local"}
+  return <GameProcessingMethod segmented={segmented} modelFirst={segmented} label={segmented ? "翻译引擎" : "翻译方式"} localLabel={segmented ? "本地引擎" : "翻译引擎"} value={kind !== "engine" ? "llm" : "local"}
     disabled={disabled} onChange={value => onChange(value === "llm" ? "llm" : "engine")} />;
 }
 
-export function GameProcessingMethod({ label, localLabel, value, disabled, onChange }: {
-  label: string; localLabel: string; value: "local" | "llm"; disabled: boolean; onChange: (value: "local" | "llm") => void;
+export function GameProcessingMethod({ label, localLabel, value, disabled, onChange, segmented = false, modelFirst = false }: {
+  label: string; localLabel: string; value: "local" | "llm"; disabled: boolean; onChange: (value: "local" | "llm") => void; segmented?: boolean; modelFirst?: boolean;
 }) {
+  if (segmented) return <div className="game-processing-segment"><span>{label}</span>
+    <div className="game-processing-segment-options" role="group" aria-label={label}>
+      {(modelFirst ? ["llm", "local"] as const : ["local", "llm"] as const).map(option =>
+        <button type="button" key={option} aria-pressed={value === option} disabled={disabled}
+          onClick={() => { if (option !== value) onChange(option); }}>{option === "local" ? localLabel : "大模型"}</button>)}
+    </div>
+  </div>;
   return <label>{label}<select value={value} disabled={disabled} onChange={event => onChange(event.target.value === "llm" ? "llm" : "local")}>
     <option value="local">{localLabel}</option><option value="llm">大模型</option>
   </select></label>;
@@ -60,8 +67,8 @@ export function gameAvailableModels(settings: Settings) {
   });
 }
 
-export function GameModelSelect({ label, value, models, disabled, onChange, optional = false, promptKey = "text" }: {
-  label: string; value: string; models: string[]; disabled: boolean; onChange: (model: string) => void; optional?: boolean; promptKey?: GamePromptScene;
+export function GameModelSelect({ label, value, models, disabled, onChange, optional = false, promptKey = "text", compactLabel }: {
+  label: string; value: string; models: string[]; disabled: boolean; onChange: (model: string) => void; optional?: boolean; promptKey?: GamePromptScene; compactLabel?: string;
 }) {
   const unset = useId();
   const concurrencyId = unset + "-concurrency";
@@ -76,7 +83,7 @@ export function GameModelSelect({ label, value, models, disabled, onChange, opti
   return <div className="game-model-prompt-row">
     <div className="game-model-column">
       <div className="game-model-head">
-        <span>{label}</span>
+        <span>{compactLabel || label}</span>
         {!grouped && <label htmlFor={concurrencyId}>并发</label>}
       </div>
       <div className="game-model-controls">

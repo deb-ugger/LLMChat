@@ -14,6 +14,7 @@ export type GameFlowStep = {
   id: string;
   title: string;
   groupedParameters?: boolean;
+  hideConfigurationShortcut?: boolean;
   summary?: string;
   models?: { role: string; id?: string }[];
   state: "done" | "current" | "waiting";
@@ -627,7 +628,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
           configurationActions={hasConfiguration ? configurationActions : undefined}
           configuration={hasConfiguration ? <div className="game-flow-field-wide game-flow-config-content">
             <GameConcurrencyDraft.Provider value={draftForStep(step.id)}>{children}</GameConcurrencyDraft.Provider>
-          </div> : expanded && children && <button type="button" className="unity-btn game-flow-field-wide"
+          </div> : expanded && children && !step.hideConfigurationShortcut && <button type="button" className="unity-btn game-flow-field-wide"
             onClick={openConfiguration}>编辑本步参数</button>} /></li>;
       })}</ol>
     </div>
