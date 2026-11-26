@@ -1,7 +1,7 @@
 import { MosaicScreeningFields } from "./MosaicScreeningFields";
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
-import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicModelLabels, mosaicRefineConcurrencyChoices, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
 import { GameFlowCard, GameFlowNumberChip, GameFlowParameterGroup, GameFlowParameterValue, useGameFlowExpansion } from "../GameFlowCard";
 import { GameFlowPerformance } from "../GameFlowSequence";
