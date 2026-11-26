@@ -42,6 +42,9 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [dataset, setDataset] = useState<TrainingDataset>();
   const datasetRef = useRef<TrainingDataset | undefined>(undefined);
   const maskWrites = useRef<Promise<void>>(Promise.resolve());
+  const unsavedMasks = useRef(new Map<string, DatasetMask[]>());
+  const [pendingMaskWrites, setPendingMaskWrites] = useState(0);
+  const [confirmingSave, setConfirmingSave] = useState(false);
   const maskWriteCount = useRef(0), undoRef = useRef<TrainingDataset[]>([]);
   function setCurrentDataset(value: TrainingDataset | undefined) { datasetRef.current = value; setDataset(value); }
   function updateUndoHistory(value: TrainingDataset[] | ((previous: TrainingDataset[]) => TrainingDataset[])) {
@@ -96,7 +99,9 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [deletingDataset, setDeletingDataset] = useState<DatasetReference>();
   const [renameTitle, setRenameTitle] = useState("");
   const editable = desktop && !!dataset?.reference.workId;
-  const blocked = !!busy || maskWriteFailed;
+  const blocked = !!busy || maskWriteFailed || confirmingSave;
+  const hasUnsavedChanges = pendingMaskWrites > 0 || maskWriteFailed;
+  const canSave = editable && hasUnsavedChanges && !confirmingSave && (!busy || pendingMaskWrites > 0);
   const query = search.trim().toLowerCase();
   const images = useMemo(() => dataset?.data.images.filter(image => (filter === "all" || datasetVerdict(image.annotation, purpose) === filter) &&
     (!query || image.file.toLowerCase().includes(query)) && matchesDatasetFilters(image, conditions, dataset?.parts)) ?? [], [dataset, filter, purpose, query, conditions]);
@@ -254,19 +259,27 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
 
   function saveMasks(hash: string, masks: DatasetMask[]): Promise<void> {
     const owner = datasetRef.current?.reference.path;
+    const pendingMasks = masks.map(({ box, part }) => ({ box: [...box] as DatasetMask["box"], part }));
+    unsavedMasks.current.set(hash, pendingMasks);
     maskWriteCount.current++;
+    setPendingMaskWrites(maskWriteCount.current);
     setBusy("正在写入标注…");
     const write = maskWrites.current.catch(() => {}).then(async () => {
       const current = datasetRef.current;
       if (!current || current.reference.path !== owner) throw new Error("数据集已切换，未写入其他工程");
-      const next = await saveDatasetMasks(current, hash, masks, writer);
+      const next = await saveDatasetMasks(current, hash, pendingMasks, writer);
       updateUndoHistory(history => [...history.slice(-99), current]);
-      apply(next, false); setError(""); setMaskWriteFailed(false);
+      apply(next, false); setError("");
+      if (unsavedMasks.current.get(hash) === pendingMasks) unsavedMasks.current.delete(hash);
     });
     maskWrites.current = write;
     return write.catch(error => { setMaskWriteFailed(true); throw error; }).finally(() => {
       maskWriteCount.current--;
-      if (!maskWriteCount.current) setBusy(current => current === "正在写入标注…" ? "" : current);
+      setPendingMaskWrites(maskWriteCount.current);
+      if (!maskWriteCount.current) {
+        setMaskWriteFailed(unsavedMasks.current.size > 0);
+        setBusy(current => current === "正在写入标注…" ? "" : current);
+      }
     });
   }
 
@@ -281,9 +294,19 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     }, false);
   }
 
-  function confirmSaved() {
-    void maskWrites.current.then(() => showAppNotice("标注已保存", "success"))
-      .catch(error => showAppNotice("标注尚未写入，请先重试：" + String(error), "error"));
+  async function confirmSaved() {
+    if (!canSave) return;
+    setConfirmingSave(true);
+    try {
+      await maskWrites.current.catch(() => {});
+      const retries = [...unsavedMasks.current].map(([hash, masks]) => saveMasks(hash, masks));
+      const results = await Promise.allSettled(retries);
+      const failed = results.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+      showAppNotice("标注已保存", "success");
+    } catch (error) {
+      showAppNotice("标注尚未写入，请先重试：" + String(error), "error");
+    } finally { setConfirmingSave(false); }
   }
 
   function navigateImage(index: number, focus?: "list" | "canvas") {
@@ -432,8 +455,9 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               data-tooltip="共用图片，单独保存标注；要求位于同一磁盘分区。直接修改图片内容会影响共用副本。" onClick={() => duplicate(true)}>新建标注副本</button>
             <button type="button" className="unity-btn" disabled={!desktop || !dataset || blocked}
               data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况" onClick={() => duplicate(false)}>复制全部图片</button>
-            <button type="button" className="unity-btn unity-btn-primary" disabled={!editable || (!!busy && !maskWriteCount.current)}
-              onClick={confirmSaved}>保存</button>
+            <button type="button" className="unity-btn unity-btn-primary" disabled={!canSave}
+              data-tooltip={hasUnsavedChanges ? undefined : "当前没有未保存的更改"}
+              onClick={() => void confirmSaved()}>保存</button>
           </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {

@@ -72,8 +72,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   const copy = (values: DatasetMask[]) => values.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox }));
   function display(values: DatasetMask[]) { current.current = values; setDrafts(values); }
   useLayoutEffect(() => {
-    if (!pending.current && !drag.current && !error) {
+    if (!pending.current && !drag.current && (!error || signature === JSON.stringify(current.current))) {
       display(copy(masks));
+      setError("");
       if (selectedRef.current >= masks.length) { selectedRef.current = masks.length - 1; setSelected(masks.length - 1); }
     }
   }, [signature]);
