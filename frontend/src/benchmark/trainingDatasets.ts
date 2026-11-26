@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { sha256Hex } from "../fileFingerprint";
 import type { MosaicBox } from "../gameMosaic";
+import type { UnityImage } from "../unityOffline";
 import { readFileBytes } from "../localDocFile";
 import { loadAnnotatedSampleSet, type AnnotatedImage, type AnnotatedSampleSet, type SampleAnnotation,
   type SampleSetAnnotations, type SampleSetManifest } from "./imageSampleSet";
@@ -188,16 +189,16 @@ function reviewContents(path: string, images: AnnotatedImage[], parts: PartLabel
     if (mosaic?.state !== "present") continue;
     for (const box of mosaic.boxes ?? []) {
       rows.push([image.sourceHash, JSON.stringify(box), fileIn(path, imageFile(image.sourceHash)), sceneFamily(image.file),
-        "", parts[boxKey(image.sourceHash, box)] ?? ""]);
+        "", parts[boxKey(image.sourceHash, box)] ?? box.part ?? ""]);
     }
   }
   return rows.map(row => row.map(cell => /[",\r\n]/.test(cell) ? '"' + cell.replaceAll('"', '""') + '"' : cell).join(",")).join("\n") + "\n";
 }
 
 async function createWorkDataset(title: string, manifest: DatasetManifest, annotations: SampleSetAnnotations,
-  parts: PartLabels, copyImages: (write: (file: string, bytes: ArrayBuffer) => Promise<unknown>, id: string) => Promise<void>, writer: DatasetWriter) {
-  const id = crypto.randomUUID();
-  const directory = await workingPath(id);
+  parts: PartLabels, copyImages: (write: (file: string, bytes: ArrayBuffer) => Promise<unknown>, id: string) => Promise<void>, writer: DatasetWriter, target?: { id: string; directory: string }) {
+  const id = target?.id ?? crypto.randomUUID();
+  const directory = target?.directory ?? await workingPath(id);
   const path = `${directory}/${manifestFile}`;
   const write = (file: string, bytes: ArrayBuffer) => writer({ id, file, bytes });
   await copyImages(write, id);
@@ -213,6 +214,83 @@ async function createWorkDataset(title: string, manifest: DatasetManifest, annot
   await write(reviewFile, encode(reviewContents(path, data.images, parts)));
   await write(manifestFile, manifestBytes);
   return { data, parts, reference: referenceFor(path, data, id) };
+}
+
+export type MosaicDatasetInput = { image: UnityImage; checked: boolean; boxes: (MosaicBox & { part?: string })[] };
+export type MosaicDatasetTarget = { id: string; directory: string; title: string };
+export type MosaicDatasetReport = {
+  directory: string; total: number; processed: number; present: number; none: number; unique: number;
+  merged: number; boxes: number; boxesWithPart: number; cancelled: boolean;
+  duplicates: { sha256: string; paths: string[] }[];
+  failures: { path: string; error: string }[];
+  samples: { path: string; state: "present" | "none"; boxes: number }[];
+};
+
+export async function prepareMosaicDatasetExport(): Promise<MosaicDatasetTarget> {
+  const id = crypto.randomUUID(), date = new Date();
+  const day = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+  return { id, directory: await workingPath(id), title: `当前工程 · 全量导出 · ${day}` };
+}
+
+export async function exportMosaicDataset(target: MosaicDatasetTarget, inputs: readonly MosaicDatasetInput[],
+  read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, writer: DatasetWriter, signal: AbortSignal,
+  onProgress: (completed: number, total: number) => void = () => {}) {
+  const manifest: SampleSetManifest = { version: 1, kind: "llmchat-image-sample-set", title: target.title, purposes: ["mosaic"], images: [] };
+  const annotations: SampleSetAnnotations = { version: 1, samples: {} };
+  const report: MosaicDatasetReport = { directory: target.directory, total: inputs.length, processed: 0,
+    present: 0, none: 0, unique: 0, merged: 0, boxes: 0, boxesWithPart: 0, cancelled: false,
+    duplicates: [], failures: [], samples: [] };
+  // Counts describe source records, including failed reads; unique describes successfully written PNGs.
+  for (const input of inputs) {
+    const present = input.checked && input.boxes.length > 0;
+    report[present ? "present" : "none"]++;
+    if (present) {
+      report.boxes += input.boxes.length;
+      report.boxesWithPart += input.boxes.filter(box => !!box.part).length;
+    }
+  }
+  const written = new Map<string, { signature: string; paths: string[] }>();
+  const dataset = await createWorkDataset(target.title, manifest, annotations, {}, async write => {
+    for (const { image, checked, boxes } of inputs) {
+      if (signal.aborted) { report.cancelled = true; break; }
+      try {
+        const blob = await read(image, signal);
+        const png = await importPng(new File([blob], image.name || image.file, { type: blob.type }));
+        signal.throwIfAborted();
+        const present = checked && boxes.length > 0;
+        const kept = present ? boxes.map(box => Object.assign([...box] as MosaicBox, { part: box.part ?? "" })) : [];
+        if (!kept.every(box => box.every(Number.isInteger) && box[0] >= 0 && box[1] >= 0 &&
+          box[2] > box[0] && box[3] > box[1] && box[2] <= png.width && box[3] <= png.height))
+          throw new Error("蒙版坐标超出原图或不是有效整数坐标");
+        const hash = await sha256Hex(png.bytes);
+        const mosaic = { state: present ? "present" as const : "none" as const, boxes: kept, boxCoverage: "complete" as const };
+        const signature = JSON.stringify({ ...mosaic, boxes: kept.map(box => ({ box: [...box], part: box.part })) });
+        const existing = written.get(hash);
+        if (existing && existing.signature !== signature)
+          throw new Error(`同内容图片的勾选或蒙版标注不同，无法共用 SHA 标注：${existing.paths[0]}`);
+        if (!existing) {
+          await write(imageFile(hash), png.bytes);
+          written.set(hash, { signature, paths: [image.file] });
+          annotations.samples[hash] = { provenance: "当前工程全量导出：勾选且有蒙版为有码，其余为无码", mosaic };
+        } else {
+          existing.paths.push(image.file);
+          report.merged++;
+        }
+        manifest.images.push({ id: hash, sha256: hash, path: image.file, width: png.width, height: png.height,
+          projectImageId: image.id, projectSourceHash: image.sourceHash });
+        report.samples.push({ path: image.file, state: mosaic.state, boxes: kept.length });
+      } catch (error) {
+        if (signal.aborted) { report.cancelled = true; break; }
+        report.failures.push({ path: image.file, error: error instanceof Error ? error.message : String(error) });
+      }
+      onProgress(++report.processed, inputs.length);
+    }
+    report.cancelled ||= signal.aborted;
+    report.unique = written.size;
+    report.duplicates = [...written].filter(([, value]) => value.paths.length > 1).map(([sha256, value]) => ({ sha256, paths: value.paths }));
+    // On cancellation publish only completed records, so the partial dataset can still be opened.
+  }, writer, target);
+  return { dataset, report };
 }
 
 export function copyTrainingDataset(source: TrainingDataset, title: string, writer: DatasetWriter, signal: AbortSignal,

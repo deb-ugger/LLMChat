@@ -31,6 +31,7 @@ import { MosaicOriginalGallery, mosaicGalleryPageSize } from "./game-mosaic/Mosa
 import { assignMosaicRedrawReference, canResumeMosaicRedraw, clearReviewResult, defaultResult, keepText, performMosaicReviews, refineMovementFor,
   existingMosaicRedrawReferences, mosaicRedrawReferences, mosaicRedrawStyle, mosaicRedrawStepCount, restoreDefaultSelection, resultFor, reviewedResult, runAutomaticMosaic, runMosaicBatch, runMosaicRedraw, runMosaicRefine,
   runMosaicScreen, sameReview, stopMosaicBatch } from "./game-mosaic/mosaicBatchRunner";
+import { MosaicDatasetExport } from "./game-mosaic/MosaicDatasetExport";
 import { MosaicStepCards } from "./game-mosaic/MosaicStepCards";
 import { MosaicPreview } from "./game-mosaic/MosaicPreview";
 import { clearMosaicRedrawArchive, readMosaicRedrawArchive, restoreMosaicRedrawPlan,
@@ -1450,7 +1451,16 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
         start: () => pausedRedraw ? startRedraw(pausedRedraw, true) : generate(listRedraw, [model], "automatic"),
         startGroup: () => generate(redrawGroup, [model]), clear: clearRedraw,
       }} unresolvedRefineFailures={unresolvedRefineFailures} retryCount={retryCount} />, controls)}
-    <MosaicGroupTree listId={listId} filterMenu={filterMenu} filters={{ query, needle, scope, imageFilters, failuresOnly }}
+    <MosaicGroupTree listId={listId} filterMenu={filterMenu}
+      toolbarActions={<MosaicDatasetExport disabled={actionsDisabled || testing} read={read} total={images.length}
+        snapshot={() => {
+          const current = applyMosaicDrafts(latestRows.current, mosaicDraftsOf(gamePath));
+          return images.map(image => {
+            const row = resultFor(current, image);
+            return { image: { ...image }, checked: row.checked,
+              boxes: row.boxes.map(box => Object.assign([...box] as typeof box, { part: (box as typeof box & { part?: string }).part })) };
+          });
+        }} />} filters={{ query, needle, scope, imageFilters, failuresOnly }}
       onImageFiltersChange={(filters: GameImageFilters) => {
         setImageFilters(filters);
         setActiveId("");

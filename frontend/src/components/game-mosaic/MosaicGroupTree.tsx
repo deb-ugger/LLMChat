@@ -18,6 +18,7 @@ export const mosaicGroupCollapsed = (collapsed: Partial<Record<string, boolean>>
 
 type Props = {
   listId: string;
+  toolbarActions?: ReactNode;
   filterMenu: RefObject<HTMLDivElement | null>;
   filters: { query: string; needle: string; scope: string; imageFilters: GameImageFilters; failuresOnly: boolean };
   onImageFiltersChange: (filters: GameImageFilters) => void;
@@ -52,7 +53,7 @@ type Props = {
   children: ReactNode;
 };
 
-export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersChange, onQueryChange,
+export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, onImageFiltersChange, onQueryChange,
   onToggleFailureFilter, counts, active, groups, ordered, refineChanges, groupPages, setGroupPages, collapsed, setCollapsed,
   listView, setListView, originalGallery, onBrowsePreviewKeyDown, actionsDisabled, getRow, isAdopted, draftChanges, imageStatus, refineMovementFor,
   isRefineRetrying, selectPreview, setMosaicChecked, groupMenu, openGroupMenu, closeGroupMenu, deleteGroup, children }: Props) {
@@ -160,6 +161,7 @@ export function MosaicGroupTree({ listId, filterMenu, filters, onImageFiltersCha
               view === "picture" ? "查看重绘时使用的图片组" : undefined}>{viewLabels[view]}</button>)}
         </div>
       </div>
+      {toolbarActions}
       <div className="game-mosaic-selection-slot" ref={setSelectionTarget} />
     </div>
     <GameImageSplit listId={listId} listLabel="去码图片列表" listClassName="game-mosaic-list" widthKey="game-mosaic-image-list-width" onListKeyDown={browseOriginals ? undefined : navigateList}
