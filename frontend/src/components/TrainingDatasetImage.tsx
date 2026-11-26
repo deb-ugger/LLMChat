@@ -411,7 +411,6 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         onPointerDown={event => {
           if (event.button !== 0) return;
           event.preventDefault();
-          const rect = event.currentTarget.getBoundingClientRect();
           const inner = event.currentTarget.querySelector(".training-dataset-minimap-image")!.getBoundingClientRect();
           panToImagePoint(clamp((event.clientX - inner.left) / inner.width, 0, 1), clamp((event.clientY - inner.top) / inner.height, 0, 1));
         }}>
