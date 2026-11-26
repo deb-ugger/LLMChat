@@ -61,12 +61,16 @@ type CanvasLayout = { L: number; T: number; W: number; H: number };
 function clampCanvasScroll(view: HTMLDivElement, layout: CanvasLayout) {
   const { L, T, W, H } = layout;
   const vw = view.clientWidth, vh = view.clientHeight;
-  const axis = (value: number, min: number, max: number, limit: number, port: number) => {
+  const axis = (value: number, start: number, size: number, port: number, limit: number) => {
+    const maxScroll = Math.max(0, limit - port);
+    if (size <= port) return clamp(value, 0, maxScroll);
+    const min = start + 0.5 * size - port;
+    const max = start + 0.5 * size;
     const next = min > max ? (min + max) / 2 : clamp(value, min, max);
-    return clamp(next, 0, Math.max(0, limit - port));
+    return clamp(next, 0, maxScroll);
   };
-  const s = axis(view.scrollLeft, L + 0.5 * W - vw, L + 0.5 * W, view.scrollWidth, vw);
-  const t = axis(view.scrollTop, T + 0.5 * H - vh, T + 0.5 * H, view.scrollHeight, vh);
+  const s = axis(view.scrollLeft, L, W, vw, view.scrollWidth);
+  const t = axis(view.scrollTop, T, H, vh, view.scrollHeight);
   if (s !== view.scrollLeft) view.scrollLeft = s;
   if (t !== view.scrollTop) view.scrollTop = t;
   return { left: s, top: t };
@@ -88,6 +92,19 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   const zoom = manualZoom ?? fit;
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const displaySize = useMemo(() => ({
+    width: image.width * zoom,
+    height: image.height * zoom,
+  }), [image.width, image.height, zoom]);
+  const canvasPadding = useMemo(() => {
+    const vw = viewportSize.width || 1;
+    const vh = viewportSize.height || 1;
+    const { width: iw, height: ih } = displaySize;
+    const slack = 56;
+    const padX = iw <= vw ? Math.max(12, (vw - iw) / 2) : Math.max(slack, Math.min(vw * 0.45, iw * 0.35));
+    const padY = ih <= vh ? Math.max(12, (vh - ih) / 2) : Math.max(slack, Math.min(vh * 0.45, ih * 0.35));
+    return { padX, padY };
+  }, [viewportSize, displaySize]);
   const [panScroll, setPanScroll] = useState({ left: 0, top: 0 });
   const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>();
   const anchor = useRef<{ x: number; y: number; clientX: number; clientY: number } | undefined>(undefined);
@@ -112,7 +129,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     if (!element) return;
     const measure = () => {
       setViewportSize({ width: element.clientWidth, height: element.clientHeight });
-      setFit(Math.max(.01, Math.min(4, (element.clientWidth - 74) / image.width, (element.clientHeight - 26) / image.height)));
+      setFit(Math.max(.01, Math.min(4, (element.clientWidth - 58) / image.width, (element.clientHeight - 12) / image.height)));
     };
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
     return () => observer.disconnect();
@@ -120,7 +137,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   function measureCanvasLayout(): CanvasLayout | undefined {
     const imageEl = bitmap.current;
     if (!imageEl) return;
-    return { L: imageEl.offsetLeft, T: imageEl.offsetTop, W: image.width * zoomRef.current, H: image.height * zoomRef.current };
+    return { L: imageEl.offsetLeft, T: imageEl.offsetTop, W: imageEl.offsetWidth, H: imageEl.offsetHeight };
   }
   function syncCanvasScroll() {
     const view = viewport.current;
@@ -181,7 +198,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       view.scrollTop = (view.scrollHeight - view.clientHeight) / 2;
     }
     syncCanvasScroll();
-  }, [zoom, viewportSize]);
+  }, [zoom, viewportSize, canvasPadding, picture.url]);
   useEffect(() => {
     const view = viewport.current;
     if (!view) return;
@@ -253,7 +270,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   }
   function cancelGesture() {
     if (drag.current) { display(drag.current.before); drag.current = undefined; selectMask(Math.min(selectedRef.current, current.current.length - 1)); }
+    const wasPanning = !!pan.current;
     pan.current = undefined; setPanning(false);
+    if (wasPanning) syncCanvasScroll();
   }
   function point(event: PointerEvent): [number,number] {
     const r = bitmap.current!.getBoundingClientRect();
@@ -264,7 +283,6 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     if (pan.current && viewport.current) {
       viewport.current.scrollLeft = pan.current.left - (event.clientX - pan.current.x);
       viewport.current.scrollTop = pan.current.top - (event.clientY - pan.current.y);
-      syncCanvasScroll();
       return;
     }
     const gesture = drag.current;
@@ -289,7 +307,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     values[gesture.index] = { ...values[gesture.index],box }; display(values);
   }
   function finish(event: PointerEvent) {
-    if (pan.current) { pan.current = undefined; setPanning(false); return; }
+    if (pan.current) { pan.current = undefined; setPanning(false); syncCanvasScroll(); return; }
     const gesture = drag.current;
     if (!gesture) return;
     move(event); drag.current = undefined;
@@ -349,29 +367,36 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     <header className="training-dataset-editor-tools">
       <div className="training-dataset-editor-identity">
         <strong title={image.sourceDirectory || image.file}>{image.name}</strong>
-        <span>{image.width} × {image.height}</span>
-        <span className="hint">已标部位 {known} / {drafts.length} 框</span>
-        <span data-tooltip="滚轮缩放；双击恢复100%" onDoubleClick={() => changeZoom(1)}>{Math.round(zoom * 100)}%</span>
+        <span className="training-dataset-meta-chip">{image.width} × {image.height}</span>
+        <span className="training-dataset-meta-chip" data-marked={known === drafts.length && drafts.length > 0}>
+          已标 {known} / {drafts.length}
+        </span>
+        <button type="button" className="training-dataset-meta-chip training-dataset-zoom-chip" data-tooltip="滚轮缩放；双击恢复 100%"
+          onDoubleClick={() => changeZoom(1)}>{Math.round(zoom * 100)}%</button>
       </div>
+      <p className="training-dataset-editor-status" role="status">{error ? <>写入失败：{error}</> : saving ? "正在写入…" : null}</p>
     </header>
     <div className="training-dataset-editor-main">
     <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
-    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing && !hasSelection ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => syncCanvasScroll()} onContextMenu={onContextMenu}
+    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => { if (!pan.current) syncCanvasScroll(); }} onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
         pointerHit.current = -1;
-        if (event.button !== 0 || busy) return;
+        if (busy) return;
+        if (event.button !== 0 && event.button !== 1) return;
         const target = event.target as Element;
+        const middlePan = event.button === 1;
         const edge = target.getAttribute("data-mosaic-resize");
         const hit = edge && selectedRef.current >= 0 ? String(selectedRef.current) : target.closest("[data-mosaic-box]")?.getAttribute("data-mosaic-box") ?? undefined;
         pointerHit.current = hit === undefined ? -1 : Number(hit);
         const index = drawing ? undefined : hit;
         const wasSelected = index !== undefined && selectedRef.current === Number(index);
-        if (index !== undefined) selectMask(Number(index));
+        if (index !== undefined && !middlePan) selectMask(Number(index));
         const inside = bitmap.current?.contains(event.target as Node);
-        if (index === undefined && (!drawing || !editable)) {
+        if (!drawing && (middlePan || index === undefined)) {
           event.preventDefault(); event.currentTarget.focus({ preventScroll: true }); event.currentTarget.setPointerCapture(event.pointerId);
-          selectMask(-1); setPanning(true);
+          if (!middlePan) selectMask(-1);
+          setPanning(true);
           pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop }; return;
         }
         if (!editable || !inside) return;
@@ -387,7 +412,10 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
           drag.current = { mode:"draw",index:i,handle:0,start:p,before };
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}>
-      <div className="training-dataset-canvas-track" style={{ paddingInline: viewportSize.width, paddingBlock: viewportSize.height }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: image.width * zoom, height: image.height * zoom, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
+      <div className="training-dataset-canvas-track" style={{
+        paddingLeft: canvasPadding.padX, paddingRight: canvasPadding.padX,
+        paddingTop: canvasPadding.padY, paddingBottom: canvasPadding.padY,
+      }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: displaySize.width, height: displaySize.height, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         <svg viewBox={`0 0 ${image.width} ${image.height}`} className={editable ? "is-editing" : undefined} aria-label="去码蒙版"
           style={tool === "select" ? { cursor: panning ? "grabbing" : "grab" } : undefined}>
@@ -433,6 +461,10 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       </div>
     </div>
     <section className="training-dataset-regions" aria-label="区域清单">
+      <header className="training-dataset-regions-head">
+        <h4>蒙版</h4>
+        <span>{drafts.length ? `${drafts.length} 框` : "暂无"}</span>
+      </header>
       <div ref={table} className="training-dataset-region-table"><table><thead><tr>
         <th>#</th><th>部位</th><th>左</th><th>上</th><th>右</th><th>下</th><th>操作</th>
       </tr></thead><tbody>{drafts.map((mask,index) => <tr key={index} data-mask-row={index} aria-selected={selected === index} tabIndex={0}
@@ -446,7 +478,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     </section>
     </div>
     <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
-      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
+      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白或中键平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
         event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);
