@@ -135,7 +135,7 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
         <button type="button" role="tab" id={tabId + "-datasets"} aria-controls={tabId + "-datasets-panel"}
           aria-selected={module === "datasets"} onClick={() => setModule("datasets")}>训练与数据集</button>
       </div>
-      <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game"} />
+      <div className="game-benchmark-header-tools" ref={setHeaderTools} hidden={module !== "game" && module !== "datasets"} />
       {browser && <button type="button" className="unity-btn game-benchmark-close" onClick={onClose}>关闭</button>}
     </header>
     <div className="game-benchmark-module" id={tabId + "-game-panel"} role="tabpanel"
@@ -150,7 +150,7 @@ function RecordsAndTestsPage({ gameView, onClose, onBuildRunning, benchmarkChann
     </div>
     <div className="game-benchmark-module" id={tabId + "-datasets-panel"} role="tabpanel"
       aria-labelledby={tabId + "-datasets"} hidden={module !== "datasets"}>
-      <TrainingDatasetsPage channel={benchmarkChannel} />
+      <TrainingDatasetsPage channel={benchmarkChannel} headerTools={headerTools} />
     </div>
   </main>;
   return browser ? createPortal(page, document.body) : page;

@@ -1,6 +1,7 @@
 import { TrainingView } from "./TrainingView";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { createPortal } from "react-dom";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
 import type { AnnotatedImage } from "../benchmark/imageSampleSet";
@@ -35,7 +36,7 @@ function DatasetOriginal({ dataset, image, onClose }: {
     src: picture.url, error: picture.failed ? "图片读取失败" : undefined }]} closeOnEscape={false} onClose={onClose} />;
 }
 
-export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
+export function TrainingDatasetsPage({ channel: _channel, headerTools }: { channel?: BroadcastChannel; headerTools?: HTMLDivElement | null }) {
   const id = useId();
   const [view, setView] = useState<"datasets" | "training">("datasets");
   const [catalog, setCatalog] = useState(readDatasetCatalog);
@@ -404,30 +405,35 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     imageMenu.current.querySelector("button")?.focus({ preventScroll: true });
   }
 
-  return <section className="training-dataset-page">
-    <div className="training-dataset-subnav">
-      <div className="game-benchmark-tabs" role="tablist" aria-label="训练与数据集">
-        <button type="button" id={`${id}-datasets`} aria-controls={`${id}-dataset-panel`} role="tab" aria-selected={view === "datasets"} onClick={() => setView("datasets")}>数据集</button>
-        <button type="button" id={`${id}-training`} aria-controls={`${id}-training-panel`} role="tab" aria-selected={view === "training"} disabled={blocked} onClick={() => setView("training")}>训练</button>
-      </div>
-      {busy && <span className="hint" role="status">{busy}</span>}
+  const headerChrome = headerTools ? createPortal(<div className="training-dataset-header-tools">
+    <div className="game-benchmark-tabs" role="tablist" aria-label="训练与数据集">
+      <button type="button" id={`${id}-datasets`} aria-controls={`${id}-dataset-panel`} role="tab" aria-selected={view === "datasets"} onClick={() => setView("datasets")}>数据集</button>
+      <button type="button" id={`${id}-training`} aria-controls={`${id}-training-panel`} role="tab" aria-selected={view === "training"} disabled={blocked} onClick={() => setView("training")}>训练</button>
     </div>
+    {view === "datasets" && <button type="button" className="unity-btn unity-btn-primary training-dataset-save-icon" disabled={!canSave}
+      aria-label="保存标注" data-tooltip={hasUnsavedChanges ? "保存标注" : "当前没有未保存的更改"}
+      onClick={() => void confirmSaved()}>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 20h14a2 2 0 0 0 2-2v-10l-5-4H9L5 10v10z" /><path d="M9 6h6v4H9V6z" />
+      </svg>
+    </button>}
+  </div>, headerTools) : null;
+
+  return <section className="training-dataset-page">
+    {headerChrome}
+    {busy && <p className="training-dataset-busy" role="status">{busy}</p>}
     {error && !renaming && <p className="training-dataset-error" role="alert">{error}</p>}
     <div ref={datasetMenu} id={id + "-dataset-ops"} popover="auto" className="unity-gallery-menu training-dataset-ops-menu" role="menu"
       aria-label="数据集操作" style={{ inset: "auto", margin: 0 }}>
-      <p className="training-dataset-ops-label" role="presentation">数据集库</p>
-      <button type="button" role="menuitem" disabled={!desktop || blocked} onClick={() => {
-        datasetMenu.current?.hidePopover();
-        datasetPicker.current?.hidePopover();
-        openDirectory();
-      }}>浏览本地目录…</button>
+      <p className="training-dataset-ops-label" role="presentation">导入数据集</p>
       <button type="button" role="menuitem" disabled={!desktop || blocked} onClick={() => {
         datasetMenu.current?.hidePopover();
         importInput.current?.click();
       }}>从图片集导入</button>
       {menuReference && <>
         <hr className="training-dataset-ops-divider" />
-        <p className="training-dataset-ops-label" role="presentation" title={menuReference.title}>当前条目</p>
+        <p className="training-dataset-ops-label" role="presentation" title={menuReference.title}>修改数据集</p>
         <button type="button" role="menuitem" onClick={() => {
           datasetMenu.current?.hidePopover();
           void api.revealPath(menuReference.path).catch(error => showAppNotice(String(error), "error"));
@@ -442,13 +448,13 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       </>}
       {dataset && menuReference?.path === dataset.reference.path && <>
         <hr className="training-dataset-ops-divider" />
-        <p className="training-dataset-ops-label" role="presentation">当前打开的数据集</p>
+        <p className="training-dataset-ops-label" role="presentation">新建数据集</p>
         <button type="button" role="menuitem" disabled={!desktop || blocked}
           data-tooltip="共用图片，单独保存标注；要求位于同一磁盘分区。直接修改图片内容会影响共用副本。"
-          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(true); }}>新建标注副本</button>
+          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(true); }}>以索引方式新建</button>
         <button type="button" role="menuitem" disabled={!desktop || blocked}
           data-tooltip="完整拷贝图片和标注，适合跨盘或需要独立修改图片的情况"
-          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(false); }}>复制全部图片</button>
+          onClick={() => { datasetMenu.current?.hidePopover(); duplicate(false); }}>以完全拷贝方式新建</button>
       </>}
     </div>
     {deletingDataset && <GameDialog title="删除数据集" description={deletingDataset.workId
@@ -476,7 +482,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     </div>
     <div ref={panel} className="training-dataset-data-view" id={`${id}-dataset-panel`} role="tabpanel" aria-labelledby={`${id}-datasets`} hidden={view !== "datasets"}>
       <div className="training-dataset-toolbar">
-        <div className="training-dataset-command-row">
+        <div className="training-dataset-work-row">
           <button type="button" className="unity-btn training-dataset-list-toggle" aria-controls={id + "-image-list"}
             aria-expanded={listOpen} onClick={() => setListOpen(!listOpen)}>列表</button>
           <div className="training-dataset-command-primary">
@@ -502,19 +508,13 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             <button type="button" className="training-dataset-catalog-item" disabled={blocked}
               onClick={event => { datasetPicker.current?.hidePopover(); openDatasetOpsMenu(event); }}>数据集操作…</button>
           </div>
-          <div className="training-dataset-actions training-dataset-commands">
-            <button type="button" className="unity-btn unity-btn-primary" disabled={!canSave}
-              data-tooltip={hasUnsavedChanges ? undefined : "当前没有未保存的更改"}
-              onClick={() => void confirmSaved()}>保存</button>
-          </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {
               const files = Array.from(event.currentTarget.files ?? []);
               event.currentTarget.value = "";
               if (files.length) run("正在导入图片集…", () => importTrainingDataset(files, files[0].webkitRelativePath.split("/")[0], writer, new AbortController().signal));
             }} />
-        </div>
-        <div className="training-dataset-filter-bar" data-disabled={blocked || undefined} role="group" aria-label="图片筛选">
+          <div className="training-dataset-filter-bar" data-disabled={blocked || undefined} role="group" aria-label="图片筛选">
           <div className="training-dataset-filter-cluster">
             <label className="training-dataset-filter-control">
               <span className="training-dataset-filter-prefix" aria-hidden="true">用途</span>
@@ -549,6 +549,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
                 setConditions({ ...emptyDatasetFilters }); setFilter("all"); setSearch(""); resetSelection();
               }}>重置高级</button>}
           </div>
+        </div>
         </div>
         <div id={id + "-advanced-filters"} className="training-dataset-advanced-panel" hidden={!advancedOpen}
           role="region" aria-label="高级筛选">
