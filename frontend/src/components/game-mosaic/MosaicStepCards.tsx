@@ -149,7 +149,9 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
       resultLine={unresolved > 0 ? unresolved.toLocaleString() + " 张失败待处理" : undefined}
       foldedSummary={{
         failed: Math.max(failed, unresolved),
-        models: recordedModelNames?.length ? recordedModelNames : models.map(model => model.model),
+        models: recordedModelNames?.length ? recordedModelNames
+          : models.length ? models.map(model => model.model)
+          : id === "redraw" ? [mosaicModelLabels[model]] : [],
         concurrency: Number(recordedLanes) || Math.max(0, ...models.map(model => model.concurrency)),
       }}
       runningParameters={status?.parameters} parametersLocked={busy || testing || parametersLocked}
