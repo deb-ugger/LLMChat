@@ -62,9 +62,10 @@ export function TrainingDatasetImage({ image, read, masks, editing = false, busy
   const menu = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1), [pan, setPan] = useState({ x: 0, y: 0 });
   const [drafts, setDrafts] = useState(() => masks.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox })));
+  const [history, setHistory] = useState<{ masks: DatasetMask[]; selected: number }[]>([]);
   const [selected, setSelected] = useState(Math.max(0, masks.length - 1));
   const [drawing, setDrawing] = useState(editing && masks.length === 0);
-  const gesture = useRef<{ mode: "pan" | "draw" | "move" | "resize"; point: [number, number]; pan: typeof pan; box?: MosaicBox; corner?: number } | undefined>(undefined);
+  const gesture = useRef<{ mode: "pan" | "draw" | "move" | "resize"; point: [number, number]; pan: typeof pan; box?: MosaicBox; corner?: number; undoSaved?: boolean } | undefined>(undefined);
   useLayoutEffect(() => {
     const previous = document.activeElement;
     dialog.current?.showModal();
@@ -90,7 +91,21 @@ export function TrainingDatasetImage({ image, read, masks, editing = false, busy
     return [clamp(Math.round((event.clientX - rect.left) / rect.width * image.width), 0, image.width),
       clamp(Math.round((event.clientY - rect.top) / rect.height * image.height), 0, image.height)];
   }
-  function changeBox(box: MosaicBox) {
+  function rememberChange() {
+    setHistory(values => [...values.slice(-99), { masks: drafts, selected }]);
+  }
+  function undoEdit() {
+    const previous = history.at(-1);
+    if (!previous || busy || gesture.current) return;
+    setDrafts(previous.masks); setSelected(previous.selected); setDrawing(false);
+    setHistory(values => values.slice(0, -1));
+  }
+  function changeBox(box: MosaicBox, checkpoint = false) {
+    if (drafts[selected]?.box.every((value, index) => value === box[index])) return;
+    if (checkpoint || (gesture.current && !gesture.current.undoSaved)) {
+      rememberChange();
+      if (gesture.current) gesture.current.undoSaved = true;
+    }
     setDrafts(values => values.map((value, index) => index === selected ? { ...value, box } : value));
   }
   const active = drafts[selected];
@@ -99,10 +114,19 @@ export function TrainingDatasetImage({ image, read, masks, editing = false, busy
     void copyDatasetPicture(image, read).catch(error => showAppNotice(String(error), "error"));
   };
   return <dialog ref={dialog} className="training-image-viewer" aria-label={editing ? "编辑蒙版" : "查看原图"}
-    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => event.stopPropagation()}>
+    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => {
+      event.stopPropagation();
+      if (editing && !busy && !event.nativeEvent.isComposing && (event.ctrlKey || event.metaKey) && !event.altKey &&
+          !event.shiftKey && event.key.toLowerCase() === "z" &&
+          !(event.target as Element).closest("input,textarea,[contenteditable]")) {
+        event.preventDefault(); undoEdit();
+      }
+    }}>
     <header><strong title={image.name}>{image.name}</strong>
       {editing && <button type="button" className="unity-btn" aria-pressed={drawing} disabled={busy}
         onClick={() => setDrawing(!drawing)}>{drawing ? "取消绘制" : "添加蒙版"}</button>}
+      {editing && <button type="button" className="unity-btn" disabled={busy || !history.length}
+        data-tooltip="撤销蒙版或部位修改 · Ctrl+Z，保留最近 100 次操作" onClick={undoEdit}>撤销</button>}
       <button type="button" className="unity-btn" aria-label="缩小原图" onClick={() => setZoom(value => clamp(value / 1.2, .25, 4))}>−</button>
       <button type="button" className="unity-btn" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>100%</button>
       <button type="button" className="unity-btn" aria-label="放大原图" onClick={() => setZoom(value => clamp(value * 1.2, .25, 4))}>+</button>
@@ -117,8 +141,9 @@ export function TrainingDatasetImage({ image, read, masks, editing = false, busy
         const index = target.closest<HTMLElement>("[data-mask-index]")?.dataset.maskIndex;
         if (editing && drawing && bitmap.current.contains(target)) {
           const p = point(event); const index = drafts.length;
+          rememberChange();
           setDrafts(values => [...values, { box: [p[0], p[1], p[0], p[1]], part: "" }]); setSelected(index);
-          gesture.current = { mode: "draw", point: p, pan };
+          gesture.current = { mode: "draw", point: p, pan, undoSaved: true };
         } else if (editing && index !== undefined) {
           const i = Number(index); setSelected(i);
           gesture.current = { mode: corner === undefined ? "move" : "resize", corner: Number(corner), point: point(event), pan, box: drafts[i].box };
@@ -170,13 +195,14 @@ export function TrainingDatasetImage({ image, read, masks, editing = false, busy
         {active && <>
           <label>部位<select aria-label="蒙版部位" disabled={busy} value={active.part} onChange={event => {
             const part = event.target.value as DatasetPart | "";
+            rememberChange();
             setDrafts(values => values.map((mask, index) => index === selected ? { ...mask, part } : mask));
           }}><option value="">未知</option>{Object.entries(datasetParts).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           <dl>{active.box.map((value, coordinate) => <div key={coordinate}><dt>{["左","上","右","下"][coordinate]}</dt><dd><input type="number" aria-label={"蒙版" + ["左","上","右","下"][coordinate]}
             value={value} min={0} max={coordinate % 2 === 0 ? image.width : image.height} disabled={busy} onChange={event => {
-              const next = [...active.box] as MosaicBox; next[coordinate] = clamp(Math.round(Number(event.target.value)), 0, coordinate % 2 === 0 ? image.width : image.height); changeBox(next);
+              const next = [...active.box] as MosaicBox; next[coordinate] = clamp(Math.round(Number(event.target.value)), 0, coordinate % 2 === 0 ? image.width : image.height); changeBox(next, true);
             }} /></dd></div>)}</dl>
-          <button type="button" className="unity-btn" disabled={busy} onClick={() => { setDrafts(values => values.filter((_,index) => index !== selected)); setSelected(0); }}>删除蒙版</button>
+          <button type="button" className="unity-btn" disabled={busy} onClick={() => { rememberChange(); setDrafts(values => values.filter((_,index) => index !== selected)); setSelected(0); }}>删除蒙版</button>
         </>}
         <button type="button" className="unity-btn unity-btn-primary" disabled={busy || drafts.some(mask => mask.box[2] <= mask.box[0] || mask.box[3] <= mask.box[1])}
           onClick={() => onSave(drafts)}>保存蒙版与部位</button>

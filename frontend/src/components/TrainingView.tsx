@@ -23,7 +23,9 @@ const classifiers = [
 ];
 
 export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void }) {
-  const datasets = readDatasetCatalog().filter(item => item.workId);
+  const catalog = readDatasetCatalog();
+  const datasets = catalog.filter(item => item.workId);
+  const readOnlyCount = catalog.length - datasets.length;
   const comfy = localStorage.getItem("llmchat-comfy-directory") ?? "";
   const pythonPath = useTrainingPython();
   const environmentDir = useTrainingEnvironmentDirectory();
@@ -68,8 +70,15 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
   const [datasetRevision, setDatasetRevision] = useState(0);
   useEffect(() => {
     const changed = () => setDatasetRevision(value => value + 1);
+    const storage = (event: StorageEvent) => {
+      if (event.key === "llmchat-training-datasets" || event.key === null) changed();
+    };
     window.addEventListener("llmchat-training-datasets-changed", changed);
-    return () => window.removeEventListener("llmchat-training-datasets-changed", changed);
+    window.addEventListener("storage", storage);
+    return () => {
+      window.removeEventListener("llmchat-training-datasets-changed", changed);
+      window.removeEventListener("storage", storage);
+    };
   }, []);
   const datasetPaths = datasets.map(item => item.path).join("\n");
   useEffect(() => {
@@ -162,10 +171,11 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
               {item.title} · {item.count} 张 · {maskCounts[item.path] ? String(maskCounts[item.path]?.masks) + " 蒙版" : "读取中或读取失败"}
             </option>)}
           </select></label>
+          {readOnlyCount > 0 && <p className="hint">另有 {readOnlyCount} 个只读数据集，只读数据集不参与训练。可在数据集页新建标注副本。</p>}
           {selectedCounts && <p className="hint" aria-label="部位标注统计">已标注 {selectedCounts.images} 张（{selectedCounts.male + selectedCounts.female + selectedCounts.other} 个已确认框：男 {selectedCounts.male} / 女 {selectedCounts.female} / 其他 {selectedCounts.other}）</p>}
           {!!datasets.length && selectedCounts && !hasBothClasses && <p className="training-dataset-error">至少需要男女两类才能训练</p>}
           {!datasets.length && <div className="training-empty-dataset">
-            <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「复制现有」创建，并至少标注男、女两类。</p>
+            <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「新建标注副本」创建，并至少标注男、女两类。</p>
             <button type="button" className="unity-btn" onClick={onOpenDatasets}>去数据集页创建</button>
           </div>}
           <label>验证集策略<span>按场景留出约 25%</span></label>

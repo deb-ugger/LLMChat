@@ -91,6 +91,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [checked, setChecked] = useState(new Set<string>());
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [undoHistory, setUndoHistory] = useState<TrainingDataset[]>([]);
   const busyRef = useRef(false);
   const importInput = useRef<HTMLInputElement>(null);
   const desktop = isTauri();
@@ -127,12 +128,20 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       const index = Math.max(0, images.findIndex(image => image.id === focused?.id));
       const columns = layout === "list" ? 1 : getComputedStyle(grid).gridTemplateColumns.split(" ").length;
       const last = images.length - 1;
+      const pageStart = currentPage * pageSize;
+      const pageCount = visible.length;
+      const local = index - pageStart;
+      const column = local % columns;
       let next: number;
       switch (event.key) {
         case "ArrowLeft": next = index - 1; break;
         case "ArrowRight": next = index + 1; break;
-        case "ArrowUp": next = index - columns; break;
-        case "ArrowDown": next = index + columns; break;
+        case "ArrowUp":
+          next = pageStart + (local >= columns ? local - columns : column + Math.floor((pageCount - 1 - column) / columns) * columns);
+          break;
+        case "ArrowDown":
+          next = pageStart + (local + columns < pageCount ? local + columns : column);
+          break;
         case "Home": next = 0; break;
         case "End": next = last; break;
         case "PageUp": next = Math.max(0, currentPage - 1) * pageSize; break;
@@ -156,6 +165,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     setDataset(next);
     setCatalog(rememberDataset(next.reference));
     if (select) {
+      setUndoHistory([]);
       setPurpose(next.reference.purposes[0]);
       setFilter("all");
       setSearch("");
@@ -164,12 +174,16 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     }
   }
 
-  function run(status: string, operation: () => Promise<TrainingDataset | undefined>, select = true) {
+  function run(status: string, operation: () => Promise<TrainingDataset | undefined>, select = true, undoable = false) {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(status);
     setError("");
-    void operation().then(next => { if (next) apply(next, select); })
+    void operation().then(next => {
+      if (!next) return;
+      if (undoable && dataset) setUndoHistory(history => [...history.slice(-99), dataset]);
+      apply(next, select);
+    })
       .catch(error => setError(String(error).replace(/^Error: /, "")))
       .finally(() => { busyRef.current = false; setBusy(""); });
   }
@@ -243,7 +257,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     void removeTrainingDataset(reference).then(remaining => {
       setCatalog(remaining);
       if (dataset?.reference.path === reference.path) {
-        setDataset(undefined); resetSelection(); setPreview(undefined); setMenuImage(undefined);
+        setDataset(undefined); setUndoHistory([]); resetSelection(); setPreview(undefined); setMenuImage(undefined);
       }
       setDeletingDataset(undefined);
       showAppNotice(reference.workId ? "已删除数据集" : "已从列表移除数据集");
@@ -261,7 +275,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
 
   function label(verdict: DatasetVerdict) {
     if (!dataset || !editable || !targets.size) return;
-    run("正在保存标注…", () => saveDatasetLabels(dataset, labelDatasetImages(dataset, targets, purpose, verdict), dataset.parts, writer), false);
+    run("正在保存标注…", () => saveDatasetLabels(dataset, labelDatasetImages(dataset, targets, purpose, verdict), dataset.parts, writer), false, true);
   }
 
   function saveMasks(masks: DatasetMask[]) {
@@ -270,8 +284,29 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       const next = await saveDatasetMasks(dataset, preview.image.sourceHash, masks, writer);
       setPreview(undefined);
       return next;
+    }, false, true);
+  }
+
+  function undoEdit() {
+    const previous = undoHistory.at(-1);
+    if (!dataset || !previous || previous.reference.path !== dataset.reference.path || busyRef.current) return;
+    run("正在撤销标注…", async () => {
+      const restored = await saveDatasetLabels(dataset, previous.data.annotations.samples, previous.parts, writer);
+      setUndoHistory(history => history.slice(0, -1));
+      return restored;
     }, false);
   }
+
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (view !== "datasets" || busy || preview || deleting || deletingDataset || renaming || event.isComposing ||
+          !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "z" ||
+          (event.target instanceof Element && event.target.closest("input,textarea,[contenteditable]")) || !undoHistory.length) return;
+      event.preventDefault(); event.stopPropagation(); undoEdit();
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [view, busy, preview, deleting, deletingDataset, renaming, undoHistory, dataset]);
 
   function openImageMenu(event: ReactMouseEvent<HTMLElement>, image: AnnotatedImage) {
     if (busy || !imageMenu.current) return;
@@ -386,6 +421,8 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               onClick={() => duplicate(false)}>复制全部图片</button>
             <button type="button" className="unity-btn" disabled={!desktop || !dataset || !!busy}
               onClick={() => setDeletingDataset(dataset?.reference)}>删除数据集</button>
+            <button type="button" className="unity-btn" disabled={!!busy || !undoHistory.length}
+              data-tooltip="撤销标注或蒙版修改 · Ctrl+Z，保留最近 100 次操作" onClick={undoEdit}>撤销标注</button>
           </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {
@@ -508,6 +545,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
         const image = deleting;
         run("正在删除图片…", async () => {
           const next = await removeDatasetImage(dataset, image.sourceHash, writer);
+          setUndoHistory([]);
           setDeleting(undefined); setChecked(values => new Set([...values].filter(hash => hash !== image.sourceHash)));
           return next;
         }, false);
