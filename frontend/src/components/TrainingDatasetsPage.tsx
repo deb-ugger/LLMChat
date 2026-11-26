@@ -3,7 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createPortal } from "react-dom";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import { useDatasetListSplit } from "../hooks/useDatasetListSplit";
 import type { AnnotatedImage } from "../benchmark/imageSampleSet";
 import { copyTrainingDataset, datasetManifestIn, datasetPurposeLabels, datasetPurposes, datasetVerdict,
   datasetVerdictLabels, importTrainingDataset, labelDatasetImages, openTrainingDataset, partFor, readDatasetCatalog,
@@ -62,21 +62,8 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const [search, setSearch] = useState("");
 
   const [conditions, setConditions] = useState({ ...emptyDatasetFilters });
-  const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null), workspaceRef = useRef<HTMLDivElement>(null);
-  const [workspaceWidth, setWorkspaceWidth] = useState(0);
-  const listMaxWidth = workspaceWidth > 0
-    ? Math.max(0, Math.min(900, Math.floor(workspaceWidth * 0.65), workspaceWidth - 420 - 16)) : 900;
-  const listMinWidth = Math.min(200, listMaxWidth);
-  const listWidth = usePersistedWidth("llmchat-training-dataset-list-width", 320, listMinWidth, listMaxWidth, "live");
-  useLayoutEffect(() => {
-    const element = workspaceRef.current;
-    if (!element) return;
-    const update = () => { if (element.clientWidth > 0) setWorkspaceWidth(element.clientWidth); };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [view]);
+  const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null);
+  const listSplit = useDatasetListSplit(view === "datasets");
   const keyboardFocus = useRef<"list" | "canvas" | undefined>(undefined);
   const [preview, setPreview] = useState<AnnotatedImage>();
   const [listOpen, setListOpen] = useState(false);
@@ -594,9 +581,9 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
           </div>
         </div>
       </div>
-      <div ref={workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
-        style={{ ["--training-dataset-list-width" as string]: `${listWidth.width}px` }}>
-        <aside className="training-dataset-image-list" style={{ maxInlineSize: listMaxWidth }} id={id + "-image-list"} aria-label="图片列表">
+      <div ref={listSplit.workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
+        style={{ ["--training-dataset-list-width" as string]: `${listSplit.width}px` }}>
+        <aside className="training-dataset-image-list" style={{ maxInlineSize: listSplit.maxWidth }} id={id + "-image-list"} aria-label="图片列表">
           <header className="training-dataset-list-head">
             <nav className="training-dataset-pagination training-dataset-list-nav" aria-label="数据集分页">
               <select className="unity-btn" aria-label="每页图片数量" disabled={blocked} value={pageSize} onChange={event => {
@@ -656,15 +643,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             })}
           </ul>
         </aside>
-        <button type="button" className="unity-col-resizer training-dataset-list-divider" role="separator" aria-orientation="vertical"
-          aria-controls={id + "-image-list"} aria-label="调整图片列表宽度" data-tooltip="拖动调整图片列表宽度"
-          aria-valuemin={listMinWidth} aria-valuemax={listMaxWidth} aria-valuenow={Math.round(listWidth.width)}
-          onMouseDown={event => listWidth.beginResize(event, "grow-right")} onKeyDown={event => {
-            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-              event.preventDefault();
-              listWidth.setWidth(listWidth.width + (event.key === "ArrowRight" ? 16 : -16));
-            }
-          }} />
+        <button {...listSplit.dividerProps} aria-controls={id + "-image-list"} />
         <div className="training-dataset-detail">
           {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
             image={focused} galleryIndex={focusedGalleryIndex} galleryTotal={images.length} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked}
