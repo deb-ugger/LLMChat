@@ -63,14 +63,11 @@ function clampCanvasScroll(view: HTMLDivElement, layout: CanvasLayout) {
   const vw = view.clientWidth, vh = view.clientHeight;
   const axis = (value: number, start: number, size: number, port: number, limit: number) => {
     const maxScroll = Math.max(0, limit - port);
-    if (size <= port) {
-      const centered = start + (size - port) / 2;
-      return clamp(centered, 0, maxScroll);
-    }
-    const min = start + 0.5 * size - port;
-    const max = start + 0.5 * size;
-    const next = min > max ? (min + max) / 2 : clamp(value, min, max);
-    return clamp(next, 0, maxScroll);
+    // Keep half of the smaller image/viewport span visible while allowing every edge to be reached.
+    const visible = Math.min(size, port) / 2;
+    const min = start + visible - port;
+    const max = start + size - visible;
+    return clamp(clamp(value, min, max), 0, maxScroll);
   };
   const s = axis(view.scrollLeft, L, W, vw, view.scrollWidth);
   const t = axis(view.scrollTop, T, H, vh, view.scrollHeight);
@@ -393,7 +390,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
         const wasSelected = index !== undefined && selectedRef.current === Number(index);
         if (index !== undefined && !middlePan) selectMask(Number(index));
         const inside = bitmap.current?.contains(event.target as Node);
-        if (!drawing && (middlePan || index === undefined)) {
+        if (middlePan || (!drawing && index === undefined)) {
           event.preventDefault(); event.currentTarget.focus({ preventScroll: true }); event.currentTarget.setPointerCapture(event.pointerId);
           if (!middlePan) selectMask(-1);
           setPanning(true);

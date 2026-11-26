@@ -380,21 +380,21 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     if (view !== "datasets") return;
     const key = (event: KeyboardEvent) => {
       const active = document.activeElement, inList = !!list.current?.contains(active);
-      if (blocked || !focused || preview || renaming || deleting || deletingDataset || event.defaultPrevented || event.isComposing ||
+      if (blocked || !images.length || preview || renaming || deleting || deletingDataset || event.defaultPrevented || event.isComposing ||
         event.ctrlKey || event.metaKey || event.altKey || document.querySelector(":popover-open") ||
         (active instanceof Element && active.closest("input,textarea,select,[contenteditable]")) ||
         !(panel.current?.contains(active) || panel.current?.matches(":hover"))) return;
-      const index = images.indexOf(focused);
+      const index = focused ? images.indexOf(focused) : currentPage * pageSize;
       let next: number;
       switch (event.key) {
-        case "ArrowUp": case "ArrowLeft": next = index - 1; break;
-        case "ArrowDown": case "ArrowRight": next = index + 1; break;
+        case "ArrowUp": case "ArrowLeft": next = focused ? index - 1 : index; break;
+        case "ArrowDown": case "ArrowRight": next = focused ? index + 1 : index; break;
         case "Home": if (!inList) return; next = 0; break;
         case "End": if (!inList) return; next = images.length - 1; break;
         case "PageUp": next = Math.max(0, currentPage - 1) * pageSize; break;
         case "PageDown": if (currentPage + 1 === pages) return; next = (currentPage + 1) * pageSize; break;
         case " ":
-          if (!inList) return;
+          if (!inList || !focused) return;
           event.preventDefault(); toggleChecked([focused.sourceHash], !checked.has(focused.sourceHash)); return;
         default: return;
       }
@@ -639,7 +639,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
           </header>
           <ul ref={list} aria-label="数据集图片" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
             className="training-dataset-images" data-layout={layout}>
-            {dataset && visible.map(image => {
+            {dataset && visible.map((image, index) => {
               const verdict = datasetVerdict(image.annotation, purpose);
               const boxes = image.annotation.mosaic?.boxes?.length ?? 0;
               const status = purpose === "mosaic" && boxes ? `${boxes} 蒙版` : datasetVerdictLabels[purpose][verdict];
@@ -647,7 +647,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               const picked = checked.has(image.sourceHash);
               return <li key={image.id} className="training-dataset-tile" data-active={active} data-checked={picked}
                 onContextMenu={event => openImageMenu(event, image)}>
-                <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={active ? 0 : -1}
+                <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={active || (!focused && index === 0) ? 0 : -1}
                   aria-pressed={picked} aria-current={active ? "true" : undefined} disabled={blocked}
                   data-tooltip="单击勾选；双击查看并标注"
                   onClick={event => pickListImage(image, event)} onDoubleClick={() => openListImage(image)}>
