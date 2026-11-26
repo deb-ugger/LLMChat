@@ -53,163 +53,204 @@ export async function copyDatasetPicture(image: AnnotatedImage, read: AnnotatedS
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const rectangle = (a: number[], b: number[]): MosaicBox => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
 
-export function TrainingDatasetImage({ image, read, masks, editing = false, busy, onSave, onClose }: {
-  image: AnnotatedImage; read: AnnotatedSampleSet["read"]; masks: DatasetMask[];
-  editing?: boolean; busy: boolean; onSave: (masks: DatasetMask[]) => void; onClose: () => void;
+export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onPrevious, onNext, readOnlyHint }: {
+  image: AnnotatedImage; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean;
+  onChange: (masks: DatasetMask[]) => Promise<void>; onUndo: () => void; canUndo: boolean;
+  onPrevious?: () => void; onNext?: () => void; readOnlyHint?: string;
 }) {
   const picture = useSamplePicture(image, read);
-  const dialog = useRef<HTMLDialogElement>(null), stage = useRef<HTMLDivElement>(null), bitmap = useRef<HTMLDivElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const [zoom, setZoom] = useState(1), [pan, setPan] = useState({ x: 0, y: 0 });
+  const viewport = useRef<HTMLDivElement>(null), bitmap = useRef<HTMLDivElement>(null), table = useRef<HTMLDivElement>(null);
+  const partsMenu = useRef<HTMLDivElement>(null), contextMenu = useRef<HTMLDivElement>(null);
   const [drafts, setDrafts] = useState(() => masks.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox })));
-  const [history, setHistory] = useState<{ masks: DatasetMask[]; selected: number }[]>([]);
-  const [selected, setSelected] = useState(Math.max(0, masks.length - 1));
-  const [drawing, setDrawing] = useState(editing && masks.length === 0);
-  const gesture = useRef<{ mode: "pan" | "draw" | "move" | "resize"; point: [number, number]; pan: typeof pan; box?: MosaicBox; corner?: number; undoSaved?: boolean } | undefined>(undefined);
+  const current = useRef(drafts), pending = useRef(0), [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const [selected, setSelected] = useState(-1), selectedRef = useRef(-1), pointerHit = useRef(-1);
+  const [fit, setFit] = useState(1), [manualZoom, setManualZoom] = useState<number>();
+  const zoom = manualZoom ?? fit;
+  const signature = JSON.stringify(masks);
+  const drag = useRef<{ mode: "draw" | "move" | "resize"; index: number; handle: number; start: [number,number]; before: DatasetMask[]; box?: MosaicBox } | undefined>(undefined);
+  const handles = [[0,0],[.5,0],[1,0],[1,.5],[1,1],[.5,1],[0,1],[0,.5]];
+  const copy = (values: DatasetMask[]) => values.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox }));
+  function display(values: DatasetMask[]) { current.current = values; setDrafts(values); }
   useLayoutEffect(() => {
-    const previous = document.activeElement;
-    dialog.current?.showModal();
-    const fit = () => {
-      if (!stage.current) return;
-      setZoom(clamp(Math.min((stage.current.clientWidth - 32) / image.width, (stage.current.clientHeight - 32) / image.height), .25, 4));
-      setPan({ x: 0, y: 0 });
-    };
-    fit();
-    const observer = new ResizeObserver(fit);
-    if (stage.current) observer.observe(stage.current);
-    return () => { observer.disconnect(); dialog.current?.close(); if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
-  }, [image.width, image.height]);
-  useEffect(() => {
-    const element = stage.current;
-    if (!element) return;
-    const wheel = (event: WheelEvent) => { event.preventDefault(); setZoom(value => clamp(value * Math.exp(-event.deltaY * .002), .25, 4)); };
-    element.addEventListener("wheel", wheel, { passive: false });
-    return () => element.removeEventListener("wheel", wheel);
-  }, []);
-  function point(event: PointerEvent): [number, number] {
-    const rect = bitmap.current!.getBoundingClientRect();
-    return [clamp(Math.round((event.clientX - rect.left) / rect.width * image.width), 0, image.width),
-      clamp(Math.round((event.clientY - rect.top) / rect.height * image.height), 0, image.height)];
-  }
-  function rememberChange() {
-    setHistory(values => [...values.slice(-99), { masks: drafts, selected }]);
-  }
-  function undoEdit() {
-    const previous = history.at(-1);
-    if (!previous || busy || gesture.current) return;
-    setDrafts(previous.masks); setSelected(previous.selected); setDrawing(false);
-    setHistory(values => values.slice(0, -1));
-  }
-  function changeBox(box: MosaicBox, checkpoint = false) {
-    if (drafts[selected]?.box.every((value, index) => value === box[index])) return;
-    if (checkpoint || (gesture.current && !gesture.current.undoSaved)) {
-      rememberChange();
-      if (gesture.current) gesture.current.undoSaved = true;
+    if (!pending.current && !drag.current && !error) {
+      display(copy(masks));
+      if (selectedRef.current >= masks.length) { selectedRef.current = masks.length - 1; setSelected(masks.length - 1); }
     }
-    setDrafts(values => values.map((value, index) => index === selected ? { ...value, box } : value));
+  }, [signature]);
+  useLayoutEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const measure = () => setFit(element.clientWidth / image.width);
+    measure(); const observer = new ResizeObserver(measure); observer.observe(element);
+    return () => observer.disconnect();
+  }, [image.width]);
+  function persist(values: DatasetMask[]) {
+    const next = copy(values); display(next); pending.current++; setSaving(true);
+    void onChange(next).then(() => setError("")).catch(cause => {
+      setError(String(cause)); showAppNotice("标注写入失败：" + String(cause), "error");
+    }).finally(() => { pending.current--; if (!pending.current) setSaving(false); });
   }
-  const active = drafts[selected];
-  const copy = () => {
-    menu.current?.hidePopover();
-    void copyDatasetPicture(image, read).catch(error => showAppNotice(String(error), "error"));
-  };
-  return <dialog ref={dialog} className="training-image-viewer" aria-label={editing ? "编辑蒙版" : "查看原图"}
-    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => {
-      event.stopPropagation();
-      if (editing && !busy && !event.nativeEvent.isComposing && (event.ctrlKey || event.metaKey) && !event.altKey &&
-          !event.shiftKey && event.key.toLowerCase() === "z" &&
-          !(event.target as Element).closest("input,textarea,[contenteditable]")) {
-        event.preventDefault(); undoEdit();
+  function selectMask(index: number, reveal = false) {
+    selectedRef.current = index; setSelected(index);
+    requestAnimationFrame(() => {
+      const row = table.current?.querySelector<HTMLElement>('[data-mask-row="' + index + '"]');
+      if (row && table.current) {
+        const r = row.getBoundingClientRect(), v = table.current.getBoundingClientRect();
+        if (r.top < v.top) table.current.scrollTop += r.top - v.top;
+        else if (r.bottom > v.bottom) table.current.scrollTop += r.bottom - v.bottom;
       }
-    }}>
-    <header><strong title={image.name}>{image.name}</strong>
-      {editing && <button type="button" className="unity-btn" aria-pressed={drawing} disabled={busy}
-        onClick={() => setDrawing(!drawing)}>{drawing ? "取消绘制" : "添加蒙版"}</button>}
-      {editing && <button type="button" className="unity-btn" disabled={busy || !history.length}
-        data-tooltip="撤销蒙版或部位修改 · Ctrl+Z，保留最近 100 次操作" onClick={undoEdit}>撤销</button>}
-      <button type="button" className="unity-btn" aria-label="缩小原图" onClick={() => setZoom(value => clamp(value / 1.2, .25, 4))}>−</button>
-      <button type="button" className="unity-btn" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>100%</button>
-      <button type="button" className="unity-btn" aria-label="放大原图" onClick={() => setZoom(value => clamp(value * 1.2, .25, 4))}>+</button>
-      <button type="button" className="unity-btn" disabled={busy} aria-label="关闭原图" onClick={onClose}>关闭</button>
-    </header>
-    <div className="training-image-viewer-content" data-editing={editing}>
-      <div ref={stage} className="training-image-viewer-stage" data-drawing={drawing} onPointerDown={event => {
-        if (event.button !== 0 || busy || !bitmap.current) return;
-        event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
-        const target = event.target as HTMLElement;
-        const corner = target.dataset.corner;
-        const index = target.closest<HTMLElement>("[data-mask-index]")?.dataset.maskIndex;
-        if (editing && drawing && bitmap.current.contains(target)) {
-          const p = point(event); const index = drafts.length;
-          rememberChange();
-          setDrafts(values => [...values, { box: [p[0], p[1], p[0], p[1]], part: "" }]); setSelected(index);
-          gesture.current = { mode: "draw", point: p, pan, undoSaved: true };
-        } else if (editing && index !== undefined) {
-          const i = Number(index); setSelected(i);
-          gesture.current = { mode: corner === undefined ? "move" : "resize", corner: Number(corner), point: point(event), pan, box: drafts[i].box };
-        } else gesture.current = { mode: "pan", point: [event.clientX, event.clientY], pan };
-      }} onPointerMove={event => {
-        const start = gesture.current;
-        if (!start) return;
-        if (start.mode === "pan") {
-          const scale = event.currentTarget.currentCSSZoom || 1;
-          setPan({ x: start.pan.x + (event.clientX - start.point[0]) / scale, y: start.pan.y + (event.clientY - start.point[1]) / scale });
-          return;
-        }
-        const p = point(event);
-        if (start.mode === "draw") changeBox(rectangle(start.point, p));
-        else if (start.box && start.mode === "move") {
-          const [x0,y0,x1,y1] = start.box;
-          const dx = clamp(p[0] - start.point[0], -x0, image.width - x1), dy = clamp(p[1] - start.point[1], -y0, image.height - y1);
-          changeBox([x0+dx,y0+dy,x1+dx,y1+dy]);
-        } else if (start.box) {
-          const [x0,y0,x1,y1] = start.box, opposite = start.corner === 0 ? [x1,y1] : start.corner === 1 ? [x0,y1] : start.corner === 2 ? [x0,y0] : [x1,y0];
-          changeBox(rectangle(opposite, p));
-        }
-      }} onPointerUp={() => {
-        if (gesture.current?.mode === "draw") setDrawing(false);
-        gesture.current = undefined;
-        setDrafts(values => values.filter(mask => mask.box[2] > mask.box[0] && mask.box[3] > mask.box[1]));
-      }} onPointerCancel={() => { gesture.current = undefined; }} onContextMenu={event => {
-        event.preventDefault();
-        if (!menu.current) return;
-        const p = getFixedMenuPoint(event.clientX, event.clientY, 150, 42);
-        menu.current.style.left = p.x + "px"; menu.current.style.top = p.y + "px"; menu.current.showPopover();
-        menu.current.querySelector("button")?.focus({ preventScroll: true });
-      }}>
-        <div ref={bitmap} className="training-image-viewer-bitmap" style={{ width: image.width, height: image.height,
-          transform: "translate(-50%, -50%) translate(" + pan.x + "px," + pan.y + "px) scale(" + zoom + ")" }}>
-          {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "读取中…"}</span>}
-          {drafts.map((mask, index) => <span key={index} className="training-image-edit-mask" data-mask-index={index}
-            data-selected={index === selected} style={{ left: mask.box[0], top: mask.box[1], width: mask.box[2]-mask.box[0], height: mask.box[3]-mask.box[1], borderWidth: 2 / zoom }}>
-            <b style={{ fontSize: 12 / zoom }}>{index + 1}{mask.part ? " · " + datasetParts[mask.part] : " · 未知"}</b>
-            {editing && index === selected && [0,1,2,3].map(corner => <i key={corner} data-corner={corner} style={{ width: 8 / zoom, height: 8 / zoom }} />)}
-          </span>)}
-        </div>
-        <output className="training-image-viewer-scale">{Math.round(zoom * 100)}% · {image.width} × {image.height}</output>
+      const mask = current.current[index], view = viewport.current, picture = bitmap.current;
+      if (!reveal || !mask || !view || !picture) return;
+      const left = picture.offsetLeft + mask.box[0] * zoom, top = picture.offsetTop + mask.box[1] * zoom;
+      const right = picture.offsetLeft + mask.box[2] * zoom, bottom = picture.offsetTop + mask.box[3] * zoom;
+      if (left < view.scrollLeft) view.scrollLeft = Math.max(0,left-12);
+      else if (right > view.scrollLeft+view.clientWidth) view.scrollLeft = right-view.clientWidth+12;
+      if (top < view.scrollTop) view.scrollTop = Math.max(0,top-12);
+      else if (bottom > view.scrollTop+view.clientHeight) view.scrollTop = bottom-view.clientHeight+12;
+    });
+  }
+  function menuPosition(menu: HTMLDivElement | null, x: number, y: number, height: number) {
+    if (!menu) return;
+    const p = getFixedMenuPoint(x,y,170,height);
+    menu.style.left = p.x+"px"; menu.style.top = p.y+"px"; menu.showPopover();
+    menu.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll:true });
+  }
+  function choosePart(index: number, x: number, y: number) {
+    if (!editable || busy) return;
+    selectMask(index); contextMenu.current?.hidePopover(); requestAnimationFrame(() => menuPosition(partsMenu.current,x,y,160));
+  }
+  function updatePart(index: number, part: DatasetPart | "") {
+    if (!editable || busy || !current.current[index]) return;
+    selectMask(index); persist(current.current.map((mask,i) => i === index ? { ...mask,part } : mask));
+    partsMenu.current?.hidePopover(); viewport.current?.focus({ preventScroll:true });
+  }
+  function remove(index: number) {
+    if (!editable || busy || !current.current[index]) return;
+    persist(current.current.filter((_,i) => i !== index));
+    selectMask(Math.min(index,current.current.length-1)); contextMenu.current?.hidePopover();
+    viewport.current?.focus({ preventScroll:true });
+  }
+  function point(event: PointerEvent): [number,number] {
+    const r = bitmap.current!.getBoundingClientRect();
+    return [clamp(Math.round((event.clientX-r.left)/r.width*image.width),0,image.width),
+      clamp(Math.round((event.clientY-r.top)/r.height*image.height),0,image.height)];
+  }
+  function move(event: PointerEvent) {
+    const gesture = drag.current;
+    if (!gesture) return;
+    const p = point(event), values = copy(current.current);
+    let box: MosaicBox;
+    if (gesture.mode === "draw") box = rectangle(gesture.start,p);
+    else {
+      const original = gesture.box!, dx = p[0]-gesture.start[0], dy = p[1]-gesture.start[1];
+      box = [...original];
+      if (gesture.mode === "move") {
+        const x = clamp(dx,-original[0],image.width-original[2]), y = clamp(dy,-original[1],image.height-original[3]);
+        box = [original[0]+x,original[1]+y,original[2]+x,original[3]+y];
+      } else {
+        const [horizontal,vertical] = handles[gesture.handle];
+        if (horizontal === 0) box[0] = clamp(original[0]+dx,0,original[2]-1);
+        if (horizontal === 1) box[2] = clamp(original[2]+dx,original[0]+1,image.width);
+        if (vertical === 0) box[1] = clamp(original[1]+dy,0,original[3]-1);
+        if (vertical === 1) box[3] = clamp(original[3]+dy,original[1]+1,image.height);
+      }
+    }
+    values[gesture.index] = { ...values[gesture.index],box }; display(values);
+  }
+  function finish(event: PointerEvent) {
+    const gesture = drag.current;
+    if (!gesture) return;
+    move(event); drag.current = undefined;
+    const mask = current.current[gesture.index];
+    if (!mask || mask.box[2] <= mask.box[0] || mask.box[3] <= mask.box[1]) { display(gesture.before); return; }
+    if (JSON.stringify(current.current) !== JSON.stringify(gesture.before)) persist(current.current);
+    if (gesture.mode === "draw") choosePart(gesture.index,event.clientX,event.clientY);
+  }
+  const known = drafts.filter(mask => !!mask.part).length;
+  return <section className="training-dataset-editor" aria-label="图片标注详情" onKeyDown={event => {
+    if (partsMenu.current?.matches(":popover-open") || contextMenu.current?.matches(":popover-open")) return;
+    if (event.key === "Delete" && !(event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable]"))) {
+      event.preventDefault(); event.stopPropagation(); remove(selectedRef.current);
+    }
+  }}>
+    <header className="training-dataset-editor-tools">
+      <strong title={image.name}>{image.name}</strong>
+      <div className="training-dataset-zoom">
+        <button className="unity-btn" type="button" aria-label="恢复100%比例" onClick={() => setManualZoom(1)}>{Math.round(zoom*100)}%</button>
+        <button className="unity-btn" type="button" aria-label="缩小标注画布" onClick={() => setManualZoom(Math.max(.25,zoom-.25))}>−</button>
+        <button className="unity-btn" type="button" aria-label="放大标注画布" onClick={() => setManualZoom(zoom+.25)}>+</button>
+        <button className="unity-btn" type="button" aria-pressed={manualZoom === undefined} onClick={() => setManualZoom(undefined)}>适应</button>
       </div>
-      {editing && <aside className="training-image-editor">
-        <h3>蒙版与部位</h3><p className="hint">拖动框可移动，拖动角点可调整。保存后写入工作副本。</p>
-        <ul>{drafts.map((mask, index) => <li key={index}><button className="unity-btn" type="button" aria-pressed={selected === index}
-          onClick={() => setSelected(index)}>蒙版 {index + 1} · {mask.part ? datasetParts[mask.part] : "未知"}</button></li>)}</ul>
-        {active && <>
-          <label>部位<select aria-label="蒙版部位" disabled={busy} value={active.part} onChange={event => {
-            const part = event.target.value as DatasetPart | "";
-            rememberChange();
-            setDrafts(values => values.map((mask, index) => index === selected ? { ...mask, part } : mask));
-          }}><option value="">未知</option>{Object.entries(datasetParts).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-          <dl>{active.box.map((value, coordinate) => <div key={coordinate}><dt>{["左","上","右","下"][coordinate]}</dt><dd><input type="number" aria-label={"蒙版" + ["左","上","右","下"][coordinate]}
-            value={value} min={0} max={coordinate % 2 === 0 ? image.width : image.height} disabled={busy} onChange={event => {
-              const next = [...active.box] as MosaicBox; next[coordinate] = clamp(Math.round(Number(event.target.value)), 0, coordinate % 2 === 0 ? image.width : image.height); changeBox(next, true);
-            }} /></dd></div>)}</dl>
-          <button type="button" className="unity-btn" disabled={busy} onClick={() => { rememberChange(); setDrafts(values => values.filter((_,index) => index !== selected)); setSelected(0); }}>删除蒙版</button>
-        </>}
-        <button type="button" className="unity-btn unity-btn-primary" disabled={busy || drafts.some(mask => mask.box[2] <= mask.box[0] || mask.box[3] <= mask.box[1])}
-          onClick={() => onSave(drafts)}>保存蒙版与部位</button>
-      </aside>}
+      <button className="unity-btn" type="button" disabled={!canUndo || busy} onClick={onUndo} data-tooltip="撤销标注 · Ctrl+Z">撤销</button>
+      <span className="hint">已标部位 {known} / {drafts.length} 框</span>
+    </header>
+    <div ref={viewport} tabIndex={0} className="training-dataset-canvas" aria-label="可编辑图片画布"
+      onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
+      onPointerDown={event => {
+        if (event.button !== 0 || busy || !bitmap.current?.contains(event.target as Node)) return;
+        const index = (event.target as HTMLElement).closest<HTMLElement>("[data-canvas-mask]")?.dataset.canvasMask;
+        pointerHit.current = index === undefined ? -1 : Number(index);
+        if (index !== undefined) selectMask(Number(index));
+        if (!editable) return;
+        event.preventDefault(); event.currentTarget.focus({ preventScroll:true }); event.currentTarget.setPointerCapture(event.pointerId);
+        partsMenu.current?.hidePopover(); contextMenu.current?.hidePopover();
+        const p = point(event), before = copy(current.current);
+        if (index !== undefined) {
+          const handle = (event.target as HTMLElement).dataset.handle;
+          drag.current = { mode:handle === undefined ? "move" : "resize",index:Number(index),handle:Number(handle),start:p,before,box:[...current.current[Number(index)].box] };
+        } else {
+          const i = current.current.length; display([...current.current,{box:[p[0],p[1],p[0],p[1]],part:""}]); selectMask(i);
+          drag.current = { mode:"draw",index:i,handle:0,start:p,before };
+        }
+      }} onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}
+      onLostPointerCapture={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}>
+      <div ref={bitmap} className="training-dataset-canvas-image" style={{width:image.width*zoom,height:image.height*zoom}}>
+        {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
+        {drafts.map((mask,index) => <span key={index} className="training-dataset-canvas-mask" role="button" tabIndex={0}
+          aria-label={"蒙版 "+(index+1)+"："+(mask.part ? datasetParts[mask.part] : "未知")} aria-pressed={selected === index}
+          data-canvas-mask={index} data-selected={selected === index}
+          style={{left:mask.box[0]*zoom,top:mask.box[1]*zoom,width:(mask.box[2]-mask.box[0])*zoom,height:(mask.box[3]-mask.box[1])*zoom}}
+          onDoubleClick={event => { event.stopPropagation(); choosePart(index,event.clientX,event.clientY); }}
+          onContextMenu={event => {
+            event.preventDefault(); if (!editable || busy) return;
+            selectMask(index); menuPosition(contextMenu.current,event.clientX,event.clientY,88);
+          }} onKeyDown={event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); const r=event.currentTarget.getBoundingClientRect();choosePart(index,r.left,r.bottom); }
+          }}>
+          <b style={{insetBlockEnd:mask.box[1]*zoom < 18 ? "auto" : undefined,insetBlockStart:mask.box[1]*zoom < 18 ? 0 : undefined}}>{index+1} · {mask.part ? datasetParts[mask.part] : "未知"}</b>
+          {editable && selected === index && handles.map(([x,y],handle) => <i key={handle} data-handle={handle} style={{left:x*100+"%",top:y*100+"%"}} />)}
+        </span>)}
+      </div>
     </div>
-    <div ref={menu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="原图操作" style={{ inset: "auto", margin: 0 }}>
-      <button type="button" role="menuitem" onClick={copy}>复制图片</button>
+    <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
+      : saving ? "正在写入工作副本…" : editable ? "拖空白处画框，双击框改部位；改动自动写入 · Ctrl+Z 撤销" : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
+    <section className="training-dataset-regions" aria-label="区域清单">
+      <header><strong>区域清单</strong><div className="training-dataset-actions">
+        <button type="button" className="unity-btn" disabled={!onPrevious || busy} onClick={onPrevious}>上一张</button>
+        <button type="button" className="unity-btn" disabled={!onNext || busy} onClick={onNext}>下一张</button>
+      </div></header>
+      <div ref={table} className="training-dataset-region-table"><table><thead><tr>
+        <th>#</th><th>部位</th><th>左</th><th>上</th><th>右</th><th>下</th><th>操作</th>
+      </tr></thead><tbody>{drafts.map((mask,index) => <tr key={index} data-mask-row={index} aria-selected={selected === index} tabIndex={0}
+        onClick={() => selectMask(index,true)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault();selectMask(index,true); } }}>
+        <td>{index+1}</td><td><select aria-label={"蒙版 "+(index+1)+" 部位"} value={mask.part} disabled={!editable || busy}
+          onChange={event => updatePart(index,event.target.value as DatasetPart | "")}><option value="">未知</option>
+          {Object.entries(datasetParts).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></td>
+        {mask.box.map((coordinate,i) => <td key={i}>{coordinate}</td>)}
+        <td><button type="button" className="unity-btn" disabled={!editable || busy} onClick={event => {event.stopPropagation();remove(index);}}>删除</button></td>
+      </tr>)}</tbody></table>{!drafts.length && <p className="hint">在图上拖动添加蒙版框。</p>}</div>
+    </section>
+    <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
+      onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
+        event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next=event.key==="Home"?0:event.key==="End"?3:(i+(event.key==="ArrowDown"?1:3))%4;buttons[next]?.focus();
+      } }}>
+      {([...Object.entries(datasetParts),["","未知"]] as [DatasetPart | "",string][]).map(([part,label]) => <button key={part} type="button" role="menuitemradio"
+        aria-checked={current.current[selected]?.part === part} onClick={() => updatePart(selectedRef.current,part)}>{label}</button>)}
     </div>
-  </dialog>;
+    <div ref={contextMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="蒙版操作" style={{inset:"auto",margin:0}} onKeyDown={event => event.stopPropagation()}>
+      <button type="button" role="menuitem" onClick={() => {const r=contextMenu.current!.getBoundingClientRect();choosePart(selectedRef.current,r.left,r.top);}}>改部位</button>
+      <button type="button" role="menuitem" onClick={() => remove(selectedRef.current)}>删除框</button>
+    </div>
+  </section>;
 }

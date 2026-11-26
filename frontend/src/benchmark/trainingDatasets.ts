@@ -110,7 +110,7 @@ function boxKey(hash: string, box: MosaicBox) {
   return `${hash}:${JSON.stringify(box)}`;
 }
 
-export function partFor(dataset: TrainingDataset, hash: string, box: MosaicBox) {
+export function partFor(dataset: { parts: Readonly<PartLabels> }, hash: string, box: MosaicBox) {
   const part = dataset.parts[boxKey(hash, box)] ?? (box as MosaicBox & { part?: string }).part;
   return part && Object.hasOwn(datasetParts, part) ? part as DatasetPart : undefined;
 }
@@ -384,16 +384,17 @@ export function saveDatasetMasks(dataset: TrainingDataset, hash: string,
 
 export type DatasetFilters = {
   widthMin: string; widthMax: string; heightMin: string; heightMax: string;
-  source: string; scene: string; masks: "all" | "yes" | "no"; adopted: "all" | "yes" | "no";
+  source: string; scene: string; masks: "all" | "yes" | "no" | "unmarked-parts"; adopted: "all" | "yes" | "no";
 };
 export const emptyDatasetFilters: DatasetFilters = { widthMin: "", widthMax: "", heightMin: "", heightMax: "", source: "", scene: "", masks: "all", adopted: "all" };
-export function matchesDatasetFilters(image: AnnotatedImage, filters: DatasetFilters) {
+export function matchesDatasetFilters(image: AnnotatedImage, filters: DatasetFilters, parts: Readonly<PartLabels> = {}) {
   const ranges = [[image.width, filters.widthMin, filters.widthMax], [image.height, filters.heightMin, filters.heightMax]] as const;
   if (ranges.some(([value,min,max]) => (min !== "" && value < Number(min)) || (max !== "" && value > Number(max)))) return false;
   if (filters.source && !(image.sourceDirectory || image.file).replaceAll("\\","/").toLowerCase().startsWith(filters.source.replaceAll("\\","/").toLowerCase())) return false;
   if (filters.scene && image.scene !== filters.scene) return false;
   const masks = (image.annotation.mosaic?.boxes?.length ?? 0) + (image.annotation.text?.regions?.length ?? image.annotation.text?.initialBoxes?.length ?? 0);
-  if (filters.masks !== "all" && (filters.masks === "yes") !== (masks > 0)) return false;
+  if (filters.masks === "unmarked-parts" && !(image.annotation.mosaic?.boxes ?? []).some(box => !partFor({ parts }, image.sourceHash, box))) return false;
+  if ((filters.masks === "yes" || filters.masks === "no") && (filters.masks === "yes") !== (masks > 0)) return false;
   if (filters.adopted !== "all" && image.adopted !== (filters.adopted === "yes")) return false;
   return true;
 }
@@ -401,21 +402,24 @@ export function matchesDatasetFilters(image: AnnotatedImage, filters: DatasetFil
 export function datasetPartCounts(dataset: TrainingDataset) {
   // images counts distinct images with any confirmed part; category counts
   // count boxes (one image may contain several). Confirmed = male+female+other;
-  // unknown boxes contribute only to masks, not images or confirmed categories.
-  let images = 0, male = 0, female = 0, other = 0, masks = 0;
+  // Unknown boxes stay outside confirmed categories and are counted separately
+  // in unmarkedMasks; noMaskImages counts images without any mosaic box.
+  let images = 0, male = 0, female = 0, other = 0, masks = 0, unmarkedMasks = 0, noMaskImages = 0;
   for (const image of dataset.data.images) {
     let marked = false;
+    if (!image.annotation.mosaic?.boxes?.length) noMaskImages++;
     for (const box of image.annotation.mosaic?.boxes ?? []) {
       masks++;
       const part = partFor(dataset, image.sourceHash, box);
       if (part) marked = true;
+      else unmarkedMasks++;
       if (part === "male_external") male++;
       if (part === "female_external") female++;
       if (part === "other") other++;
     }
     if (marked) images++;
   }
-  return { images, male, female, other, masks };
+  return { images, male, female, other, masks, unmarkedMasks, noMaskImages };
 }
 
 export async function removeDatasetImage(dataset: TrainingDataset, hash: string, writer: DatasetWriter) {

@@ -24,15 +24,15 @@ function SampleBadges({ image, purpose }: { image: AnnotatedImage; purpose: Data
   return <span className="training-dataset-badge" data-state={state}>{datasetVerdictLabels[purpose][state]}</span>;
 }
 
-function SampleDetails({ dataset, image, purpose, busy, onPreview }: {
+function SampleDetails({ dataset, image, purpose, busy, onPreview, showPreview }: {
   dataset: TrainingDataset; image: AnnotatedImage; purpose: DatasetPurpose; busy: boolean;
-  onPreview: (editing: boolean) => void;
+  onPreview: (editing: boolean) => void; showPreview: boolean;
 }) {
   const boxes = purpose === "mosaic" ? image.annotation.mosaic?.boxes ?? []
     : image.annotation.text?.regions?.map(region => region.box) ?? image.annotation.text?.initialBoxes ?? [];
   const parts = (image.annotation.mosaic?.boxes ?? []).map(box => partFor(dataset, image.sourceHash, box));
   return <>
-    <div className="training-dataset-detail-preview" onDoubleClick={() => onPreview(false)}>
+    {showPreview && <><div className="training-dataset-detail-preview" onDoubleClick={() => onPreview(false)}>
       <button type="button" className="training-dataset-detail-picture" aria-label="打开原图" onClick={() => onPreview(false)}>
         <SamplePicture image={image} read={dataset.data.read} />
       </button>
@@ -42,6 +42,7 @@ function SampleDetails({ dataset, image, purpose, busy, onPreview }: {
       {!!dataset.reference.workId && purpose === "mosaic" && <button type="button" className="unity-btn" disabled={busy}
         onClick={() => onPreview(true)}>{boxes.length ? "编辑蒙版" : "添加蒙版"}</button>}
     </div>
+    </>}
     <dl className="training-dataset-detail-fields">
       <div><dt>文件</dt><dd title={image.name}>{image.name}</dd></div>
       <div><dt>尺寸</dt><dd>{image.width} × {image.height}</dd></div>
@@ -61,6 +62,13 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [view, setView] = useState<"datasets" | "training">("datasets");
   const [catalog, setCatalog] = useState(readDatasetCatalog);
   const [dataset, setDataset] = useState<TrainingDataset>();
+  const datasetRef = useRef<TrainingDataset | undefined>(undefined);
+  const maskWrites = useRef<Promise<void>>(Promise.resolve());
+  const maskWriteCount = useRef(0), undoRef = useRef<TrainingDataset[]>([]);
+  function setCurrentDataset(value: TrainingDataset | undefined) { datasetRef.current = value; setDataset(value); }
+  function updateUndoHistory(value: TrainingDataset[] | ((previous: TrainingDataset[]) => TrainingDataset[])) {
+    undoRef.current = typeof value === "function" ? value(undoRef.current) : value; setUndoHistory(undoRef.current);
+  }
   const [purpose, setPurpose] = useState<DatasetPurpose>("mosaic");
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -104,7 +112,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const editable = desktop && !!dataset?.reference.workId;
   const query = search.trim().toLowerCase();
   const images = dataset?.data.images.filter(image => (filter === "all" || datasetVerdict(image.annotation, purpose) === filter) &&
-    (!query || image.file.toLowerCase().includes(query)) && matchesDatasetFilters(image, conditions)) ?? [];
+    (!query || image.file.toLowerCase().includes(query)) && matchesDatasetFilters(image, conditions, dataset?.parts)) ?? [];
   const pages = Math.max(1, Math.ceil(images.length / pageSize));
   const currentPage = Math.min(page, pages - 1);
   const visible = images.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
@@ -159,13 +167,19 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [view, busy, preview, deleting, deletingDataset, renaming, images, focused, layout, currentPage, pageSize, pages, checked]);
-  const targets = checked.size ? checked : new Set(focused ? [focused.sourceHash] : []);
+  const previewImage = dataset?.data.images.find(image => image.id === preview?.image.id);
+  const activeImage = previewImage ?? focused;
+  const imageOrder = new Map(dataset?.data.images.map((image, index) => [image.id, index]));
+  const previewOrder = previewImage ? imageOrder.get(previewImage.id) ?? -1 : -1;
+  const previousImage = [...images].reverse().find(image => (imageOrder.get(image.id) ?? -1) < previewOrder);
+  const nextImage = images.find(image => (imageOrder.get(image.id) ?? -1) > previewOrder);
+  const targets = checked.size ? checked : new Set(activeImage ? [activeImage.sourceHash] : []);
 
   function apply(next: TrainingDataset, select = true) {
-    setDataset(next);
+    setCurrentDataset(next);
     setCatalog(rememberDataset(next.reference));
     if (select) {
-      setUndoHistory([]);
+      updateUndoHistory([]);
       setPurpose(next.reference.purposes[0]);
       setFilter("all");
       setSearch("");
@@ -181,7 +195,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     setError("");
     void operation().then(next => {
       if (!next) return;
-      if (undoable && dataset) setUndoHistory(history => [...history.slice(-99), dataset]);
+      if (undoable && dataset) updateUndoHistory(history => [...history.slice(-99), dataset]);
       apply(next, select);
     })
       .catch(error => setError(String(error).replace(/^Error: /, "")))
@@ -190,7 +204,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
 
   function openReference(reference: DatasetReference) {
     if (reference.path === dataset?.reference.path) return;
-    run("正在打开数据集…", () => openTrainingDataset(reference.path, reference.workId));
+    run("正在打开数据集…", async () => { await maskWrites.current; return openTrainingDataset(reference.path, reference.workId); });
   }
 
   useEffect(() => {
@@ -257,7 +271,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     void removeTrainingDataset(reference).then(remaining => {
       setCatalog(remaining);
       if (dataset?.reference.path === reference.path) {
-        setDataset(undefined); setUndoHistory([]); resetSelection(); setPreview(undefined); setMenuImage(undefined);
+        setCurrentDataset(undefined); updateUndoHistory([]); resetSelection(); setPreview(undefined); setMenuImage(undefined);
       }
       setDeletingDataset(undefined);
       showAppNotice(reference.workId ? "已删除数据集" : "已从列表移除数据集");
@@ -278,41 +292,93 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     run("正在保存标注…", () => saveDatasetLabels(dataset, labelDatasetImages(dataset, targets, purpose, verdict), dataset.parts, writer), false, true);
   }
 
-  function saveMasks(masks: DatasetMask[]) {
-    if (!dataset || !preview || !editable) return;
-    run("正在保存蒙版与部位…", async () => {
-      const next = await saveDatasetMasks(dataset, preview.image.sourceHash, masks, writer);
-      setPreview(undefined);
-      return next;
-    }, false, true);
+  function saveMasks(hash: string, masks: DatasetMask[]): Promise<void> {
+    const owner = datasetRef.current?.reference.path;
+    maskWriteCount.current++;
+    setBusy("正在写入标注…");
+    const write = maskWrites.current.catch(() => {}).then(async () => {
+      const current = datasetRef.current;
+      if (!current || current.reference.path !== owner) throw new Error("数据集已切换，未写入其他工程");
+      const next = await saveDatasetMasks(current, hash, masks, writer);
+      updateUndoHistory(history => [...history.slice(-99), current]);
+      apply(next, false); setError("");
+    });
+    maskWrites.current = write;
+    return write.catch(error => { setError(String(error)); throw error; }).finally(() => {
+      maskWriteCount.current--;
+      if (!maskWriteCount.current) setBusy(current => current === "正在写入标注…" ? "" : current);
+    });
   }
 
   function undoEdit() {
-    const previous = undoHistory.at(-1);
-    if (!dataset || !previous || previous.reference.path !== dataset.reference.path || busyRef.current) return;
+    if (busyRef.current || !datasetRef.current) return;
     run("正在撤销标注…", async () => {
-      const restored = await saveDatasetLabels(dataset, previous.data.annotations.samples, previous.parts, writer);
-      setUndoHistory(history => history.slice(0, -1));
-      return restored;
+      await maskWrites.current.catch(() => {});
+      const current = datasetRef.current, previous = undoRef.current.at(-1);
+      if (!current || !previous || previous.reference.path !== current.reference.path) return;
+      const restored = await saveDatasetLabels(current, previous.data.annotations.samples, previous.parts, writer);
+      updateUndoHistory(history => history.slice(0, -1)); return restored;
     }, false);
   }
 
+  async function returnToGrid() {
+    try { await maskWrites.current; setPreview(undefined); }
+    catch (error) { showAppNotice("标注尚未写入，请先重试：" + String(error), "error"); }
+  }
+
+  async function navigateImage(image: AnnotatedImage) {
+    try {
+      await maskWrites.current;
+      const current = datasetRef.current, actual = current?.data.images.find(item => item.id === image.id);
+      if (!actual || !current) return;
+      const filtered = current.data.images.filter(item => (filter === "all" || datasetVerdict(item.annotation, purpose) === filter) &&
+        (!query || item.file.toLowerCase().includes(query)) && matchesDatasetFilters(item, conditions, current.parts));
+      setPage(Math.floor(Math.max(0, filtered.findIndex(item => item.id === image.id)) / pageSize));
+      setFocusedId(image.id); setPreview({ image: actual, editing: true });
+    } catch (error) { showAppNotice(String(error), "error"); }
+  }
+
+  function annotateParts(reference: DatasetReference) {
+    run("正在打开待标部位图片…", async () => {
+      await maskWrites.current;
+      const next = await openTrainingDataset(reference.path, reference.workId);
+      if (reference.path !== datasetRef.current?.reference.path) updateUndoHistory([]);
+      setPurpose("mosaic"); setFilter("all"); setSearch(""); setConditions({ ...emptyDatasetFilters, masks: "unmarked-parts" });
+      setMore(true); resetSelection(); setPreview(undefined); setView("datasets"); return next;
+    }, false);
+  }
+
+
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (view !== "datasets" || busy || preview || deleting || deletingDataset || renaming || event.isComposing ||
+      if (view !== "datasets" || (busy && busy !== "正在写入标注…") || deleting || deletingDataset || renaming || event.isComposing ||
           !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "z" ||
-          (event.target instanceof Element && event.target.closest("input,textarea,[contenteditable]")) || !undoHistory.length) return;
+          (event.target instanceof Element && event.target.closest("input,textarea,[contenteditable]")) || (!undoHistory.length && !maskWriteCount.current)) return;
       event.preventDefault(); event.stopPropagation(); undoEdit();
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [view, busy, preview, deleting, deletingDataset, renaming, undoHistory, dataset]);
 
+  useEffect(() => {
+    if (!preview || view !== "datasets") return;
+    const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || renaming || deleting || deletingDataset || event.ctrlKey || event.metaKey || event.altKey ||
+          document.querySelector('[popover="auto"]:popover-open')) return;
+      if (event.key === "Escape") { event.preventDefault(); void returnToGrid(); }
+      else if (!(event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable]"))) {
+        if (event.key === "ArrowLeft" && previousImage) { event.preventDefault(); void navigateImage(previousImage); }
+        if (event.key === "ArrowRight" && nextImage) { event.preventDefault(); void navigateImage(nextImage); }
+      }
+    };
+    window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
+  }, [preview, view, renaming, deleting, deletingDataset, previousImage, nextImage]);
+
   function openImageMenu(event: ReactMouseEvent<HTMLElement>, image: AnnotatedImage) {
     if (busy || !imageMenu.current) return;
     event.preventDefault(); event.stopPropagation();
     setMenuImage(image); setFocusedId(image.id);
-    const point = getFixedMenuPoint(event.clientX, event.clientY, 190, 150);
+    const point = getFixedMenuPoint(event.clientX, event.clientY, 190, 190);
     imageMenu.current.style.left = point.x + "px"; imageMenu.current.style.top = point.y + "px";
     imageMenu.current.showPopover();
     imageMenu.current.querySelector("button")?.focus({ preventScroll: true });
@@ -322,7 +388,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     <div className="training-dataset-subnav">
       <div className="game-benchmark-tabs" role="tablist" aria-label="训练与数据集">
         <button type="button" id={`${id}-datasets`} aria-controls={`${id}-dataset-panel`} role="tab" aria-selected={view === "datasets"} onClick={() => setView("datasets")}>数据集</button>
-        <button type="button" id={`${id}-training`} aria-controls={`${id}-training-panel`} role="tab" aria-selected={view === "training"} onClick={() => setView("training")}>训练</button>
+        <button type="button" id={`${id}-training`} aria-controls={`${id}-training-panel`} role="tab" aria-selected={view === "training"} disabled={!!busy} onClick={() => { void maskWrites.current.then(() => setView("training")).catch(error => showAppNotice("请先重试写入标注：" + String(error), "error")); }}>训练</button>
       </div>
       {busy && <span className="hint" role="status">{busy}</span>}
     </div>
@@ -350,12 +416,13 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       <button type="button" className="game-confirm-cancel" disabled={!!busy} onClick={() => setDeletingDataset(undefined)}>取消</button>
       <button type="button" className="game-confirm-accept" disabled={!!busy} onClick={deleteDataset}>确认删除</button>
     </GameDialog>}
-    {renaming && <GameDialog title="重命名数据集" description={renaming.title} disabled={!!busy}
+    {renaming && <GameDialog className="training-dataset-rename-dialog" title="重命名数据集" description={renaming.title} disabled={!!busy}
       onCancel={() => setRenaming(undefined)} details={<form id={`${id}-rename`} onSubmit={event => {
         event.preventDefault(); rename();
       }}>
-        <input aria-label="数据集名称" value={renameTitle} autoFocus required disabled={!!busy}
+        <textarea rows={3} aria-label="数据集名称" value={renameTitle} autoFocus required disabled={!!busy}
           onFocus={event => event.currentTarget.select()} onChange={event => setRenameTitle(event.target.value)} />
+        <p className="hint">当前 {[...renameTitle].length} 个字符</p>
         {error && <p className="training-dataset-error" role="alert">{error}</p>}
       </form>}>
       <button type="submit" form={`${id}-rename`} className="game-confirm-primary"
@@ -363,7 +430,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       <button type="button" className="game-confirm-cancel" disabled={!!busy} onClick={() => setRenaming(undefined)}>取消</button>
     </GameDialog>}
     <div className="training-dataset-placeholder" id={`${id}-training-panel`} role="tabpanel" aria-labelledby={`${id}-training`} hidden={view !== "training"}>
-      <TrainingView onOpenDatasets={() => setView("datasets")} />
+      <TrainingView onOpenDatasets={() => setView("datasets")} onAnnotateParts={annotateParts} />
     </div>
     <div className="training-dataset-data-view" hidden={view !== "datasets"}>
       <div className="training-dataset-toolbar">
@@ -380,10 +447,10 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
           <div className="training-dataset-gallery-controls">
             <input type="search" aria-label="搜索文件名" placeholder="搜索文件名" value={search}
               onChange={event => { setSearch(event.target.value); resetSelection(); }} />
-            <div className="training-dataset-switch" role="group" aria-label="图片视图">
+            {preview ? <button type="button" className="unity-btn" onClick={() => void returnToGrid()}>返回网格</button> : (<div className="training-dataset-switch" role="group" aria-label="图片视图">
               <button type="button" className="unity-btn" aria-pressed={layout === "grid"} onClick={() => setLayout("grid")}>网格</button>
               <button type="button" className="unity-btn" aria-pressed={layout === "list"} onClick={() => setLayout("list")}>列表</button>
-            </div>
+            </div>)}
           </div>
           <span className="training-dataset-filter-count">已启用 {conditionCount} 项筛选</span>
           {conditionCount > 0 && <button type="button" className="unity-btn" onClick={() => {
@@ -402,7 +469,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
             <option value="">全部</option>{scenes.map(scene => <option key={scene}>{scene}</option>)}
           </select></label>}
           <label>蒙版<select aria-label="蒙版筛选" value={conditions.masks} onChange={event => { setConditions({ ...conditions, masks: event.target.value as typeof conditions.masks }); resetSelection(); }}>
-            <option value="all">全部</option><option value="yes">有蒙版</option><option value="no">无蒙版</option>
+            <option value="all">全部</option><option value="yes">有蒙版</option><option value="no">无蒙版</option><option value="unmarked-parts">有蒙版未标部位</option>
           </select></label>
           {hasAdoption && <label>采用<select aria-label="采用筛选" value={conditions.adopted} onChange={event => { setConditions({ ...conditions, adopted: event.target.value as typeof conditions.adopted }); resetSelection(); }}>
             <option value="all">全部</option><option value="yes">已采用</option><option value="no">未采用</option>
@@ -476,7 +543,14 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
         onPointerCancel={() => { resizeOrigin.current = undefined; setResizing(false); }}
         onLostPointerCapture={() => { resizeOrigin.current = undefined; setResizing(false); }} />
       <div className="training-dataset-gallery">
-        {dataset && visible.length ? <ul ref={list} tabIndex={0} aria-label="数据集图片" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space Enter" className="training-dataset-images" data-layout={layout}>
+        {previewImage && dataset ? <TrainingDatasetImage key={previewImage.id}
+          image={previewImage} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={busyRef.current}
+          readOnlyHint={dataset.reference.workId && purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
+          masks={(previewImage.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, previewImage.sourceHash, box) ?? "" }))}
+          onChange={masks => saveMasks(previewImage.sourceHash, masks)} onUndo={undoEdit} canUndo={!!undoHistory.length}
+          onPrevious={previousImage ? () => void navigateImage(previousImage) : undefined}
+          onNext={nextImage ? () => void navigateImage(nextImage) : undefined} />
+          : dataset && visible.length ? <ul ref={list} tabIndex={0} aria-label="数据集图片" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space Enter" className="training-dataset-images" data-layout={layout}>
           {visible.map(image => <li key={image.id} className="training-dataset-tile" data-active={focused?.id === image.id} onContextMenu={event => openImageMenu(event, image)}>
             <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={focused?.id === image.id ? 0 : -1} onDoubleClick={() => setPreview({ image, editing: false })} aria-pressed={focused?.id === image.id} onClick={() => setFocusedId(image.id)}>
               <span className="training-dataset-thumbnail"><SamplePicture image={image} read={dataset.data.read} /></span>
@@ -486,7 +560,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               onChange={event => toggleChecked([image.sourceHash], event.target.checked)} />
           </li>)}
         </ul> : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "选择数据集后查看图片。"}</p>}
-          <nav className="training-dataset-pagination" aria-label="数据集分页">
+          {!preview && <nav className="training-dataset-pagination" aria-label="数据集分页">
             <div className="training-dataset-actions">
               <label><input type="checkbox" disabled={!visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
                 onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />选择本页</label>
@@ -502,13 +576,13 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               }}>{Array.from({ length: pages }, (_, index) => <option value={index} key={index}>第 {images.length ? index + 1 : 0} / {images.length ? pages : 0} 页</option>)}</select>
               <button type="button" className="unity-btn" disabled={currentPage + 1 >= pages} onClick={() => { setPage(currentPage + 1); setFocusedId(""); }}>下一页</button>
             </div>
-          </nav>
+          </nav>}
       </div>
       <aside className="training-dataset-details" aria-label="图片详情">
         <section>
           <h3>图片详情</h3>
-          {dataset && focused ? <SampleDetails key={`${dataset.reference.path}:${focused.id}:${purpose}`} dataset={dataset}
-            image={focused} purpose={purpose} busy={!!busy} onPreview={editing => setPreview({ image: focused, editing })} />
+          {dataset && activeImage ? <SampleDetails key={`${dataset.reference.path}:${activeImage.id}:${purpose}`} dataset={dataset}
+            image={activeImage} purpose={purpose} busy={!!busy} showPreview={!preview} onPreview={editing => setPreview({ image: activeImage, editing })} />
             : <p className="training-dataset-empty hint">选择图片后查看标注。</p>}
         </section>
         <section>
@@ -524,6 +598,9 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
     </div>
     </div>
     <div ref={imageMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="样本图片操作" style={{ inset: "auto", margin: 0 }}>
+      <button type="button" role="menuitem" onClick={() => {
+        imageMenu.current?.hidePopover(); if (menuImage) { setFocusedId(menuImage.id); setPreview({ image: menuImage, editing: false }); }
+      }}>查看大图</button>
       <button type="button" role="menuitem" onClick={() => {
         imageMenu.current?.hidePopover();
         if (dataset && menuImage) void copyDatasetPicture(menuImage, dataset.data.read).catch(error => showAppNotice(String(error), "error"));
@@ -545,15 +622,11 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
         const image = deleting;
         run("正在删除图片…", async () => {
           const next = await removeDatasetImage(dataset, image.sourceHash, writer);
-          setUndoHistory([]);
+          updateUndoHistory([]);
           setDeleting(undefined); setChecked(values => new Set([...values].filter(hash => hash !== image.sourceHash)));
           return next;
         }, false);
       }}>删除</button>
     </GameDialog>}
-    {preview && dataset && <TrainingDatasetImage key={preview.image.id + String(preview.editing)}
-      image={preview.image} read={dataset.data.read} editing={preview.editing} busy={!!busy} onClose={() => setPreview(undefined)}
-      masks={(preview.image.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, preview.image.sourceHash, box) ?? "" }))}
-      onSave={saveMasks} />}
   </section>;
 }

@@ -3,8 +3,9 @@ import { TrainingPythonSettings, type TrainingStorage } from "./TrainingPythonSe
 import { useTrainingPython, useTrainingEnvironmentDirectory, readTrainingPython, readTrainingEnvironmentDirectory, saveTrainingPython } from "../trainingPythonSettings";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useId, useRef, useState } from "react";
-import { readDatasetCatalog, openTrainingDataset, datasetPartCounts } from "../benchmark/trainingDatasets";
+import { readDatasetCatalog, openTrainingDataset, datasetPartCounts, type DatasetReference } from "../benchmark/trainingDatasets";
 import { TrainingResults } from "./TrainingResults";
+import { SearchableSelect } from "./SearchableSelect";
 import { readableTrainingLog, type TrainingRun } from "../benchmark/trainingResults";
 
 type TrainingEvent = { runId: string; state: string; phase: string; current: number; total: number; message: string; outputDir: string };
@@ -22,7 +23,7 @@ const classifiers = [
   { name: "复筛模型", hint: "复核候选区域与漏检", trainable: false },
 ];
 
-export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void }) {
+export function TrainingView({ onOpenDatasets, onAnnotateParts }: { onOpenDatasets: () => void; onAnnotateParts: (reference: DatasetReference) => void }) {
   const catalog = readDatasetCatalog();
   const datasets = catalog.filter(item => item.workId);
   const readOnlyCount = catalog.length - datasets.length;
@@ -165,15 +166,20 @@ export function TrainingView({ onOpenDatasets }: { onOpenDatasets: () => void })
       {classifier !== 0 ? <p className="hint">此模型用于{classifier === 1 ? "初筛检测" : "视觉复筛"}，当前仅支持查看用途。</p> : <>
         <section className="training-config-group" aria-label="数据集配置"><h3>数据集</h3>
         <fieldset disabled={running || checking || installing} className="training-run-fields">
-          <label>数据集<select value={dataset} onChange={e => setDataset(e.target.value)}>
+          <label className="training-dataset-picker"><SearchableSelect aria-label="训练数据集" title={selectedDataset?.title} value={dataset} onChange={e => setDataset(e.target.value)}>
             {!datasets.length && <option value="">请先创建数据集工作副本</option>}
             {datasets.map(item => <option key={item.workId} value={item.workId}>
-              {item.title} · {item.count} 张 · {maskCounts[item.path] ? String(maskCounts[item.path]?.masks) + " 蒙版" : "读取中或读取失败"}
+              {item.title}
             </option>)}
-          </select></label>
+          </SearchableSelect></label>
           {readOnlyCount > 0 && <p className="hint">另有 {readOnlyCount} 个只读数据集，只读数据集不参与训练。可在数据集页新建标注副本。</p>}
-          {selectedCounts && <p className="hint" aria-label="部位标注统计">已标注 {selectedCounts.images} 张（{selectedCounts.male + selectedCounts.female + selectedCounts.other} 个已确认框：男 {selectedCounts.male} / 女 {selectedCounts.female} / 其他 {selectedCounts.other}）</p>}
-          {!!datasets.length && selectedCounts && !hasBothClasses && <p className="training-dataset-error">至少需要男女两类才能训练</p>}
+          {selectedDataset && selectedCounts && <>
+            <p className="hint" aria-label="数据集样本统计">{selectedDataset.count} 张 · {selectedCounts.masks} 蒙版 · 已标部位 {selectedCounts.male + selectedCounts.female + selectedCounts.other} 框 · 待标部位 {selectedCounts.unmarkedMasks} 框</p>
+            <div className="training-part-next"><span className="hint">男 {selectedCounts.male} / 女 {selectedCounts.female} / 其他 {selectedCounts.other} · 无框 {selectedCounts.noMaskImages} 张</span>
+              <button type="button" className="unity-btn" onClick={() => onAnnotateParts(selectedDataset)}>去标注部位</button>
+            </div>
+          </>}
+          {!!datasets.length && selectedCounts && !hasBothClasses && <p className="training-dataset-error">至少需要男女两类才能训练 · 点「去标注部位」</p>}
           {!datasets.length && <div className="training-empty-dataset">
             <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「新建标注副本」创建，并至少标注男、女两类。</p>
             <button type="button" className="unity-btn" onClick={onOpenDatasets}>去数据集页创建</button>
