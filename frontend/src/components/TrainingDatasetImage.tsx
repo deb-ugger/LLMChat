@@ -22,7 +22,7 @@ export function useSamplePicture(image: AnnotatedImage, read: AnnotatedSampleSet
       setPicture({ blob, url, failed: false });
     }).catch(() => { if (!controller.signal.aborted) setPicture({ url: "", failed: true }); });
     return () => { controller.abort(); if (url) URL.revokeObjectURL(url); };
-  }, [image.sourceHash, read]);
+  }, [image.id, image.sourceHash, read]);
   return picture;
 }
 
@@ -170,7 +170,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     if (gesture.mode === "draw") choosePart(gesture.index,event.clientX,event.clientY);
   }
   const known = drafts.filter(mask => !!mask.part).length;
-  return <section className="training-dataset-editor" aria-label="图片标注" onKeyDown={event => {
+  return <section className="training-dataset-editor" style={{ flex: "1 1 0" }} aria-label="图片标注" onKeyDown={event => {
     if (partsMenu.current?.matches(":popover-open") || contextMenu.current?.matches(":popover-open")) return;
     if (event.key === "Delete" && !(event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable]"))) {
       event.preventDefault(); event.stopPropagation(); remove(selectedRef.current);

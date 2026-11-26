@@ -54,9 +54,10 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const [conditions, setConditions] = useState({ ...emptyDatasetFilters });
   const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLUListElement>(null), workspaceRef = useRef<HTMLDivElement>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
-  const listMaxWidth = workspaceWidth > 0 ? Math.min(560, Math.floor(workspaceWidth * 0.55)) : 560;
+  const listMaxWidth = workspaceWidth > 0
+    ? Math.max(0, Math.min(900, Math.floor(workspaceWidth * 0.65), workspaceWidth - 420 - 16)) : 900;
   const listMinWidth = Math.min(200, listMaxWidth);
-  const listWidth = usePersistedWidth("llmchat-training-dataset-list-width", 320, listMinWidth, listMaxWidth, "guide");
+  const listWidth = usePersistedWidth("llmchat-training-dataset-list-width", 320, listMinWidth, listMaxWidth, "live");
   useLayoutEffect(() => {
     const element = workspaceRef.current;
     if (!element) return;
@@ -477,7 +478,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       </div>
       <div ref={workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
         style={{ ["--training-dataset-list-width" as string]: `${listWidth.width}px` }}>
-        <aside className="training-dataset-image-list" id={id + "-image-list"} aria-label="图片列表">
+        <aside className="training-dataset-image-list" style={{ maxInlineSize: listMaxWidth }} id={id + "-image-list"} aria-label="图片列表">
           <header className="training-dataset-list-head">
             <h3>图片列表</h3>
             <span className="training-dataset-range" aria-live="polite">
@@ -552,7 +553,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
           }} />
         <div className="training-dataset-detail">
           {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
-            image={focused} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={busyRef.current}
+            image={focused} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked}
             readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
             masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
             onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
