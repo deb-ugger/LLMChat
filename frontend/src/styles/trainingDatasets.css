@@ -379,9 +379,9 @@
 .training-dataset-sample:hover:not(:disabled) { background: var(--bg-hover); }
 .training-dataset-sample:disabled { cursor: default; }
 .training-dataset-sample:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
-.training-dataset-tile[data-active=true] { background: color-mix(in srgb, var(--dataset-selection) 10%, var(--bg)); }
+.training-dataset-tile[data-active=true] { background: color-mix(in srgb, #fff 10%, var(--bg)); }
 .training-dataset-images[data-layout=list] .training-dataset-tile[data-active=true] {
-  box-shadow: inset 2px 0 var(--dataset-selection);
+  box-shadow: inset 2px 0 #fff;
 }
 .training-dataset-thumbnail {
   display: grid;
@@ -423,7 +423,10 @@
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-active=true] { border-color: var(--dataset-selection); }
+.training-dataset-images[data-layout=thumbnails] .training-dataset-tile[data-active=true] {
+  border-color: #fff;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 28%, transparent);
+}
 .training-dataset-images[data-layout=thumbnails] .training-dataset-sample {
   grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
   gap: 0;
@@ -597,12 +600,49 @@
   min-block-size: min(280px, 42vh);
   position: relative;
   margin: 10px 12px 0;
-  overflow: auto;
+  overflow: hidden;
   touch-action: none;
   overscroll-behavior: contain;
   background: var(--dataset-stage);
   border: 1px solid color-mix(in srgb, var(--dataset-stage) 65%, var(--text-muted));
   border-radius: var(--radius-sm);
+  scrollbar-width: none;
+}
+.training-dataset-canvas::-webkit-scrollbar { display: none; }
+.training-dataset-canvas .game-mosaic-mask.is-selected {
+  fill: color-mix(in srgb, #fff 24%, transparent);
+  stroke: #fff;
+}
+.training-dataset-canvas .game-mosaic-resize-corner { stroke: #fff; }
+.training-dataset-canvas-minimap {
+  position: absolute;
+  inset-block-end: 10px;
+  inset-inline-end: 10px;
+  z-index: 7;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  box-shadow: 0 4px 14px #0003;
+  cursor: crosshair;
+  touch-action: none;
+}
+.training-dataset-minimap-image {
+  position: relative;
+  display: block;
+  line-height: 0;
+  overflow: hidden;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: var(--bg-muted);
+}
+.training-dataset-minimap-image > img { display: block; inline-size: 100%; block-size: 100%; object-fit: fill; pointer-events: none; }
+.training-dataset-minimap-viewport {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #000 55%, transparent);
+  pointer-events: none;
 }
 .training-dataset-canvas:focus-visible { outline:2px solid var(--signal);outline-offset:-2px; }
 .training-dataset-canvas-track { display:grid;place-items:center;inline-size:max-content;block-size:max-content;min-inline-size:100%;min-block-size:100%;padding:12px;box-sizing:border-box; }

@@ -1,7 +1,7 @@
 import { Image as NativeImage } from "@tauri-apps/api/image";
 import { isTauri } from "@tauri-apps/api/core";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import type { AnnotatedImage, AnnotatedSampleSet } from "../benchmark/imageSampleSet";
 import { datasetParts, type DatasetPart } from "../benchmark/trainingDatasets";
 import type { MosaicBox } from "../gameMosaic";
@@ -54,6 +54,23 @@ export async function copyDatasetPicture(image: AnnotatedImage, read: AnnotatedS
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const rectangle = (a: number[], b: number[]): MosaicBox => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+const minimapMax = 120;
+
+type CanvasLayout = { L: number; T: number; W: number; H: number };
+
+function clampCanvasScroll(view: HTMLDivElement, layout: CanvasLayout) {
+  const { L, T, W, H } = layout;
+  const vw = view.clientWidth, vh = view.clientHeight;
+  const axis = (value: number, min: number, max: number, limit: number, port: number) => {
+    const next = min > max ? (min + max) / 2 : clamp(value, min, max);
+    return clamp(next, 0, Math.max(0, limit - port));
+  };
+  const s = axis(view.scrollLeft, L + 0.5 * W - vw, L + 0.5 * W, view.scrollWidth, vw);
+  const t = axis(view.scrollTop, T + 0.5 * H - vh, T + 0.5 * H, view.scrollHeight, vh);
+  if (s !== view.scrollLeft) view.scrollLeft = s;
+  if (t !== view.scrollTop) view.scrollTop = t;
+  return { left: s, top: t };
+}
 
 export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onRedo, canRedo, onContextMenu, readOnlyHint }: {
   image: AnnotatedImage; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean;
@@ -71,6 +88,8 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   const zoom = manualZoom ?? fit;
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [panScroll, setPanScroll] = useState({ left: 0, top: 0 });
+  const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>();
   const anchor = useRef<{ x: number; y: number; clientX: number; clientY: number } | undefined>(undefined);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | undefined>(undefined);
   const [tool, setTool] = useState<"add" | "select">("select");
@@ -98,6 +117,43 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
     return () => observer.disconnect();
   }, [image.width, image.height]);
+  function measureCanvasLayout(): CanvasLayout | undefined {
+    const imageEl = bitmap.current;
+    if (!imageEl) return;
+    return { L: imageEl.offsetLeft, T: imageEl.offsetTop, W: image.width * zoomRef.current, H: image.height * zoomRef.current };
+  }
+  function syncCanvasScroll() {
+    const view = viewport.current;
+    if (!view) return;
+    const layout = measureCanvasLayout();
+    if (!layout) return;
+    setPanScroll(clampCanvasScroll(view, layout));
+    setCanvasLayout(layout);
+  }
+  function panToImagePoint(nx: number, ny: number) {
+    const view = viewport.current, layout = measureCanvasLayout();
+    if (!view || !layout) return;
+    const { L, T, W, H } = layout;
+    view.scrollLeft = L + nx * W - view.clientWidth / 2;
+    view.scrollTop = T + ny * H - view.clientHeight / 2;
+    syncCanvasScroll();
+  }
+  const minimap = useMemo(() => {
+    if (!canvasLayout || !picture.url) return undefined;
+    const { L, T, W, H } = canvasLayout;
+    const vw = viewportSize.width, vh = viewportSize.height;
+    if (!vw || !vh || !W || !H) return undefined;
+    const scale = minimapMax / Math.max(W, H);
+    const mapW = W * scale, mapH = H * scale;
+    const { left: s, top: t } = panScroll;
+    const iL = Math.max(L, s), iT = Math.max(T, t);
+    const iR = Math.min(L + W, s + vw), iB = Math.min(T + H, t + vh);
+    const iW = Math.max(0, iR - iL), iH = Math.max(0, iB - iT);
+    return {
+      mapW, mapH, url: picture.url,
+      view: { left: (iL - L) / W * mapW, top: (iT - T) / H * mapH, width: iW / W * mapW, height: iH / H * mapH },
+    };
+  }, [canvasLayout, panScroll, viewportSize, picture.url]);
   function changeZoom(value: number, clientX?: number, clientY?: number) {
     const view = viewport.current, imageElement = bitmap.current;
     if (!view || !imageElement || drag.current || pan.current) return;
@@ -124,6 +180,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       view.scrollLeft = (view.scrollWidth - view.clientWidth) / 2;
       view.scrollTop = (view.scrollHeight - view.clientHeight) / 2;
     }
+    syncCanvasScroll();
   }, [zoom, viewportSize]);
   useEffect(() => {
     const view = viewport.current;
@@ -161,6 +218,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       else if (right > view.scrollLeft+view.clientWidth) view.scrollLeft = right-view.clientWidth+12;
       if (top < view.scrollTop) view.scrollTop = Math.max(0,top-12);
       else if (bottom > view.scrollTop+view.clientHeight) view.scrollTop = bottom-view.clientHeight+12;
+      syncCanvasScroll();
     });
   }
   function menuPosition(menu: HTMLDivElement | null, x: number, y: number, height: number) {
@@ -205,7 +263,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   function move(event: PointerEvent) {
     if (pan.current && viewport.current) {
       viewport.current.scrollLeft = pan.current.left - (event.clientX - pan.current.x);
-      viewport.current.scrollTop = pan.current.top - (event.clientY - pan.current.y); return;
+      viewport.current.scrollTop = pan.current.top - (event.clientY - pan.current.y);
+      syncCanvasScroll();
+      return;
     }
     const gesture = drag.current;
     if (!gesture) return;
@@ -296,7 +356,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     </header>
     <div className="training-dataset-editor-main">
     <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
-    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing && !hasSelection ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onContextMenu={onContextMenu}
+    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing && !hasSelection ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => syncCanvasScroll()} onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
         pointerHit.current = -1;
@@ -327,7 +387,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
           drag.current = { mode:"draw",index:i,handle:0,start:p,before };
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}>
-      <div className="training-dataset-canvas-track" style={{ paddingInline: viewportSize.width, paddingBlock: viewportSize.height }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{width:image.width*zoom,height:image.height*zoom}}>
+      <div className="training-dataset-canvas-track" style={{ paddingInline: viewportSize.width, paddingBlock: viewportSize.height }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: image.width * zoom, height: image.height * zoom, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         <svg viewBox={`0 0 ${image.width} ${image.height}`} className={editable ? "is-editing" : undefined} aria-label="去码蒙版"
           style={tool === "select" ? { cursor: panning ? "grabbing" : "grab" } : undefined}>
@@ -347,6 +407,21 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         </svg>
       </div></div>
     </div>
+      {minimap && <div className="training-dataset-canvas-minimap" role="img" aria-label="画布导航"
+        onPointerDown={event => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          const inner = event.currentTarget.querySelector(".training-dataset-minimap-image")!.getBoundingClientRect();
+          panToImagePoint(clamp((event.clientX - inner.left) / inner.width, 0, 1), clamp((event.clientY - inner.top) / inner.height, 0, 1));
+        }}>
+        <span className="training-dataset-minimap-image" style={{ width: minimap.mapW, height: minimap.mapH }}>
+          <img src={minimap.url} alt="" draggable={false} />
+          <span className="training-dataset-minimap-viewport" style={{
+            left: minimap.view.left, top: minimap.view.top, width: minimap.view.width, height: minimap.view.height,
+          }} aria-hidden="true" />
+        </span>
+      </div>}
       <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
         onDoubleClick={event => event.stopPropagation()}>
         {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
