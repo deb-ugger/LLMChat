@@ -34,15 +34,16 @@ function BitmapPreview({ view, title, zoom }: { view: GameImageView & { src?: st
   </div>;
 }
 
-export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, onPrevious, onNext, onClose, onDetails }: {
+export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, onPrevious, onNext, onClose, onDetails, closeOnEscape = true }: {
   title: string;
   views: GameImageViews;
   initialIndex?: number;
-  resultLabel: "译图" | "去码结果";
+  resultLabel?: "译图" | "去码结果";
   onPrevious?: (showResult: boolean) => void;
   onNext?: (showResult: boolean) => void;
   onClose: () => void;
   onDetails?: () => void;
+  closeOnEscape?: boolean;
 }) {
   const [index, setIndex] = useState(initialIndex);
   const [fit, setFit] = useState(1);
@@ -101,14 +102,14 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
           !["Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") { if (closeOnEscape) onClose(); }
       else if (event.key === "ArrowUp") onPrevious?.(showResult);
       else if (event.key === "ArrowDown") onNext?.(showResult);
       else selectView(event.key === "ArrowRight");
     };
     window.addEventListener("keydown", handleKey, true);
     return () => window.removeEventListener("keydown", handleKey, true);
-  }, [onClose, onPrevious, onNext, selectView, showResult]);
+  }, [onClose, onPrevious, onNext, selectView, showResult, closeOnEscape]);
 
   const endPan = (pointer: number) => {
     if (pan.current?.pointer !== pointer) return;
@@ -116,7 +117,7 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
     setPanning(false);
   };
   return createPortal(<div className="unity-original-viewer" role="dialog" aria-label={"查看" + view.label}
-    aria-modal="true" aria-keyshortcuts="Escape ArrowLeft ArrowRight ArrowUp ArrowDown"
+    aria-modal="true" aria-keyshortcuts={(closeOnEscape ? "Escape " : "") + "ArrowLeft ArrowRight ArrowUp ArrowDown"}
     onPointerDown={event => event.stopPropagation()} onClick={event => {
       event.stopPropagation();
       if (event.target === event.currentTarget) onClose();
@@ -126,16 +127,18 @@ export function GameImageViewer({ title, views, initialIndex = 0, resultLabel, o
       <div className="unity-original-viewer-header">
         <strong>{title}</strong>
         <div className="unity-image-button-group">
-          <button type="button" className="unity-btn" disabled={!onPrevious} aria-keyshortcuts="ArrowUp"
-            data-tooltip="上一张（↑）" onClick={() => onPrevious?.(showResult)}>上一张</button>
-          <button type="button" className="unity-btn" disabled={!onNext} aria-keyshortcuts="ArrowDown"
-            data-tooltip="下一张（↓）" onClick={() => onNext?.(showResult)}>下一张</button>
-          <button type="button" className="unity-btn" disabled={!hasResult} aria-keyshortcuts={showResult ? "ArrowLeft" : "ArrowRight"}
-            data-tooltip={switchLabel + (showResult ? "（←）" : "（→）")} onClick={() => selectView(!showResult)}>{switchLabel}</button>
+          {(resultLabel || onPrevious || onNext) && <>
+            <button type="button" className="unity-btn" disabled={!onPrevious} aria-keyshortcuts="ArrowUp"
+              data-tooltip="上一张（↑）" onClick={() => onPrevious?.(showResult)}>上一张</button>
+            <button type="button" className="unity-btn" disabled={!onNext} aria-keyshortcuts="ArrowDown"
+              data-tooltip="下一张（↓）" onClick={() => onNext?.(showResult)}>下一张</button>
+          </>}
+          {resultLabel && <button type="button" className="unity-btn" disabled={!hasResult} aria-keyshortcuts={showResult ? "ArrowLeft" : "ArrowRight"}
+            data-tooltip={switchLabel + (showResult ? "（←）" : "（→）")} onClick={() => selectView(!showResult)}>{switchLabel}</button>}
           <button type="button" className="unity-btn" data-tooltip="缩小" aria-label="缩小图片" onClick={() => setChosenZoom(Math.max(.01, zoom / 1.2))}>−</button>
           <button type="button" className="unity-btn" data-tooltip="恢复原始比例" aria-label="恢复原始比例" onClick={() => setChosenZoom(1)}>{Math.round(zoom * 100)}%</button>
           <button type="button" className="unity-btn" data-tooltip="放大" aria-label="放大图片" onClick={() => setChosenZoom(Math.min(8, zoom * 1.2))}>+</button>
-          <button type="button" className="unity-btn unity-viewer-close" data-tooltip="关闭（Esc）" aria-label="关闭图片" autoFocus onClick={onClose}>×</button>
+          <button type="button" className="unity-btn unity-viewer-close" data-tooltip={closeOnEscape ? "关闭（Esc）" : "关闭"} aria-label="关闭图片" autoFocus onClick={onClose}>×</button>
         </div>
       </div>
       <div ref={body} className={"unity-original-viewer-body" + (panning ? " is-panning" : "")} onScroll={event => {

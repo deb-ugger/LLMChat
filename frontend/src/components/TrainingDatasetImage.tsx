@@ -1,7 +1,7 @@
 import { Image as NativeImage } from "@tauri-apps/api/image";
 import { isTauri } from "@tauri-apps/api/core";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import type { AnnotatedImage, AnnotatedSampleSet } from "../benchmark/imageSampleSet";
 import { datasetParts, type DatasetPart } from "../benchmark/trainingDatasets";
 import type { MosaicBox } from "../gameMosaic";
@@ -53,10 +53,10 @@ export async function copyDatasetPicture(image: AnnotatedImage, read: AnnotatedS
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const rectangle = (a: number[], b: number[]): MosaicBox => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
 
-export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onPrevious, onNext, readOnlyHint }: {
+export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onPreview, onContextMenu, readOnlyHint }: {
   image: AnnotatedImage; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean;
   onChange: (masks: DatasetMask[]) => Promise<void>; onUndo: () => void; canUndo: boolean;
-  onPrevious?: () => void; onNext?: () => void; readOnlyHint?: string;
+  onPreview: () => void; onContextMenu: (event: MouseEvent<HTMLDivElement>) => void; readOnlyHint?: string;
 }) {
   const picture = useSamplePicture(image, read);
   const viewport = useRef<HTMLDivElement>(null), bitmap = useRef<HTMLDivElement>(null), table = useRef<HTMLDivElement>(null);
@@ -80,10 +80,12 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   useLayoutEffect(() => {
     const element = viewport.current;
     if (!element) return;
-    const measure = () => setFit(element.clientWidth / image.width);
+    const measure = () => setFit(Math.max(.01, Math.min(
+      (element.offsetWidth - 26) / image.width, (element.offsetHeight - 26) / image.height,
+    )));
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
     return () => observer.disconnect();
-  }, [image.width]);
+  }, [image.width, image.height]);
   function persist(values: DatasetMask[]) {
     const next = copy(values); display(next); pending.current++; setSaving(true);
     void onChange(next).then(() => setError("")).catch(cause => {
@@ -96,7 +98,8 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       const row = table.current?.querySelector<HTMLElement>('[data-mask-row="' + index + '"]');
       if (row && table.current) {
         const r = row.getBoundingClientRect(), v = table.current.getBoundingClientRect();
-        if (r.top < v.top) table.current.scrollTop += r.top - v.top;
+        const top = v.top + (table.current.querySelector("thead")?.getBoundingClientRect().height ?? 0);
+        if (r.top < top) table.current.scrollTop += r.top - top;
         else if (r.bottom > v.bottom) table.current.scrollTop += r.bottom - v.bottom;
       }
       const mask = current.current[index], view = viewport.current, picture = bitmap.current;
@@ -167,26 +170,31 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     if (gesture.mode === "draw") choosePart(gesture.index,event.clientX,event.clientY);
   }
   const known = drafts.filter(mask => !!mask.part).length;
-  return <section className="training-dataset-editor" aria-label="图片标注详情" onKeyDown={event => {
+  return <section className="training-dataset-editor" aria-label="图片标注" onKeyDown={event => {
     if (partsMenu.current?.matches(":popover-open") || contextMenu.current?.matches(":popover-open")) return;
     if (event.key === "Delete" && !(event.target instanceof Element && event.target.closest("input,textarea,select,[contenteditable]"))) {
       event.preventDefault(); event.stopPropagation(); remove(selectedRef.current);
     }
   }}>
     <header className="training-dataset-editor-tools">
-      <strong title={image.name}>{image.name}</strong>
+      <div className="training-dataset-editor-identity">
+        <strong title={image.sourceDirectory || image.file}>{image.name}</strong>
+        <span>{image.width} × {image.height}</span>
+      </div>
       <div className="training-dataset-zoom">
+        <button className="unity-btn" type="button" aria-label="缩小标注画布" onClick={() => setManualZoom(Math.max(.01, zoom - Math.min(.25, zoom * .25)))}>−</button>
         <button className="unity-btn" type="button" aria-label="恢复100%比例" onClick={() => setManualZoom(1)}>{Math.round(zoom*100)}%</button>
-        <button className="unity-btn" type="button" aria-label="缩小标注画布" onClick={() => setManualZoom(Math.max(.25,zoom-.25))}>−</button>
-        <button className="unity-btn" type="button" aria-label="放大标注画布" onClick={() => setManualZoom(zoom+.25)}>+</button>
+        <button className="unity-btn" type="button" aria-label="放大标注画布" onClick={() => setManualZoom(zoom + Math.min(.25, zoom * .25))}>+</button>
         <button className="unity-btn" type="button" aria-pressed={manualZoom === undefined} onClick={() => setManualZoom(undefined)}>适应</button>
       </div>
       <button className="unity-btn" type="button" disabled={!canUndo || busy} onClick={onUndo} data-tooltip="撤销标注 · Ctrl+Z">撤销</button>
+      <button className="unity-btn" type="button" onClick={onPreview}>查看原图</button>
       <span className="hint">已标部位 {known} / {drafts.length} 框</span>
     </header>
-    <div ref={viewport} tabIndex={0} className="training-dataset-canvas" aria-label="可编辑图片画布"
+    <div ref={viewport} tabIndex={0} className="training-dataset-canvas" aria-label="图片画布" onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
+        pointerHit.current = -1;
         if (event.button !== 0 || busy || !bitmap.current?.contains(event.target as Node)) return;
         const index = (event.target as HTMLElement).closest<HTMLElement>("[data-canvas-mask]")?.dataset.canvasMask;
         pointerHit.current = index === undefined ? -1 : Number(index);
@@ -204,7 +212,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}
       onLostPointerCapture={() => { if (drag.current) display(drag.current.before); drag.current = undefined; }}>
-      <div ref={bitmap} className="training-dataset-canvas-image" style={{width:image.width*zoom,height:image.height*zoom}}>
+      <div className="training-dataset-canvas-track"><div ref={bitmap} className="training-dataset-canvas-image" style={{width:image.width*zoom,height:image.height*zoom}}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         {drafts.map((mask,index) => <span key={index} className="training-dataset-canvas-mask" role="button" tabIndex={0}
           aria-label={"蒙版 "+(index+1)+"："+(mask.part ? datasetParts[mask.part] : "未知")} aria-pressed={selected === index}
@@ -212,23 +220,20 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
           style={{left:mask.box[0]*zoom,top:mask.box[1]*zoom,width:(mask.box[2]-mask.box[0])*zoom,height:(mask.box[3]-mask.box[1])*zoom}}
           onDoubleClick={event => { event.stopPropagation(); choosePart(index,event.clientX,event.clientY); }}
           onContextMenu={event => {
-            event.preventDefault(); if (!editable || busy) return;
+            if (!editable || busy) return;
+            event.preventDefault(); event.stopPropagation();
             selectMask(index); menuPosition(contextMenu.current,event.clientX,event.clientY,88);
           }} onKeyDown={event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); const r=event.currentTarget.getBoundingClientRect();choosePart(index,r.left,r.bottom); }
           }}>
-          <b style={{insetBlockEnd:mask.box[1]*zoom < 18 ? "auto" : undefined,insetBlockStart:mask.box[1]*zoom < 18 ? 0 : undefined}}>{index+1} · {mask.part ? datasetParts[mask.part] : "未知"}</b>
+          <b>{index+1} {mask.part ? datasetParts[mask.part] : "未知"}</b>
           {editable && selected === index && handles.map(([x,y],handle) => <i key={handle} data-handle={handle} style={{left:x*100+"%",top:y*100+"%"}} />)}
         </span>)}
-      </div>
+      </div></div>
     </div>
     <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
       : saving ? "正在写入工作副本…" : editable ? "拖空白处画框，双击框改部位；改动自动写入 · Ctrl+Z 撤销" : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <section className="training-dataset-regions" aria-label="区域清单">
-      <header><strong>区域清单</strong><div className="training-dataset-actions">
-        <button type="button" className="unity-btn" disabled={!onPrevious || busy} onClick={onPrevious}>上一张</button>
-        <button type="button" className="unity-btn" disabled={!onNext || busy} onClick={onNext}>下一张</button>
-      </div></header>
       <div ref={table} className="training-dataset-region-table"><table><thead><tr>
         <th>#</th><th>部位</th><th>左</th><th>上</th><th>右</th><th>下</th><th>操作</th>
       </tr></thead><tbody>{drafts.map((mask,index) => <tr key={index} data-mask-row={index} aria-selected={selected === index} tabIndex={0}
@@ -238,7 +243,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
           {Object.entries(datasetParts).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></td>
         {mask.box.map((coordinate,i) => <td key={i}>{coordinate}</td>)}
         <td><button type="button" className="unity-btn" disabled={!editable || busy} onClick={event => {event.stopPropagation();remove(index);}}>删除</button></td>
-      </tr>)}</tbody></table>{!drafts.length && <p className="hint">在图上拖动添加蒙版框。</p>}</div>
+      </tr>)}</tbody></table>{!drafts.length && <p className="hint">暂无蒙版框</p>}</div>
     </section>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
