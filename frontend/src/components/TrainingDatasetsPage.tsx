@@ -483,6 +483,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     <div ref={panel} className="training-dataset-data-view" id={`${id}-dataset-panel`} role="tabpanel" aria-labelledby={`${id}-datasets`} hidden={view !== "datasets"}>
       <div className="training-dataset-toolbar">
         <div className="training-dataset-work-row">
+          <div className="training-dataset-work-start">
           <button type="button" className="unity-btn training-dataset-list-toggle" aria-controls={id + "-image-list"}
             aria-expanded={listOpen} onClick={() => setListOpen(!listOpen)}>列表</button>
           <div className="training-dataset-command-primary">
@@ -514,6 +515,8 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               event.currentTarget.value = "";
               if (files.length) run("正在导入图片集…", () => importTrainingDataset(files, files[0].webkitRelativePath.split("/")[0], writer, new AbortController().signal));
             }} />
+          </div>
+          <div className="training-dataset-work-end">
           <div className="training-dataset-filter-bar" data-disabled={blocked || undefined} role="group" aria-label="图片筛选">
           <div className="training-dataset-filter-cluster">
             <label className="training-dataset-filter-control">
@@ -550,6 +553,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               }}>重置高级</button>}
           </div>
         </div>
+          </div>
         </div>
         <div id={id + "-advanced-filters"} className="training-dataset-advanced-panel" hidden={!advancedOpen}
           role="region" aria-label="高级筛选">
