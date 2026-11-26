@@ -7,6 +7,7 @@ import { datasetParts, type DatasetPart } from "../benchmark/trainingDatasets";
 import type { MosaicBox } from "../gameMosaic";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { showAppNotice } from "./AppNotice";
+import { MaskResizeControls } from "./game-mosaic/MosaicPreview";
 import "../gameMosaic.css";
 
 export type DatasetMask = { box: MosaicBox; part: DatasetPart | "" };
@@ -54,7 +55,7 @@ export async function copyDatasetPicture(image: AnnotatedImage, read: AnnotatedS
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const rectangle = (a: number[], b: number[]): MosaicBox => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
 
-export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onRedo, canRedo, onPreview, onContextMenu, readOnlyHint }: {
+export function TrainingDatasetImage({ image, read, masks, editable, busy, onChange, onUndo, canUndo, onRedo, canRedo, onContextMenu, readOnlyHint }: {
   image: AnnotatedImage; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean;
   onChange: (masks: DatasetMask[]) => Promise<void>; onUndo: () => void; canUndo: boolean;
   onRedo: () => void; canRedo: boolean;
@@ -72,7 +73,9 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const anchor = useRef<{ x: number; y: number; clientX: number; clientY: number } | undefined>(undefined);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | undefined>(undefined);
-  const [drawing, setDrawing] = useState(true);
+  const [tool, setTool] = useState<"add" | "select">("select");
+  const [panning, setPanning] = useState(false);
+  const drawing = tool === "add";
   const signature = JSON.stringify(masks);
   const drag = useRef<{ mode: "draw" | "move" | "resize"; index: number; handle: number; start: [number,number]; before: DatasetMask[]; box?: MosaicBox } | undefined>(undefined);
   const handles = [[0,0],[.5,0],[1,0],[1,.5],[1,1],[.5,1],[0,1],[0,.5]];
@@ -107,14 +110,6 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     anchor.current = { x: (x - r.left) / r.width * image.width, y: (y - r.top) / r.height * image.height, clientX: x, clientY: y };
     zoomRef.current = next;
     setManualZoom(next);
-  }
-  function fitImage() {
-    anchor.current = undefined;
-    setManualZoom(undefined);
-    requestAnimationFrame(() => {
-      const view = viewport.current;
-      if (view) { view.scrollLeft = (view.scrollWidth - view.clientWidth) / 2; view.scrollTop = (view.scrollHeight - view.clientHeight) / 2; }
-    });
   }
   useLayoutEffect(() => {
     const view = viewport.current, imageElement = bitmap.current;
@@ -189,16 +184,18 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     selectMask(Math.min(index,current.current.length-1)); contextMenu.current?.hidePopover();
     viewport.current?.focus({ preventScroll:true });
   }
-  function copySelected() {
-    const mask = current.current[selectedRef.current];
-    if (!editable || busy || !mask) return;
-    const dx = Math.min(10, image.width - mask.box[2]), dy = Math.min(10, image.height - mask.box[3]);
-    const box: MosaicBox = [mask.box[0] + dx, mask.box[1] + dy, mask.box[2] + dx, mask.box[3] + dy];
-    const next = [...current.current, { ...mask, box }]; persist(next); selectMask(next.length - 1, true);
+  function changeTool(next: "add" | "select") {
+    cancelGesture(); selectMask(-1); setTool(next);
+    viewport.current?.focus({ preventScroll: true });
+  }
+  function clearMasks() {
+    if (!editable || busy || !current.current.length) return;
+    if (tool !== "add" && selectedRef.current >= 0) remove(selectedRef.current);
+    else { persist([]); selectMask(-1); }
   }
   function cancelGesture() {
     if (drag.current) { display(drag.current.before); drag.current = undefined; selectMask(Math.min(selectedRef.current, current.current.length - 1)); }
-    pan.current = undefined;
+    pan.current = undefined; setPanning(false);
   }
   function point(event: PointerEvent): [number,number] {
     const r = bitmap.current!.getBoundingClientRect();
@@ -232,27 +229,34 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     values[gesture.index] = { ...values[gesture.index],box }; display(values);
   }
   function finish(event: PointerEvent) {
-    if (pan.current) { pan.current = undefined; return; }
+    if (pan.current) { pan.current = undefined; setPanning(false); return; }
     const gesture = drag.current;
     if (!gesture) return;
     move(event); drag.current = undefined;
     const mask = current.current[gesture.index];
     if (!mask || mask.box[2] <= mask.box[0] || mask.box[3] <= mask.box[1]) { display(gesture.before); return; }
     if (JSON.stringify(current.current) !== JSON.stringify(gesture.before)) persist(current.current);
-    if (gesture.mode === "draw") choosePart(gesture.index,event.clientX,event.clientY);
+    if (gesture.mode === "draw") { setTool("select"); choosePart(gesture.index,event.clientX,event.clientY); }
   }
   const known = drafts.filter(mask => !!mask.part).length;
-  const hasSelection = selected >= 0 && selected < drafts.length;
-  const tools = [
-    { id: "fit", label: "适应画布", shortcut: "F", icon: "M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5", run: fitImage },
-    { id: "out", label: "缩小标注画布", shortcut: "-", icon: "M5 12h14", run: () => changeZoom(zoom / 1.1) },
-    { id: "scale", label: "恢复100%比例", shortcut: "0", text: Math.round(zoom * 100) + "%", run: () => changeZoom(1) },
-    { id: "in", label: "放大标注画布", shortcut: "+", icon: "M5 12h14M12 5v14", run: () => changeZoom(zoom * 1.1) },
-    { id: "draw", label: "框选模式", shortcut: "B", icon: "M4 4h16v16H4zM1 4h6M4 1v6M17 20h6M20 17v6", pressed: drawing, disabled: !editable || busy, run: () => setDrawing(value => !value) },
-    { id: "delete", label: "删除选中框", shortcut: "Delete", icon: "M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6", disabled: !editable || busy || !hasSelection, run: () => remove(selectedRef.current) },
-    { id: "copy", label: "复制选中框", shortcut: "C", icon: "M8 8h12v12H8zM16 4H4v12", disabled: !editable || busy || !hasSelection, run: copySelected },
-    { id: "undo", label: "撤销标注", shortcut: "Ctrl+Z", icon: "m8 5-4 4 4 4M4 9h10a5 5 0 0 1 0 10h-3", disabled: !canUndo || busy, run: onUndo },
-    { id: "preview", label: "查看原图", shortcut: "V", icon: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6", run: onPreview },
+  const hasSelection = tool !== "add" && selected >= 0 && selected < drafts.length;
+  const canSelectMask = editable && !busy && tool !== "add";
+  const imageTools = [
+    { id: "redraw", label: "重绘当前图 · 标注页不支持", key: "r", shortcut: "R", disabled: true, reason: "标注页不支持重绘",
+      icon: "m7 4 13 8-13 8V4Z", run: () => {} },
+    { id: "draw", label: "添加蒙版", key: "b", shortcut: "B", disabled: !editable || busy || !picture.url, pressed: tool === "add",
+      icon: "M9 4H4v5m11-5h5v5m0 6v5h-5m-6 0H4v-5m5-3h6m-3-3v6", run: () => changeTool("add") },
+    { id: "select", label: "框选蒙版", key: "v", shortcut: "V", disabled: !editable || busy || !picture.url, pressed: tool === "select",
+      icon: "M9 4H4v5m11-5h5v5m0 6v5h-5m-6 0H4v-5M12 4h.01M4 12h.01M20 12h.01M12 20h.01", run: () => changeTool("select") },
+    { id: "remove", label: "删除最后一框", key: "d", shortcut: "D", disabled: !editable || busy || !drafts.length,
+      icon: "M5 5h14v14H5zM9 12h6", run: () => remove(current.current.length - 1) },
+    { id: "clear", label: hasSelection ? "清空选中蒙版" : "清空蒙版", key: "delete", modifier: hasSelection ? undefined : "shift",
+      shortcut: hasSelection ? "Delete" : "Shift+Delete", disabled: !editable || busy || !drafts.length,
+      icon: "M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6", run: clearMasks },
+    { id: "copy", label: "复制蒙版到组内空白图 · 标注页不支持", key: "c", shortcut: "C", disabled: true, reason: "标注页不支持复制到组内空白图",
+      icon: "M8 8h12v12H8zM16 4H4v12", run: () => {} },
+    { id: "undo", label: "撤销蒙版编辑", key: "z", modifier: "command", shortcut: "Ctrl+Z",
+      disabled: !canUndo || busy, icon: "m8 5-4 4 4 4M4 9h10a5 5 0 0 1 0 10h-3", run: onUndo },
   ];
   return <section className="training-dataset-editor" style={{ flex: "1 1 0" }} aria-label="图片标注" onKeyDown={event => {
     if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey ||
@@ -275,30 +279,39 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
       if (dx || dy) persist(current.current.map((mask, i) => i === index ? { ...mask, box: [box[0]+dx, box[1]+dy, box[2]+dx, box[3]+dy] } : mask));
       return;
     }
-    const tool = tools.find(tool => tool.shortcut.toLowerCase() === key || tool.id === "in" && key === "=");
-    if (!tool || tool.disabled) return;
-    event.preventDefault(); event.stopPropagation(); tool.run();
+    if (event.repeat) return;
+    const modifier = command ? "command" : event.shiftKey ? "shift" : undefined;
+    const action = imageTools.find(item => item.key === key && (item.modifier === modifier ||
+      (item.id === "clear" && hasSelection && modifier === "shift")));
+    if (!action || action.disabled) return;
+    event.preventDefault(); event.stopPropagation(); action.run();
   }}>
     <header className="training-dataset-editor-tools">
       <div className="training-dataset-editor-identity">
         <strong title={image.sourceDirectory || image.file}>{image.name}</strong>
         <span>{image.width} × {image.height}</span>
         <span className="hint">已标部位 {known} / {drafts.length} 框</span>
+        <span data-tooltip="滚轮缩放；双击恢复100%" onDoubleClick={() => changeZoom(1)}>{Math.round(zoom * 100)}%</span>
       </div>
     </header>
     <div className="training-dataset-editor-main">
-    <div className="training-dataset-canvas-frame">
-    <div ref={viewport} tabIndex={0} className="training-dataset-canvas" data-drawing={drawing && editable} aria-label="图片画布" onContextMenu={onContextMenu}
+    <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
+    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing && !hasSelection ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
         pointerHit.current = -1;
         if (event.button !== 0 || busy) return;
-        const index = (event.target as HTMLElement).closest<HTMLElement>("[data-canvas-mask]")?.dataset.canvasMask;
-        pointerHit.current = index === undefined ? -1 : Number(index);
+        const target = event.target as Element;
+        const edge = target.getAttribute("data-mosaic-resize");
+        const hit = edge && selectedRef.current >= 0 ? String(selectedRef.current) : target.closest("[data-mosaic-box]")?.getAttribute("data-mosaic-box") ?? undefined;
+        pointerHit.current = hit === undefined ? -1 : Number(hit);
+        const index = drawing ? undefined : hit;
+        const wasSelected = index !== undefined && selectedRef.current === Number(index);
         if (index !== undefined) selectMask(Number(index));
         const inside = bitmap.current?.contains(event.target as Node);
         if (index === undefined && (!drawing || !editable)) {
           event.preventDefault(); event.currentTarget.focus({ preventScroll: true }); event.currentTarget.setPointerCapture(event.pointerId);
+          selectMask(-1); setPanning(true);
           pan.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop }; return;
         }
         if (!editable || !inside) return;
@@ -306,40 +319,44 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
         partsMenu.current?.hidePopover(); contextMenu.current?.hidePopover();
         const p = point(event), before = copy(current.current);
         if (index !== undefined) {
-          const handle = (event.target as HTMLElement).dataset.handle;
-          drag.current = { mode:handle === undefined ? "move" : "resize",index:Number(index),handle:Number(handle),start:p,before,box:[...current.current[Number(index)].box] };
+          if (!edge && !wasSelected) return;
+          const handle = edge ? ["nw", "n", "ne", "e", "se", "s", "sw", "w"].indexOf(edge) : -1;
+          drag.current = { mode:edge ? "resize" : "move",index:Number(index),handle,start:p,before,box:[...current.current[Number(index)].box] };
         } else {
           const i = current.current.length; display([...current.current,{box:[p[0],p[1],p[0],p[1]],part:""}]); selectMask(i);
           drag.current = { mode:"draw",index:i,handle:0,start:p,before };
         }
       }} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}>
-      <div className="training-dataset-canvas-track" style={{ paddingInline: viewportSize.width, paddingBlock: viewportSize.height }}><div ref={bitmap} className="training-dataset-canvas-image" style={{width:image.width*zoom,height:image.height*zoom}}>
+      <div className="training-dataset-canvas-track" style={{ paddingInline: viewportSize.width, paddingBlock: viewportSize.height }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{width:image.width*zoom,height:image.height*zoom}}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
-        {drafts.map((mask,index) => <span key={index} className="training-dataset-canvas-mask" role="button" tabIndex={0}
-          aria-label={"蒙版 "+(index+1)+"："+(mask.part ? datasetParts[mask.part] : "未知")} aria-pressed={selected === index}
-          data-canvas-mask={index} data-selected={selected === index}
-          style={{left:mask.box[0]*zoom,top:mask.box[1]*zoom,width:(mask.box[2]-mask.box[0])*zoom,height:(mask.box[3]-mask.box[1])*zoom}}
+        <svg viewBox={`0 0 ${image.width} ${image.height}`} className={editable ? "is-editing" : undefined} aria-label="去码蒙版"
+          style={tool === "select" ? { cursor: panning ? "grabbing" : "grab" } : undefined}>
+        {drafts.map((mask,index) => <rect key={index} x={mask.box[0]} y={mask.box[1]} width={mask.box[2]-mask.box[0]} height={mask.box[3]-mask.box[1]}
+          className={`game-mosaic-mask${hasSelection && selected === index ? " is-selected" : ""}${canSelectMask ? " is-clickable" : ""}`}
+          data-mosaic-box={index} vectorEffect="non-scaling-stroke" role={canSelectMask ? "button" : undefined} tabIndex={canSelectMask ? 0 : undefined}
+          aria-label={canSelectMask ? `蒙版 ${index + 1}` : undefined} aria-pressed={canSelectMask ? selected === index : undefined}
           onDoubleClick={event => { event.stopPropagation(); choosePart(index,event.clientX,event.clientY); }}
           onContextMenu={event => {
             if (!editable || busy) return;
             event.preventDefault(); event.stopPropagation();
             selectMask(index); menuPosition(contextMenu.current,event.clientX,event.clientY,88);
           }} onKeyDown={event => {
-            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); const r=event.currentTarget.getBoundingClientRect();choosePart(index,r.left,r.bottom); }
-          }}>
-          <b>{index+1} {mask.part ? datasetParts[mask.part] : "未知"}</b>
-          {editable && selected === index && handles.map(([x,y],handle) => <i key={handle} data-handle={handle} style={{left:x*100+"%",top:y*100+"%"}} />)}
-        </span>)}
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); selectMask(index); }
+          }} />)}
+        {canSelectMask && hasSelection && <MaskResizeControls box={drafts[selected].box} />}
+        </svg>
       </div></div>
     </div>
-      <aside className="game-mosaic-image-tools" role="group" aria-label="标注画布工具" onDoubleClick={event => event.stopPropagation()}>
-        {tools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
-          aria-label={tool.label} aria-pressed={tool.pressed} aria-keyshortcuts={tool.id === "undo" ? "Control+Z Meta+Z" : tool.shortcut === "+" ? "Plus" : tool.shortcut}
-          data-tooltip={tool.label + " · " + tool.shortcut} disabled={tool.disabled} onClick={tool.run}>
-          {tool.text ?? <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
-            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>}
+      <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
+        onDoubleClick={event => event.stopPropagation()}>
+        {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
+          aria-label={tool.label} aria-pressed={tool.pressed}
+          aria-keyshortcuts={tool.modifier === "command" ? "Control+Z Meta+Z" : tool.id === "clear" && hasSelection ? "Delete Shift+Delete" : tool.shortcut}
+          data-tooltip={[tool.label + " · " + tool.shortcut, tool.reason].filter(Boolean).join("\n")} disabled={tool.disabled} onClick={tool.run}>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>
         </button>)}
-      </aside>
+      </div>
     </div>
     <section className="training-dataset-regions" aria-label="区域清单">
       <div ref={table} className="training-dataset-region-table"><table><thead><tr>
@@ -355,7 +372,7 @@ export function TrainingDatasetImage({ image, read, masks, editable, busy, onCha
     </section>
     </div>
     <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
-      : saving ? "正在写入工作副本…" : editable ? "滚轮缩放 · 拖空白处画框 · 双击框改部位 · 方向键微移 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做" : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
+      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
         event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);

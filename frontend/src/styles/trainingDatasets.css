@@ -460,15 +460,13 @@
 .training-config-comfy .training-run-path { margin:0; }
 .training-dataset-editor {
   --dataset-stage: #dce4e7;
-  --dataset-box: #a34320;
-  --dataset-box-text: #fff9f2;
   display: flex;
   flex-direction: column;
   min-block-size: 0;
   min-inline-size: 0;
   overflow: hidden;
 }
-:root[data-theme=ink] .training-dataset-editor { --dataset-stage: #22384a; --dataset-box: #e88b55; --dataset-box-text: #27160d; }
+:root[data-theme=ink] .training-dataset-editor { --dataset-stage: #22384a; }
 .training-dataset-editor-tools {
   display: flex;
   align-items: center;
@@ -498,15 +496,6 @@
 .training-dataset-canvas-track { display:grid;place-items:center;inline-size:max-content;block-size:max-content;min-inline-size:100%;min-block-size:100%;padding:12px;box-sizing:border-box; }
 .training-dataset-canvas-image { position:relative;user-select:none; }
 .training-dataset-canvas-image > img { display:block;width:100%;height:100%;max-width:none;pointer-events:none; }
-.training-dataset-canvas-mask { position:absolute;box-sizing:border-box;border:1px solid var(--dataset-box);background:color-mix(in srgb,var(--dataset-box) 14%,transparent);cursor:move; }
-.training-dataset-canvas-mask[data-selected=true] { border-width:2px;background:color-mix(in srgb,var(--dataset-box) 23%,transparent); }
-.training-dataset-canvas-mask:focus-visible { outline:2px solid var(--text);outline-offset:2px; }
-.training-dataset-canvas-mask > b { position:absolute;inset-inline-start:-1px;inset-block-end:100%;padding:0 4px;border-radius:3px 3px 0 0;white-space:nowrap;background:var(--dataset-box);color:var(--dataset-box-text);font-size:11px;font-weight:600;line-height:1.45; }
-.training-dataset-canvas-mask > i { position:absolute;inline-size:8px;block-size:8px;translate:-50% -50%;background:var(--bg-panel);border:1px solid var(--dataset-box); }
-.training-dataset-canvas-mask > i:is([data-handle="0"],[data-handle="4"]) { cursor:nwse-resize; }
-.training-dataset-canvas-mask > i:is([data-handle="2"],[data-handle="6"]) { cursor:nesw-resize; }
-.training-dataset-canvas-mask > i:is([data-handle="1"],[data-handle="5"]) { cursor:ns-resize; }
-.training-dataset-canvas-mask > i:is([data-handle="3"],[data-handle="7"]) { cursor:ew-resize; }
 .training-dataset-write-state { padding:3px 12px 4px;color:var(--text-muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere; }
 .training-dataset-editor-main {
   flex: 1 1 0;
@@ -521,11 +510,13 @@
   min-inline-size: 0;
   min-block-size: min(360px, 52vh);
   margin: 8px 4px 8px 8px;
-  --mosaic-tool-offset: 8px;
-  --mosaic-tool-size: 28px;
-  --mosaic-tool-padding: 3px;
 }
-.training-dataset-editor-main .training-dataset-canvas {
+.training-dataset-editor-main .training-dataset-canvas.game-mosaic-image-area {
+  position: relative;
+  inset: auto;
+  display: block;
+  place-items: normal;
+  grid-template: none;
   margin: 0;
   inline-size: 100%;
   block-size: 100%;
@@ -533,9 +524,7 @@
   box-sizing: border-box;
 }
 .training-dataset-canvas-frame .game-mosaic-image-tools { max-block-size: calc(100% - 16px); }
-.training-dataset-canvas-frame .game-mosaic-image-tool { font-size: 10px; font-variant-numeric: tabular-nums; }
-.training-dataset-canvas[data-drawing=true] .training-dataset-canvas-image { cursor: crosshair; }
-.training-dataset-canvas[data-drawing=false] { cursor: grab; }
+.training-dataset-canvas.is-pan-ready:not(.is-panning) { cursor: grab; }
 .training-dataset-editor-main .training-dataset-regions {
   flex: none;
   border-block-start: 0;

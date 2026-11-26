@@ -139,7 +139,7 @@ function MosaicImageCanvas({ width, editing = false, onBackground, children }: {
   </div>;
 }
 
-function MaskResizeControls({ box }: { box: MosaicBox }) {
+export function MaskResizeControls({ box }: { box: MosaicBox }) {
   const [left, top, right, bottom] = box;
   const sides = [
     ["n", left, top, right, top], ["s", left, bottom, right, bottom],
