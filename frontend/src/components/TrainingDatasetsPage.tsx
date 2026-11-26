@@ -96,7 +96,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
   const writer: DatasetWriter = writeTrainingDatasetFile;
   const datasetPicker = useRef<HTMLDivElement>(null), batchMenu = useRef<HTMLDivElement>(null);
   const datasetMenu = useRef<HTMLDivElement>(null);
-  const advancedFiltersMenu = useRef<HTMLDivElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [maskCounts, setMaskCounts] = useState<Record<string, number | null>>({});
   const requestedCounts = useRef(new Set<string>());
   const [menuReference, setMenuReference] = useState<DatasetReference>();
@@ -334,7 +334,7 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
       if (reference.path !== datasetRef.current?.reference.path) updateUndoHistory([]);
       setPurpose("mosaic"); setFilter("all"); setSearch(""); setConditions({ ...emptyDatasetFilters, masks: "unmarked-parts" });
       resetSelection(); setPreview(undefined); setView("datasets");
-      requestAnimationFrame(() => advancedFiltersMenu.current?.showPopover());
+      requestAnimationFrame(() => setAdvancedOpen(true));
       return next;
     }, false);
   }
@@ -514,48 +514,62 @@ export function TrainingDatasetsPage(_props: { channel?: BroadcastChannel }) {
               if (files.length) run("正在导入图片集…", () => importTrainingDataset(files, files[0].webkitRelativePath.split("/")[0], writer, new AbortController().signal));
             }} />
         </div>
-        <fieldset className="training-dataset-toolbar-row" disabled={blocked} aria-label="图片筛选">
-          <label className="training-dataset-filter-field">用途
-            <select aria-label="用途" value={purpose} onChange={event => {
-              setPurpose(event.target.value as DatasetPurpose); setFilter("all"); resetSelection();
-            }}>{datasetPurposes.map(item => <option key={item} value={item}>{datasetPurposeLabels[item]}</option>)}</select>
+        <div className="training-dataset-filter-bar" data-disabled={blocked || undefined} role="group" aria-label="图片筛选">
+          <div className="training-dataset-filter-cluster">
+            <label className="training-dataset-filter-control">
+              <span className="training-dataset-filter-prefix" aria-hidden="true">用途</span>
+              <select aria-label="用途" disabled={blocked} value={purpose} onChange={event => {
+                setPurpose(event.target.value as DatasetPurpose); setFilter("all"); resetSelection();
+              }}>{datasetPurposes.map(item => <option key={item} value={item}>{datasetPurposeLabels[item]}</option>)}</select>
+            </label>
+            <label className="training-dataset-filter-control">
+              <span className="training-dataset-filter-prefix" aria-hidden="true">标注</span>
+              <select aria-label="标注状态" disabled={blocked} value={filter} onChange={event => {
+                setFilter(event.target.value as Filter); resetSelection();
+              }}>
+                <option value="all">全部</option>
+                {verdicts.map(item => <option key={item} value={item}>{datasetVerdictLabels[purpose][item]}</option>)}
+              </select>
+            </label>
+          </div>
+          <label className="training-dataset-search-field">
+            <span className="training-dataset-search-icon" aria-hidden="true">⌕</span>
+            <input type="search" aria-label="搜索文件名" placeholder="搜索文件名" disabled={blocked} value={search}
+              onChange={event => { setSearch(event.target.value); resetSelection(); }} />
           </label>
-          <label className="training-dataset-filter-field">标注
-            <select aria-label="标注状态" value={filter} onChange={event => {
-              setFilter(event.target.value as Filter); resetSelection();
-            }}>
-              <option value="all">全部</option>
-              {verdicts.map(item => <option key={item} value={item}>{datasetVerdictLabels[purpose][item]}</option>)}
-            </select>
-          </label>
-          <input type="search" aria-label="搜索文件名" placeholder="搜索文件名" value={search}
-            onChange={event => { setSearch(event.target.value); resetSelection(); }} />
-          <button type="button" className="unity-btn training-dataset-advanced-trigger" disabled={blocked}
-            popoverTarget={id + "-advanced-filters"}
-            onClick={event => positionWindowPopover(event.currentTarget, advancedFiltersMenu.current)}>
-            高级筛选{conditionCount > 0 ? ` (${conditionCount})` : ""} ▾
-          </button>
-          {conditionCount > 0 && <button type="button" className="unity-btn" onClick={() => {
-            setConditions({ ...emptyDatasetFilters }); setFilter("all"); setSearch(""); resetSelection();
-          }}>清除</button>}
-        </fieldset>
-        <div ref={advancedFiltersMenu} id={id + "-advanced-filters"} popover="auto" className="training-dataset-filters training-dataset-filters-popover" role="group" aria-label="高级筛选">
-          {(["width", "height"] as const).map(axis => <label key={axis}>{axis === "width" ? "宽度" : "高度"}
-            <input type="number" min={0} aria-label={axis === "width" ? "最小宽度" : "最小高度"} placeholder="最小"
-              value={conditions[axis + "Min" as "widthMin"]} onChange={event => { setConditions({ ...conditions, [axis + "Min"]: event.target.value }); resetSelection(); }} />
-            <span>–</span><input type="number" min={0} aria-label={axis === "width" ? "最大宽度" : "最大高度"} placeholder="最大"
-              value={conditions[axis + "Max" as "widthMax"]} onChange={event => { setConditions({ ...conditions, [axis + "Max"]: event.target.value }); resetSelection(); }} />
-          </label>)}
-          <label>来源<input type="text" aria-label="来源目录前缀" placeholder="来源目录前缀" value={conditions.source} onChange={event => { setConditions({ ...conditions, source: event.target.value }); resetSelection(); }} /></label>
-          {scenes.length > 0 && <label>场景<select aria-label="场景" value={conditions.scene} onChange={event => { setConditions({ ...conditions, scene: event.target.value }); resetSelection(); }}>
-            <option value="">全部</option>{scenes.map(scene => <option key={scene}>{scene}</option>)}
-          </select></label>}
-          <label>蒙版<select aria-label="蒙版筛选" value={conditions.masks} onChange={event => { setConditions({ ...conditions, masks: event.target.value as typeof conditions.masks }); resetSelection(); }}>
-            <option value="all">全部</option><option value="yes">有蒙版</option><option value="no">无蒙版</option><option value="unmarked-parts">有蒙版未标部位</option>
-          </select></label>
-          {hasAdoption && <label>采用<select aria-label="采用筛选" value={conditions.adopted} onChange={event => { setConditions({ ...conditions, adopted: event.target.value as typeof conditions.adopted }); resetSelection(); }}>
-            <option value="all">全部</option><option value="yes">已采用</option><option value="no">未采用</option>
-          </select></label>}
+          <div className="training-dataset-filter-actions">
+            <button type="button" className="unity-btn training-dataset-advanced-trigger" disabled={blocked}
+              aria-expanded={advancedOpen} aria-controls={id + "-advanced-filters"}
+              onClick={() => setAdvancedOpen(open => !open)}>
+              高级筛选{conditionCount > 0 ? ` · ${conditionCount}` : ""}
+              <span className="training-dataset-chevron" aria-hidden="true">{advancedOpen ? "▴" : "▾"}</span>
+            </button>
+            {conditionCount > 0 && <button type="button" className="unity-btn training-dataset-filter-clear" disabled={blocked}
+              onClick={() => {
+                setConditions({ ...emptyDatasetFilters }); setFilter("all"); setSearch(""); resetSelection();
+              }}>重置高级</button>}
+          </div>
+        </div>
+        <div id={id + "-advanced-filters"} className="training-dataset-advanced-panel" hidden={!advancedOpen}
+          role="region" aria-label="高级筛选">
+          <div className="training-dataset-filters">
+            {(["width", "height"] as const).map(axis => <label key={axis}>{axis === "width" ? "宽度" : "高度"}
+              <input type="number" min={0} aria-label={axis === "width" ? "最小宽度" : "最小高度"} placeholder="最小"
+                value={conditions[axis + "Min" as "widthMin"]} onChange={event => { setConditions({ ...conditions, [axis + "Min"]: event.target.value }); resetSelection(); }} />
+              <span>–</span><input type="number" min={0} aria-label={axis === "width" ? "最大宽度" : "最大高度"} placeholder="最大"
+                value={conditions[axis + "Max" as "widthMax"]} onChange={event => { setConditions({ ...conditions, [axis + "Max"]: event.target.value }); resetSelection(); }} />
+            </label>)}
+            <label>来源<input type="text" aria-label="来源目录前缀" placeholder="来源目录前缀" value={conditions.source} onChange={event => { setConditions({ ...conditions, source: event.target.value }); resetSelection(); }} /></label>
+            {scenes.length > 0 && <label>场景<select aria-label="场景" value={conditions.scene} onChange={event => { setConditions({ ...conditions, scene: event.target.value }); resetSelection(); }}>
+              <option value="">全部</option>{scenes.map(scene => <option key={scene}>{scene}</option>)}
+            </select></label>}
+            <label>蒙版<select aria-label="蒙版筛选" value={conditions.masks} onChange={event => { setConditions({ ...conditions, masks: event.target.value as typeof conditions.masks }); resetSelection(); }}>
+              <option value="all">全部</option><option value="yes">有蒙版</option><option value="no">无蒙版</option><option value="unmarked-parts">有蒙版未标部位</option>
+            </select></label>
+            {hasAdoption && <label>采用<select aria-label="采用筛选" value={conditions.adopted} onChange={event => { setConditions({ ...conditions, adopted: event.target.value as typeof conditions.adopted }); resetSelection(); }}>
+              <option value="all">全部</option><option value="yes">已采用</option><option value="no">未采用</option>
+            </select></label>}
+          </div>
         </div>
       </div>
       <div ref={workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
