@@ -135,6 +135,7 @@ const context = {
   current: { current: { ...initialProject, entries: [complete, missing, partial, broken, nativeTarget, manuallyExcluded] } },
   resetGameTextScreening: project.resetGameTextScreening, gameTextScreeningVersion: project.gameTextScreeningVersion,
   gameTextNeedsSupplement: project.gameTextNeedsSupplement, gameTextImportPartial: project.gameTextImportPartial,
+  textTranslationMatchesTarget: session.textTranslationMatchesTarget,
   createTextRunErrors,
   gameTextNeedsNoTranslation: display.gameTextNeedsNoTranslation, messageCore: false, sourceFilter: "ja",
   options: { target: "zh-CN", skipTargetLanguage: true }, settings: {}, promptState: { scope: "fixture", selection: {} },
@@ -284,3 +285,28 @@ assert.equal(screeningErrors.length, 2);
 assert.match(screeningErrors[1].message, /括号与引用结构错误 1 条，连接或服务异常 1 条/);
 context.screenGameText = successfulScreen;
 console.log("PASS screening service failure produces one notification and one aggregated final error line");
+
+const modelRows = [complete, missing, partial, broken, nativeTarget, manuallyExcluded].map(row => ({ ...row }));
+context.current.current = { ...initialProject, entries: modelRows };
+context.options.screeningModel = "fixture-model";
+context.screenGameText = async (rows, options) => {
+  assert.equal(options.onlySource, true);
+  assert.equal(options.model, "fixture-model");
+  assert.ok(rows.some(row => row.id === "target"));
+  assert.ok(rows.some(row => row.id === "done"));
+  return 0; // Model requests translation even for the Chinese original.
+};
+assert.equal(await runScreen(), true);
+assert.equal(savedScreen.entries.find(row => row.id === "target").selected, true, "model screening is not followed by local target-language deselection");
+assert.equal(savedScreen.entries.find(row => row.id === "broken").selected, true);
+assert.equal(savedScreen.entries.find(row => row.id === "done").selected, false, "existing valid completed translations remain reusable");
+assert.ok(savedScreen.workflow.supplementalIds.includes("target"));
+assert.ok(!workspaceCode.slice(screenStart, screenEnd).includes('if (!options.screeningModel'));
+
+runMessages.length = 0;
+runtime.options.screeningModel = "fixture-model";
+runtime.current.current = { ...initialProject, entries: [{ ...nativeTarget, id: "4", translation: "" }], workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: ["4"], skippedIds: [], supplementalIds: ["4"] } };
+runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
+assert.equal(await runTranslation(), true);
+assert.equal(runtime.current.current.entries[0].translation, "完成的译文", "translation does not locally preserve a model-selected target-language original");
+console.log("PASS model decisions survive workspace completion, supplemental filtering and subsequent translation");

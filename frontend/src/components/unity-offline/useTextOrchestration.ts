@@ -299,7 +299,7 @@ export async function runTextScreening(ports: TextScreeningPorts) {
     const screeningSource = unityLanguageScope(next.entries, source, onlySourceLanguage).language;
     const kept = await screenGameText(rows, {
       settings, model: textScreenModel, prompts: promptState.selection, source: onlySourceLanguage ? screeningSource : "auto",
-      target, skipTarget: skipTargetLanguage, signal: controller.signal, onOllamaStatus: logAction,
+      onlySource: onlySourceLanguage, target, skipTarget: skipTargetLanguage, signal: controller.signal, onOllamaStatus: logAction,
       onProgress: (completed, total) => {
         reportScreening(completed, total);
       },
@@ -357,7 +357,7 @@ export async function runTextBranch<T extends TextBranchRun>(current: UnityProje
     const rows = textProject.entries.filter(entry => entry.selected);
     await screenGameText(rows, {
       settings, model: latestConfig.parameters.textScreenModel, prompts: latestConfig.prompts, source: getRun().onlySourceLanguage === false ? "auto" : languageScope.language,
-      target: getRun().target, skipTarget: getRun().skipTargetLanguage !== false, signal: job.signal, onOllamaStatus: logAction,
+      onlySource: getRun().onlySourceLanguage !== false, target: getRun().target, skipTarget: getRun().skipTargetLanguage !== false, signal: job.signal, onOllamaStatus: logAction,
       onProgress: (completed, total) => onProgress({ completed, total, detail: getRun().textScreenModel === undefined ? "正在按语言规则筛选文本" : "正在用大模型筛选文本", textStage: "screening", model: getRun().textScreenModel }),
     });
     job.signal.throwIfAborted();
