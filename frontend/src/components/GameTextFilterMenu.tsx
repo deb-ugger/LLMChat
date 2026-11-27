@@ -31,8 +31,15 @@ export function GameTextFilterMenu({ active, disabled, value, matched, shown, on
   }}><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z" /></svg></button>
     {createPortal(<div ref={menu} id={id} popover="auto" role="dialog" aria-label="文本筛选条件" className="unity-image-filter-menu">
       <div className="unity-image-filter-presets"><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit })}>全部选取</button><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit, checked: false, unchecked: false, pending: false, failed: false, done: false })}>取消全部选取</button></div>
-      {([["checked", "已勾选"], ["unchecked", "未勾选"], ["pending", "未完成"], ["failed", "失败"], ["done", "已完成"], ["quality", "仅看疑似问题"], ["target", "仅看无需翻译"]] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={value[key]} onChange={event => onChange({ ...value, [key]: event.target.checked })} />{label}</label>)}
-      {supplementalAvailable && <label><input type="checkbox" checked={value.supplemental} onChange={event => onChange({ ...value, supplemental: event.target.checked })} />仅查看补译内容</label>}
+      {([["checked", "已勾选"], ["unchecked", "未勾选"], ["pending", "未完成"], ["failed", "失败"], ["done", "已完成"]] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={value[key]} onChange={event => onChange({ ...value, [key]: event.target.checked })} />{label}</label>)}
+      <div className="game-text-filter-views" role="group" aria-label="仅查看">
+        {([["quality", "仅查看疑似问题"], ["target", "仅查看无需翻译"], ["supplemental", "仅查看需补译部分"]] as const)
+          .filter(([key]) => key !== "supplemental" || supplementalAvailable)
+          .map(([key, label]) => <button key={key} type="button" className="game-text-filter-toggle"
+            aria-pressed={value[key]} onClick={() => onChange({
+              ...value, quality: false, target: false, supplemental: false, [key]: !value[key],
+            })}>{label}</button>)}
+      </div>
       <div className="game-text-filter-limit">
         <label htmlFor={id + "-limit"}>最多显示</label>
         <input id={id + "-limit"} type="text" inputMode="numeric" placeholder="不限" value={value.limit}

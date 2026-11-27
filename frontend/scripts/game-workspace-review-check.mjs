@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { build } from "esbuild";
+import { build, transform } from "esbuild";
 import { fileURLToPath } from "node:url";
 
 const store = new Map();
@@ -53,11 +53,26 @@ assert.equal(structure.gameBracketProblem(source, translation), "");
 const chosen = { checked: true, ...filters.defaultGameTextFilters, supplemental: true };
 assert.equal(filters.matchesGameTextFilters(chosen, true, true, false, false, false, false), false);
 assert.equal(filters.matchesGameTextFilters(chosen, true, true, false, false, false, true), true);
-const entry = { id: "1", source: "こんにちは", translation: "你好", translationResult: { translation: "你好", target: "zh-CN" } };
-assert.equal(project.gameTextSupplementResult(entry, "zh-CN"), true);
-assert.equal(project.gameTextSupplementResult({ ...entry, translation: "导入的其他译文" }, "zh-CN"), false);
-assert.equal(project.gameTextSupplementResult(entry, "en"), false);
-assert.equal(project.gameTextSupplementResult(JSON.parse(JSON.stringify(entry)), "zh-CN"), true);
+const entry = { id: "1", source: "こんにちは", translation: "你好", error: "", selected: true, translationTarget: "zh-CN" };
+assert.equal(project.gameTextNeedsSupplement(entry, "zh-CN", "ja"), false);
+assert.equal(project.gameTextNeedsSupplement({ ...entry, translation: "" }, "zh-CN", "ja"), true);
+assert.equal(project.gameTextNeedsSupplement({ ...entry, translation: "", error: "请求失败" }, "zh-CN", "ja"), true);
+assert.equal(project.gameTextNeedsSupplement({ ...entry, source: "已经完成了。", translation: "" }, "zh-CN", "ja"), false);
+assert.equal(project.gameTextNeedsSupplement({ ...entry, translationTarget: "en" }, "zh-CN", "ja"), true);
+assert.equal(project.gameTextNeedsSupplement({ ...entry, importPartial: { translation: "你好", unmatched: ["残留"] } }, "zh-CN", "ja"), true);
+const initialProject = { sourcePath: "fixture", translationPath: "", options: {}, entries: [entry] };
+assert.equal(project.isGameTextScreened(initialProject), false);
+assert.equal(project.isGameTextScreened({ ...initialProject, workflow: { screened: true, screenedIds: ["1"] } }), false);
+const screenedProject = { ...initialProject, entries: [{ ...entry, selected: false }], workflow: {
+  screened: true, version: project.gameTextScreeningVersion, screenedIds: ["1"], skippedIds: ["1"],
+} };
+assert.equal(project.isGameTextScreened(screenedProject), true);
+const reset = project.resetGameTextScreening(screenedProject);
+assert.equal(reset.entries[0].selected, true);
+assert.equal(reset.entries[0].translation, "你好");
+assert.equal(project.isGameTextScreened(reset), false);
+assert.deepEqual(reset.workflow, { screened: false });
+assert.equal(project.resetGameTextScreening({ ...initialProject, entries: [{ ...entry, selected: false }] }).entries[0].selected, false);
 
 for (const scene of ["text", "dialogue", "names", "image", "review"]) {
   const prompt = prompts.gameTaskPrompt(scene);
@@ -86,3 +101,72 @@ stopViewing();
 output.writeOutput(["test"], "查看后新增警告", "warning");
 assert.equal(Number(store.get("llmchat-output-unread-warning-error")), 1);
 console.log("PASS quote validation, whole-quote retry, failure categories, supplemental filter, persistent provenance, structure prompts and warning/error badges");
+
+const workspaceCode = await (await import("node:fs/promises")).readFile(fileURLToPath(new URL("../src/components/GameTextWorkspace.tsx", import.meta.url)), "utf8");
+const screenStart = workspaceCode.indexOf("  const screen = async");
+const screenEnd = workspaceCode.indexOf("  const resetTranslation", screenStart);
+const complete = { ...entry, id: "done" };
+const missing = { ...entry, id: "missing", source: "おはようございます", translation: "" };
+const partial = { ...entry, id: "partial", source: "次の説明です", translation: "部分译文", importPartial: { translation: "部分译文", unmatched: ["待翻译段落"] } };
+const broken = { ...entry, id: "broken", source: "これは説明です", translation: "错误译文", error: "括号错误" };
+const nativeTarget = { ...entry, id: "target", source: "你好，已经完成了。", translation: "" };
+const manuallyExcluded = { ...entry, id: "manual", source: "手動で除外した文です", translation: "", selected: false };
+const context = {
+  isBenchmarkRunning: () => false, controller: { current: null }, loading: false, busy: false,
+  current: { current: { ...initialProject, entries: [complete, missing, partial, broken, nativeTarget, manuallyExcluded] } },
+  resetGameTextScreening: project.resetGameTextScreening, gameTextScreeningVersion: project.gameTextScreeningVersion,
+  gameTextNeedsSupplement: project.gameTextNeedsSupplement, gameTextImportPartial: project.gameTextImportPartial,
+  gameTextNeedsNoTranslation: display.gameTextNeedsNoTranslation, messageCore: false, sourceFilter: "ja",
+  options: { target: "zh-CN", skipTargetLanguage: true }, settings: {}, promptState: { scope: "fixture", selection: {} },
+  failureReasons: new Map([["broken", "括号错误"]]),
+  beginGameStep() {}, finishGameStep() {}, reportGameStepItems() {}, report() {},
+  setScreenStarted() {}, setSaving() {}, setState() {}, setProgressFailure() {}, setProgress() {}, setDirty() {}, setScreened() {},
+  screenGameText: async rows => {
+    const eligible = rows.filter(row => !row.error);
+    display.preserveTargetGameText(eligible, "zh-CN", "ja", true);
+    let count = 0;
+    for (const row of eligible) if (display.gameTextScreeningResult(row.source, "zh-CN", "ja", true).unchanged) {
+      row.selected = false; count++;
+    }
+    return count;
+  },
+  unityTranslationStats: rows => ({ total: rows.length, completed: 0 }),
+  gameTextProblem: project.createGameTextValidator(false, "zh-CN"),
+  gameDialogueReuseKey: row => row.source,
+};
+let savedScreen;
+context.persist = async next => { savedScreen = JSON.parse(JSON.stringify(next)); };
+context.publish = next => { context.current.current = next; };
+const actualScreen = (await transform(workspaceCode.slice(screenStart, screenEnd), { loader: "ts", target: "es2022" })).code;
+const runScreen = new Function("context", "with(context) {" + actualScreen + ";return screen;}")(context);
+assert.equal(await runScreen(), true);
+assert.equal(savedScreen.entries.find(row => row.id === "done").selected, false);
+assert.equal(savedScreen.entries.find(row => row.id === "missing").selected, true);
+assert.equal(savedScreen.entries.find(row => row.id === "partial").selected, true);
+assert.equal(savedScreen.entries.find(row => row.id === "broken").selected, true);
+assert.equal(savedScreen.entries.find(row => row.id === "target").selected, false);
+assert.equal(savedScreen.entries.find(row => row.id === "manual").selected, false);
+assert.deepEqual(savedScreen.workflow.skippedIds.sort(), ["done", "target"]);
+assert.equal(project.isGameTextScreened(savedScreen), true);
+assert.equal(await runScreen(), true);
+assert.equal(savedScreen.entries.find(row => row.id === "done").selected, false);
+assert.ok(workspaceCode.includes("const screenComplete = screened;"));
+assert.ok(workspaceCode.includes('publish(resetGameTextScreening({ ...importing, entries }))'));
+assert.ok(!workspaceCode.includes("screened || textReady"));
+console.log("PASS actual screening transition, completed/empty/partial/error selection, rerun, legacy state invalidation and import reset");
+
+const editStart = workspaceCode.indexOf("  const editEntries =");
+const editEnd = workspaceCode.indexOf("  const edit =", editStart);
+const editCode = (await transform(workspaceCode.slice(editStart, editEnd), { loader: "ts", target: "es2022" })).code;
+const editContext = {
+  current: { current: savedScreen }, baseline: { current: JSON.parse(JSON.stringify(savedScreen)) }, options: { target: "zh-CN" },
+  isTextSelectionScreened: project.isTextSelectionScreened, gameTextScreeningVersion: project.gameTextScreeningVersion,
+  sameTextEdit: project.sameTextEdit, setScreened() {}, setImportIssues() {}, setDirty: value => { editContext.dirty = value; },
+};
+editContext.publish = value => { editContext.current.current = value; };
+const editRows = new Function("context", "with(context) {" + editCode + ";return editEntries;}")(editContext);
+editRows(new Set(["done"]), { selected: false });
+assert.equal(editContext.current.current.entries.find(row => row.id === "done").selected, false);
+assert.ok(!editContext.current.current.workflow.skippedIds.includes("done"));
+assert.equal(editContext.dirty, true);
+console.log("PASS manual deselection removes retained writeback eligibility and is saved even when checkbox value was already false");

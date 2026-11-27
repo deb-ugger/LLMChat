@@ -1023,3 +1023,12 @@
   pointer-events: none;
   z-index: 3;
 }
+
+.game-text-filter-views { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid var(--border); }
+.unity-image-filter-menu .game-text-filter-toggle {
+  width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 7px 10px; background: var(--bg-panel); color: var(--text); text-align: left; font: inherit;
+}
+.unity-image-filter-menu .game-text-filter-toggle[aria-pressed=true] {
+  border-color: var(--accent); background: var(--accent-soft); font-weight: 700;
+}

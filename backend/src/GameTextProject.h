@@ -348,6 +348,12 @@ inline Json save(const Json& request) {
     if (!rows.is_array() || rows.size() != originals.size()) throw std::runtime_error("工程条目与扫描文本数量不一致，请重新读取");
     Json translated = Json::object(); std::set<std::string> seen;
     const auto target = request.value("options", Json::object()).value("target", "");
+    std::set<std::string> retained;
+    const auto workflow = request.value("workflow", Json::object());
+    if (workflow.is_object() && workflow.value("version", 0) == 2) {
+        for (const auto& id : workflow.value("skippedIds", Json::array()))
+            if (id.is_string()) retained.insert(id.get<std::string>());
+    }
     for (auto& row : rows) {
         row.erase("dialoguePosition");
         row.erase("rpgSystemMessage");
@@ -360,7 +366,8 @@ inline Json save(const Json& request) {
         flagPromptLeak(row, text);
         const auto value = row.at("translation").get<std::string>();
         const auto savedTarget = row.value("translationTarget", "");
-        if (row.at("selected").get<bool>() && row.at("error").get<std::string>().empty() && !value.empty() && value != text &&
+        if ((row.at("selected").get<bool>() || retained.contains(row.at("id").get<std::string>())) &&
+            row.at("error").get<std::string>().empty() && !value.empty() && value != text &&
             (target.empty() || savedTarget.empty() || target == savedTarget)) translated[text] = value;
     }
     // The source export and game resources are never overwritten by editing.

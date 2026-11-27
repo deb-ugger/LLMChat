@@ -32,7 +32,7 @@ import { api, type Settings, type TranslateProvider } from "../api";
 import { loadLocalModelProfiles } from "../modelPresets";
 import { readFileBytes } from "../localDocFile";
 import { saveOutputFile } from "../outputFiles";
-import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions, type GameTextImportAudit, type GameTextEntry, gameTextImportPartial, gameTextSupplementResult } from "../gameTextProject";
+import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, isGameTextScreened, resetGameTextScreening, gameTextScreeningVersion, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions, type GameTextImportAudit, type GameTextEntry, gameTextImportPartial, gameTextNeedsSupplement } from "../gameTextProject";
 import { translateUnitySession, unityTranslationStats, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
 import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, prepareUnityTranslationText, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
@@ -77,8 +77,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     const signature = (value: Partial<GameTextOptions>) => JSON.stringify([value.source || "auto", value.target || "zh-CN", value.skipTargetLanguage !== false, !!value.onlySourceLanguage]);
     if (signature(options) !== signature(baseline.current.options)) {
       setScreened(false); setState("idle"); setProgress(null);
-      if (current.current) current.current.workflow = { screened: false };
-      baseline.current.workflow = { screened: false };
+      if (current.current) publish(resetGameTextScreening(current.current));
+      baseline.current = resetGameTextScreening(baseline.current);
     }
   }, [loading, options.source, options.target, options.skipTargetLanguage, options.onlySourceLanguage]);
   const [importReport, setImportReport] = useState<GameTextImportAudit>();
@@ -99,10 +99,10 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       const saved = baseline.current;
       if (!saved?.sourcePath) throw new Error("请先扫描资源");
       if (JSON.stringify(saved.options) === JSON.stringify(nextOptions) && !resetScreening) return;
-      const next = { ...saved, options: nextOptions, workflow: resetScreening ? { screened: false } : saved.workflow };
+      const next = { ...(resetScreening ? resetGameTextScreening(saved) : saved), options: nextOptions };
       await gameTextRequest("save", { gamePath, ...next });
       baseline.current = next;
-      if (resetScreening && current.current) current.current.workflow = next.workflow;
+      if (resetScreening && current.current) publish(resetGameTextScreening(current.current));
     });
     writes.current=job.then(()=>{},()=>{});await job;
   };
@@ -116,10 +116,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         !(value.messageCore && hasMessageCoreNameOverride(entry.source, entry.translation))), value.options.target || "zh-CN", value.options.onlySourceLanguage ? value.options.source || "auto" : "auto", value.options.skipTargetLanguage !== false);
       publish(value); baseline.current = value; setDirty(false); setSearch(""); setPage(0);
       const selected = value.entries.filter(entry => entry.selected);
-      const started = value.workflow?.screened ?? value.entries.some(entry => !!(entry.translation || entry.layoutDraft || entry.screeningDraft || entry.error));
-      const screenedIds = value.workflow?.screenedIds ?? (started ? selected.map(entry => entry.id) : []);
-      const selectionScreened = isTextSelectionScreened(value.entries, screenedIds);
-      value.workflow = { screened: selectionScreened, screenedIds };
+      const selectionScreened = !!isGameTextScreened(value);
+      const screenedIds = selectionScreened ? value.workflow?.screenedIds ?? [] : [];
+      value.workflow = { ...value.workflow, screened: selectionScreened, screenedIds };
       setScreened(selectionScreened); setScreenStarted(screenedIds.length > 0);
       const validate = createGameTextValidator(!!value.messageCore, value.options.target || "zh-CN");
       const completed = selected.filter(entry => entry.translation && !entry.error && textTranslationMatchesTarget(entry, value.options.target) && !validate(entry.source, entry.translation)).length;
@@ -288,10 +287,14 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (original && patch.translation === original.translation) return { ...original, selected: entry.selected };
       return { ...entry, ...patch, translationTarget: options.target, error: "", importPartial: undefined };
     });
-    const screened = isTextSelectionScreened(entries, project.workflow?.screenedIds);
-    publish({ ...project, entries, workflow: { ...project.workflow, screened } });
+    const skippedIds = patch.selected === undefined ? project.workflow?.skippedIds :
+      project.workflow?.skippedIds?.filter(id => !ids.has(id));
+    const screened = project.workflow?.version === gameTextScreeningVersion &&
+      isTextSelectionScreened(entries, project.workflow?.screenedIds);
+    const workflow = { ...project.workflow, skippedIds, screened };
+    publish({ ...project, entries, workflow });
     setScreened(screened);
-    setDirty(entries.some(entry => {
+    setDirty(JSON.stringify(workflow) !== JSON.stringify(baseline.current?.workflow) || entries.some(entry => {
       const original = saved.get(entry.id);
       return !original || !sameTextEdit(entry, original);
     }));
@@ -300,7 +303,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const screen = async (automatic = false) => {
     if (isBenchmarkRunning()) return false;
     if (controller.current || loading || !automatic && busy || !current.current?.entries.length) return false;
-    const next = { ...current.current, entries: current.current.entries.map(entry => ({ ...entry })) };
+    const restored = resetGameTextScreening(current.current);
+    const next = { ...restored, entries: restored.entries.map(entry => ({ ...entry })) };
     const screening = new AbortController(); controller.current = screening;
     beginGameStep(promptState.scope + ":text", "screen");
     report("开始筛选文本");
@@ -309,9 +313,15 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       if (screening.signal.aborted) { setState("screen-stopped"); return false; }
       const selectedEntries = next.entries.filter(entry => entry.selected);
+      const invalid = selectedEntries.filter(entry => {
+        const problem = failureReasons.get(entry.id);
+        if (!problem) return false;
+        entry.error = problem; return true;
+      });
+      if (invalid.length) report(`筛选保留 ${invalid.length} 条错误译文的勾选，详情见「批量结果」`, "warning");
       const screeningEntries = selectedEntries.filter(entry => !messageCore || !hasMessageCoreNameOverride(entry.source, entry.translation));
       const repaired = screeningEntries.filter(entry => !entry.error && entry.translation && entry.translation !== entry.source && gameTextNeedsNoTranslation(entry.source, options.target));
-      const preserved = await screenGameText(screeningEntries, {
+      let preserved = await screenGameText(screeningEntries, {
         settings, model: options.screeningModel, prompts: promptState.selection, source: sourceFilter,
         target: options.target, skipTarget: options.skipTargetLanguage !== false, signal: screening.signal, onOllamaStatus: report,
         onProgress: (completed, total) => {
@@ -321,18 +331,17 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       });
       for (const entry of screeningEntries)
         if (entry.translation === entry.source) entry.translationTarget = options.target;
-      const invalid = next.entries.filter(entry => {
-        if (!entry.translation) return false;
-        const problem = gameTextImportPartial(entry) ? validateGameText(entry.source, entry.translation, messageCore) : gameTextProblem(entry.source, entry.translation);
-        if (!problem) return false;
-        entry.error = problem; return true;
-      });
-      if (invalid.length) report(`筛选校验发现 ${invalid.length} 条已有译文有问题，详情见「批量结果」`, "error");
+      for (const entry of selectedEntries) {
+        if (entry.selected && !gameTextNeedsSupplement(entry, options.target, sourceFilter, options.skipTargetLanguage !== false, messageCore)) {
+          entry.selected = false; preserved++;
+        }
+      }
       screening.signal.throwIfAborted();
-      next.workflow = { screened: true, screenedIds: [...new Set([...(next.workflow?.screenedIds || []), ...selectedEntries.map(entry => entry.id)])] };
+      next.workflow = { screened: true, version: gameTextScreeningVersion,
+        screenedIds: selectedEntries.map(entry => entry.id), skippedIds: selectedEntries.filter(entry => !entry.selected).map(entry => entry.id) };
       await persist(next, true); publish(next); setDirty(false); setScreened(!screening.signal.aborted); setState(screening.signal.aborted ? "screen-stopped" : "screened");
       const result = unityTranslationStats(selectedEntries.filter(entry => entry.selected), gameTextProblem, gameDialogueReuseKey, options.target);
-      report(`筛查完成：${preserved} 条无需翻译已取消勾选，${result.total - result.completed} 种原文待翻译`, "success");
+      report(`筛查完成：${preserved} 条无需处理已取消勾选，${result.total - result.completed} 种原文待翻译`, "success");
       if (options.skipTargetLanguage !== false && repaired.length) report(`已将 ${repaired.length} 条目标语言原文恢复为原样，替换此前重复翻译的结果。条目：${repaired.slice(0, 20).map(entry => "#" + entry.id).join("、")}`, "warning");
       finishGameStep(promptState.scope + ":text", !screening.signal.aborted);
       return !screening.signal.aborted;
@@ -558,11 +567,11 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (current.current !== importing) throw new Error("工程已更新，请重新导入");
       const value = importGameText(importing.entries, contents, /\.csv$/i.test(typeof file === "string" ? file : file.name), mode, messageCore, options.source === "auto" ? detectedSource : options.source);
       setImportIssues(value.issues); setImportReport(value.audit);
-      if (value.changed) {
-        const previous = new Map(importing.entries.map(entry => [entry.id, entry]));
-        const entries = value.entries.map(entry => entry !== previous.get(entry.id) ? { ...entry, translationTarget: entry.translation ? options.target : undefined } : entry);
-        publish({ ...importing, entries }); setDirty(true); setState("idle");
-      }
+      const previous = new Map(importing.entries.map(entry => [entry.id, entry]));
+      const entries = value.entries.map(entry => entry !== previous.get(entry.id) ? { ...entry, translationTarget: entry.translation ? options.target : undefined } : entry);
+      membership.current = null;
+      publish(resetGameTextScreening({ ...importing, entries }));
+      setScreened(false); setScreenStarted(false); setDirty(true); setState("idle"); setProgress(null);
       const parts = ["已应用 " + value.changed + " 条译文"];
       if (value.reassembled) parts.push("重组或还原控制符 " + value.reassembled + " 条");
       if (value.fragmentMatched) parts.push("其中按参数片段匹配 " + value.fragmentMatched + " 条");
@@ -611,9 +620,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const matched = useMemo(() => {
     const key = `${search}\n${filter}\n${options.target}\n${JSON.stringify(textFilters)}`;
     if (dirty && membership.current?.key === key) return entries.filter(entry => membership.current!.ids.has(entry.id));
-    const rows = entries.filter(entry => matchesGameTextFilters(textFilters, entry.selected, !(textFilters.pending && textFilters.failed && textFilters.done) && !!entry.translation && !gameTextImportPartial(entry) && !failureReasons.has(entry.id), failureReasons.has(entry.id), qualityIssues.has(entry.id), targetTextIds.has(entry.id), gameTextSupplementResult(entry, options.target)) && (filter === "all" || filter === "target" && targetTextIds.has(entry.id) || filter === "quality" && qualityIssues.has(entry.id) || filter === "unfinished" && (failureReasons.has(entry.id) || !entry.translation || !!gameTextImportPartial(entry))) && (!search || `#${entry.id}\n${entry.source}\n${entry.translation}\n${entry.file}`.toLowerCase().includes(search.toLowerCase())));
+    const rows = entries.filter(entry => matchesGameTextFilters(textFilters, entry.selected, !(textFilters.pending && textFilters.failed && textFilters.done) && !!entry.translation && !gameTextImportPartial(entry) && !failureReasons.has(entry.id), failureReasons.has(entry.id), qualityIssues.has(entry.id), targetTextIds.has(entry.id), (failureReasons.has(entry.id) || gameTextNeedsSupplement(entry, options.target, sourceFilter, options.skipTargetLanguage !== false, messageCore))) && (filter === "all" || filter === "target" && targetTextIds.has(entry.id) || filter === "quality" && qualityIssues.has(entry.id) || filter === "unfinished" && (failureReasons.has(entry.id) || !entry.translation || !!gameTextImportPartial(entry))) && (!search || `#${entry.id}\n${entry.source}\n${entry.translation}\n${entry.file}`.toLowerCase().includes(search.toLowerCase())));
     membership.current = { key, ids: new Set(rows.map(entry => entry.id)) }; return rows;
-  }, [entries, search, filter, dirty, targetTextIds, qualityIssues, textFilters, gameTextProblem, failureReasons, options.target]);
+  }, [entries, search, filter, dirty, targetTextIds, qualityIssues, textFilters, gameTextProblem, failureReasons, options.target, sourceFilter, options.skipTargetLanguage, messageCore]);
   const filtered = useMemo(() => limitGameText(matched, textFilters.limit), [matched, textFilters.limit]);
   const checkedCount = filtered.reduce((count, entry) => count + Number(entry.selected), 0);
   const hasMixedSelection = checkedCount > 0 && checkedCount < filtered.length;
@@ -667,19 +676,21 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     setProgress({ completed: 0, total: current.current.entries.length, detail: "正在清理全部文本的筛选状态、译文和草稿…" });
     try {
       optionWrite.current?.(); await writes.current;
-      const next = {...current.current,workflow:{screened:false},entries:current.current.entries.map(entry=>({...entry,translation:"",error:"",layoutDraft:undefined,screeningDraft:undefined}))};
+      const next = resetGameTextScreening({ ...current.current, entries: current.current.entries.map(entry => ({ ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined, importPartial: undefined, translationResult: undefined })) });
       await persist(next,true);
       const saved = await gameTextRequest<GameTextProject>("load", { gamePath, sourcePath: next.sourcePath });
       if (saved.entries.some(entry => entry.translation || entry.layoutDraft || entry.screeningDraft || entry.error)) throw new Error("清理后仍存在文本结果，工程未恢复为空，请重试");
       publish(saved); baseline.current = saved; setDirty(false); setProgressFailure("");
       setScreened(false); setScreenStarted(false); setProgress(null); setState("idle");
+      setImportIssues([]); setImportReport(undefined);
       clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
       report("筛选及后续译文、排版草稿已清理", "success");
     } catch(error) { setState("error"); report(String(error), "error"); }
     finally { setSaving(false); }
   };
   const textReady = !!project?.sourcePath && stats.coverageCompleted === selected.length;
-  const screenComplete = screened || textReady;
+  const screenComplete = screened;
+  const screenableCount = selected.length + (project?.workflow?.skippedIds?.length ?? 0);
   const screeningProgress = !screenComplete || ["screening", "screen-stopped", "screened"].includes(state);
   const currentPhase = screeningProgress ? "screen" : "translate";
   const automaticSteps = useRef({ screen, run });
@@ -700,10 +711,10 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const progressLabel = loading ? "正在读取" : state === "clearing" ? "正在清理"
     : state === "screening" ? "正在筛选" : state === "screen-stopped" || state === "stopped" ? "已中止"
     : running ? "正在处理"
-    : state === "error" ? progressFailure ? "失败" : "有条目失败" : screeningProgress && screenComplete || textReady ? "已完成" : "待开始";
+    : state === "error" ? progressFailure ? "失败" : "有条目失败" : (screeningProgress ? screenComplete : textReady) ? "已完成" : "待开始";
   const progressCompleted = screeningProgress ? screenComplete ? selected.length : progress?.completed ?? 0 : progress?.completed ?? stats.completed;
   const progressTotal = screeningProgress ? screenComplete ? selected.length : progress?.total ?? selected.length : progress?.total ?? stats.total;
-  const percent = progressTotal ? Math.min(100, Math.floor(progressCompleted / progressTotal * 100)) : textReady ? 100 : 0;
+  const percent = progressTotal ? Math.min(100, Math.floor(progressCompleted / progressTotal * 100)) : screenComplete && textReady ? 100 : 0;
   const prompt = (scene: keyof typeof promptState.selection) => promptState.selection[scene] || "builtin:" + scene;
   const languageConfiguration = [options.source, options.target, options.onlySourceLanguage !== false, options.skipTargetLanguage !== false];
   const modelConfiguration = options.kind !== "engine" ? [
@@ -735,7 +746,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   </>;
   const progressState = loading || state === "clearing" || state === "screening" || running ? "running"
     : state === "screen-stopped" || state === "stopped" ? "stopped"
-    : state === "error" ? "error" : screeningProgress && screenComplete || textReady ? "done" : "pending";
+    : state === "error" ? "error" : (screeningProgress ? screenComplete : textReady) ? "done" : "pending";
   const progressDetails = <>
     {state === "clearing" && <p className="unity-task-detail">{progress?.detail}</p>}
     {progress && (!screeningProgress || progress.textStage === "screening") && <UnityTranslationProgress progress={progress} running={running || state === "screening"} failure={state === "error" ? progressFailure : undefined} onLocate={locateEntry} />}
@@ -753,13 +764,13 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         percent: loading || state === "clearing" || !progressTotal && progressState === "running" ? undefined : percent,
         details: progressState === "running" ? progressDetails : undefined },
       details: progressState !== "running" ? progressDetails : undefined }} configured={configured} onConfigure={setConfigured}
-    onRun={!busy && !textReady && selected.length ? () => void handle.current?.automatic(new AbortController().signal) : undefined}
+    onRun={!busy && (!screenComplete || !textReady) && screenableCount ? () => void handle.current?.automatic(new AbortController().signal) : undefined}
     steps={[
       { id: "screen", title: "筛选文本", groupedParameters: true, models: [{role:"textScreen",id:options.screeningModel}], summary: options.screeningModel !== undefined ? "大模型判断是否需要翻译" : "按语言规则筛选",
         state: screenComplete ? "done" : "current",
-        run: !screenComplete && selected.length ? () => void screen() : undefined,
+        run: screenableCount ? () => void screen() : undefined,
         stop: state === "screening" ? () => controller.current?.abort() : undefined,
-        runLabel: state === "screen-stopped" ? "继续" : "开始", runDisabled: busy && state !== "screening",
+        runLabel: state === "screen-stopped" ? "继续" : screenComplete ? "重新筛选" : "开始", runDisabled: busy && state !== "screening",
         clear: !busy && (screenStarted || screenComplete) ? () => void clearScreen() : undefined },
       { id: "translate", title: "翻译正文", groupedParameters: true, hideConfigurationShortcut: true,
         models: options.kind === "engine" ? [] : [

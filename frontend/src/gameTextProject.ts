@@ -1,6 +1,6 @@
 import type { GameWrapMode } from "./gameTextLayout";
 import { gameBracketPairs, gameBracketEnds, gameBracketIssue, gameBracketProblem } from "./gameTextStructure";
-import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, gameTextMatchesSource, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
+import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, gameTextMatchesSource, gameTextScreeningResult, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
 import { API_BASE } from "./api";
 import type { UnityEntry } from "./unityOffline";
 import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRow, type UnityTranslationImportMode } from "./unityTranslationFiles";
@@ -12,15 +12,32 @@ export type DialogueRepair = "position" | "continuation" | "alignment" | "name";
 export const dialogueRepairLabels: Record<DialogueRepair, string> = { position: "定位参数", continuation: "句尾对齐", alignment: "缺少行首定位", name: "姓名框" };
 export type DialogueRepairPreview = { input: string; text: string };
 export type GameTextEntry = UnityEntry & { dialogueRepairs?: DialogueRepair[]; dialogueRepairPreview?: DialogueRepairPreview; importPartial?: { translation: string; unmatched: string[] }; translationResult?: { translation: string; target: string } };
-export const gameTextSupplementResult = (entry: UnityEntry, target?: string) => {
-  const result = (entry as GameTextEntry).translationResult;
-  return !!result && !!entry.translation.trim() && result.translation === entry.translation && (!target || result.target === target);
-};
 export const gameTextImportPartial = (entry: UnityEntry) => {
   const partial = (entry as GameTextEntry).importPartial;
   return partial?.translation === entry.translation ? partial : undefined;
 };
-export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[] }; messageCore?: boolean; positionRepairs?: number };
+export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; version?: number }; messageCore?: boolean; positionRepairs?: number };
+
+export const gameTextScreeningVersion = 2;
+
+export function resetGameTextScreening(project: GameTextProject): GameTextProject {
+  const skipped = new Set(project.workflow?.skippedIds ?? []);
+  return { ...project, workflow: { screened: false }, entries: project.entries.map(entry =>
+    skipped.has(entry.id) ? { ...entry, selected: true } : entry) };
+}
+
+export function isGameTextScreened(project: GameTextProject) {
+  return project.workflow?.version === gameTextScreeningVersion && project.workflow.screened &&
+    isTextSelectionScreened(project.entries, project.workflow.screenedIds);
+}
+
+export function gameTextNeedsSupplement(entry: UnityEntry, target: string, sourceLanguage = "auto", skipTarget = true, messageCore = false) {
+  if (entry.error) return true;
+  if (!entry.source.trim() || gameTextScreeningResult(entry.source, target, sourceLanguage, skipTarget, entry.locale).unchanged) return false;
+  if (!entry.translation.trim() || gameTextImportPartial(entry) ||
+      entry.translationTarget && entry.translationTarget !== target) return true;
+  return !!(gameTextProblem(entry.source, entry.translation, messageCore) || gameJapaneseTextIssue(entry.source, entry.translation, target));
+}
 
 export function isTextSelectionScreened(entries: UnityEntry[], screenedIds?: string[]) {
   if (!screenedIds?.length) return false;
