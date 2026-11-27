@@ -585,6 +585,11 @@ TranslateHandler registerTranslationRoute(httplib::Server& svr, const ConfigStor
                 usageEv.feature = "unknown";
             usageEv.sourceChars = static_cast<int>(text.size());
             usageEv.endpoint = "translate";
+            if (provider == "llm")
+            {
+                usageEv.channel = "llm";
+                usageEv.model = body.value("model", cfg.model);
+            }
 
             ScopedUsageLog usageLog(usage_, usageEv);
 
@@ -592,10 +597,8 @@ TranslateHandler registerTranslationRoute(httplib::Server& svr, const ConfigStor
             {
                 apiUrl = body.value("apiUrl", cfg.apiUrl);
                 const std::string apiKey = body.value("apiKey", cfg.apiKey);
-                model = body.value("model", cfg.model);
+                model = usageLog.ev().model;
                 vendorHint = body.value("vendor", "");
-                usageLog.ev().channel = "llm";
-                usageLog.ev().model = model;
                 usageLog.ev().apiHost = UsageStore::hostFromApiUrl(apiUrl);
                 usageLog.ev().vendor = UsageStore::vendorFromHostOrModel(
                     usageLog.ev().apiHost, model, vendorHint);
