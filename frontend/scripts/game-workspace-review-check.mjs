@@ -14,12 +14,13 @@ const result = await build({
     export * as output from './appOutput';
     export * as filters from './components/GameTextFilterMenu';
     export * as failures from './components/GameBatchResults';
+    export * as session from './unityTranslationSession';
   `, resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm",
   external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""' },
 });
-const { structure, display, project, prompts, output, filters, failures } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
+const { structure, display, project, prompts, output, filters, failures, session } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
 
 const source = "\\P[1]は穴に『\\P[1]の母乳』を流し込んだ";
 const wrong = "\\P[1]往洞口灌入『\\P[1]灌入『的母乳』";
@@ -103,6 +104,20 @@ assert.equal(Number(store.get("llmchat-output-unread-warning-error")), 1);
 console.log("PASS quote validation, whole-quote retry, failure categories, supplemental filter, persistent provenance, structure prompts and warning/error badges");
 
 const workspaceCode = await (await import("node:fs/promises")).readFile(fileURLToPath(new URL("../src/components/GameTextWorkspace.tsx", import.meta.url)), "utf8");
+const errorCode = (await transform(workspaceCode.slice(workspaceCode.indexOf("function createTextRunErrors"), workspaceCode.indexOf("export function GameTextWorkspace")), { loader: "ts", target: "es2022" })).code;
+const createTextRunErrors = new Function("batchFailureType", errorCode + ";return createTextRunErrors;")(failures.batchFailureType);
+const errorMessages = [];
+const runErrors = createTextRunErrors("翻译正文", (message, level) => errorMessages.push({ message, level }));
+for (let i = 0; i < 500; i++) runErrors.notify();
+runErrors.status("连接错误明细", "error");
+assert.equal(errorMessages.length, 1, "report the first error immediately, without per-entry log spam");
+runErrors.finish(["括号未成对", "括号错配", "译文仍含日文"], "文本翻译结束");
+assert.equal(errorMessages.length, 2);
+assert.equal(errorMessages[1].message, "文本翻译结束，错误共 3 条：括号与引用结构错误 2 条，译文残留原文 1 条");
+const cleanMessages = [];
+createTextRunErrors("筛选文本", message => cleanMessages.push(message)).finish([], "筛选文本结束");
+assert.deepEqual(cleanMessages, [], "successful tasks have no error notification");
+const screenMessages = [];
 const screenStart = workspaceCode.indexOf("  const screen = async");
 const screenEnd = workspaceCode.indexOf("  const resetTranslation", screenStart);
 const complete = { ...entry, id: "done" };
@@ -116,10 +131,11 @@ const context = {
   current: { current: { ...initialProject, entries: [complete, missing, partial, broken, nativeTarget, manuallyExcluded] } },
   resetGameTextScreening: project.resetGameTextScreening, gameTextScreeningVersion: project.gameTextScreeningVersion,
   gameTextNeedsSupplement: project.gameTextNeedsSupplement, gameTextImportPartial: project.gameTextImportPartial,
+  createTextRunErrors,
   gameTextNeedsNoTranslation: display.gameTextNeedsNoTranslation, messageCore: false, sourceFilter: "ja",
   options: { target: "zh-CN", skipTargetLanguage: true }, settings: {}, promptState: { scope: "fixture", selection: {} },
   failureReasons: new Map([["broken", "括号错误"]]),
-  beginGameStep() {}, finishGameStep() {}, reportGameStepItems() {}, report() {},
+  beginGameStep() {}, finishGameStep() {}, reportGameStepItems() {}, report: (message, level) => screenMessages.push({ message, level }),
   setScreenStarted() {}, setSaving() {}, setState() {}, setProgressFailure() {}, setProgress() {}, setDirty() {}, setScreened() {},
   screenGameText: async rows => {
     const eligible = rows.filter(row => !row.error);
@@ -147,6 +163,10 @@ assert.equal(savedScreen.entries.find(row => row.id === "broken").selected, true
 assert.equal(savedScreen.entries.find(row => row.id === "target").selected, false);
 assert.equal(savedScreen.entries.find(row => row.id === "manual").selected, false);
 assert.deepEqual(savedScreen.workflow.skippedIds.sort(), ["done", "target"]);
+assert.deepEqual(savedScreen.workflow.supplementalIds, ["missing", "partial", "broken"]);
+assert.deepEqual(screenMessages.filter(row => row.level === "error").map(row => row.message), [
+  "筛选文本出现错误，详情见文本翻译区域，结束后汇总", "筛选文本结束，错误共 1 条：括号与引用结构错误 1 条",
+]);
 assert.equal(project.isGameTextScreened(savedScreen), true);
 assert.equal(await runScreen(), true);
 assert.equal(savedScreen.entries.find(row => row.id === "done").selected, false);
@@ -155,12 +175,35 @@ assert.ok(workspaceCode.includes('publish(resetGameTextScreening({ ...importing,
 assert.ok(!workspaceCode.includes("screened || textReady"));
 console.log("PASS actual screening transition, completed/empty/partial/error selection, rerun, legacy state invalidation and import reset");
 
+const supplementalProject = JSON.parse(JSON.stringify(savedScreen));
+for (const row of supplementalProject.entries) {
+  row.translation = "完整译文"; row.error = ""; delete row.importPartial;
+}
+const supplementalIds = project.gameTextSupplementIds(supplementalProject);
+assert.deepEqual([...supplementalIds], ["missing", "partial", "broken"], "the saved screening cohort survives translating and reopening");
+const oldWorkflow = { ...supplementalProject.workflow };
+delete oldWorkflow.supplementalIds;
+assert.deepEqual([...project.gameTextSupplementIds({ workflow: oldWorkflow })], [...supplementalIds], "restore the cohort from previously saved screening results");
+assert.equal(project.gameTextSupplementIds(project.resetGameTextScreening(supplementalProject)).size, 0);
+const matchStart = workspaceCode.indexOf("    const rows = entries.filter(entry => matchesGameTextFilters");
+const matchEnd = workspaceCode.indexOf("    membership.current", matchStart);
+const matchCode = (await transform(workspaceCode.slice(matchStart, matchEnd), { loader: "ts", target: "es2022" })).code;
+const matchContext = { entries: supplementalProject.entries, matchesGameTextFilters: filters.matchesGameTextFilters,
+  textFilters: { ...filters.defaultGameTextFilters, supplemental: true }, failureReasons: new Map(), qualityIssues: new Set(), targetTextIds: new Set(),
+  supplementalIds, gameTextNeedsSupplement: project.gameTextNeedsSupplement, gameTextImportPartial: project.gameTextImportPartial,
+  options: { target: "zh-CN" }, sourceFilter: "ja", messageCore: false, filter: "all", search: "",
+};
+const matchRows = new Function("context", "with(context) {" + matchCode + ";return rows;}")(matchContext);
+assert.deepEqual(matchRows.map(row => row.id), ["missing", "partial", "broken"], "completed rows stay visible in the supplemental filter");
+console.log("PASS stable supplemental rows after translation, project reload, legacy screening and reset");
+
 const editStart = workspaceCode.indexOf("  const editEntries =");
 const editEnd = workspaceCode.indexOf("  const edit =", editStart);
 const editCode = (await transform(workspaceCode.slice(editStart, editEnd), { loader: "ts", target: "es2022" })).code;
 const editContext = {
   current: { current: savedScreen }, baseline: { current: JSON.parse(JSON.stringify(savedScreen)) }, options: { target: "zh-CN" },
   isTextSelectionScreened: project.isTextSelectionScreened, gameTextScreeningVersion: project.gameTextScreeningVersion,
+  gameTextSupplementIds: project.gameTextSupplementIds,
   sameTextEdit: project.sameTextEdit, setScreened() {}, setImportIssues() {}, setDirty: value => { editContext.dirty = value; },
 };
 editContext.publish = value => { editContext.current.current = value; };
@@ -169,4 +212,71 @@ editRows(new Set(["done"]), { selected: false });
 assert.equal(editContext.current.current.entries.find(row => row.id === "done").selected, false);
 assert.ok(!editContext.current.current.workflow.skippedIds.includes("done"));
 assert.equal(editContext.dirty, true);
+assert.deepEqual(editContext.current.current.workflow.supplementalIds, ["missing", "partial", "broken"]);
 console.log("PASS manual deselection removes retained writeback eligibility and is saved even when checkbox value was already false");
+
+const runStart = workspaceCode.indexOf("  const run = async");
+const runEnd = workspaceCode.indexOf("  const importFile =", runStart);
+const runCode = (await transform(workspaceCode.slice(runStart, runEnd), { loader: "ts", target: "es2022" })).code;
+const runMessages = [], savedBatches = [], liveFailures = [];
+const fixtureRows = ["一番目の説明", "二番目の説明", "三番目の説明", "四番目の説明"].map((source, index) => ({ ...entry, source, id: String(index + 1), translation: "" }));
+const runningProject = { ...initialProject, entries: fixtureRows, workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: fixtureRows.map(row => row.id), skippedIds: [] } };
+const runtime = {
+  ...context, createTextRunErrors, gameTextSupplementIds: project.gameTextSupplementIds,
+  models: [], screened: true, baseline: { current: JSON.parse(JSON.stringify(runningProject)) },
+  current: { current: runningProject }, controller: { current: null }, writes: { current: Promise.resolve() }, optionWrite: { current: null }, work: { current: null }, queue: { current: null },
+  options: { kind: "engine", target: "zh-CN", skipTargetLanguage: true, joinLines: false }, wrapMode: "source", gamePath: "fixture", engines: [], failureReasons: new Map(),
+  UnitySegmentation: class { dispose() {} }, setRunning() {}, setProgress: value => { if (value?.translation) liveFailures.push(value.translation.failedEntries); },
+  setProgressFailure: value => { runtime.progressFailure = value; },
+  importIssues: fixtureRows.map(row => ({ id: row.id, reason: "导入译文括号错误" })),
+  setImportIssues: update => { runtime.importIssues = update(runtime.importIssues); },
+  report: (message, level) => runMessages.push({ message, level }),
+  publish: value => { runtime.current.current = value; },
+  measureGameAsync: async (_scope, _metric, work) => work(), measureGameWork: (_scope, _metric, work) => work(),
+  gameTextRequest: async (_action, value) => savedBatches.push(JSON.parse(JSON.stringify(value))),
+  api: { getSettings: async () => ({}) }, createGameTranslationContext: () => () => ({}), loadLocalModelProfiles: () => ({}),
+  preserveTargetGameText: display.preserveTargetGameText, textTranslationMatchesTarget: session.textTranslationMatchesTarget,
+  sameTextEdit: project.sameTextEdit,
+  parseEngineKeys: () => ({}), prepareGameTerms: async () => ({ terms: new Map(), issues: [] }), gameTermProblem: () => "",
+  translateRpgSystemMessage: () => undefined, gameTextHasSpeaker: () => false,
+  createUnityEnginePool: () => ({ concurrency: 1, dispose() {}, translate: async (_text, id) => {
+    if (id === "1" || id === "2") throw new Error("译文括号未成对");
+    if (id === "3") throw new Error("译文仍含日文");
+    return "完成的译文";
+  } }),
+  translateUnitySession: session.translateUnitySession,
+};
+const runTranslation = new Function("context", "with(context) {" + runCode + ";return run;}")(runtime);
+assert.equal(await runTranslation(), false);
+const translationErrors = runMessages.filter(row => row.level === "error");
+assert.deepEqual(translationErrors.map(row => row.message), [
+  "翻译正文出现错误，详情见文本翻译区域，结束后汇总",
+  "文本翻译结束，错误共 3 条：括号与引用结构错误 2 条，译文残留原文 1 条",
+], runtime.progressFailure);
+assert.equal(runtime.current.current.entries.filter(row => row.error).length, 3);
+assert.ok(liveFailures.some(count => count > 0), "failure counts remain visible while translation is running");
+assert.equal(savedBatches.flatMap(batch => batch.entries).filter(row => row.error).length, 3, "persist individual error details for review and retry");
+assert.deepEqual(savedBatches[0].workflow.supplementalIds, ["1", "2", "3", "4"]);
+assert.equal(runtime.current.current.entries[3].translation, "完成的译文");
+assert.deepEqual(runtime.importIssues.map(issue => issue.id), ["1", "2", "3"], "a repaired row no longer carries a stale import error");
+console.log("PASS actual translation session: immediate single alert, live failure counts, saved details and single final category summary");
+
+runMessages.length = 0;
+runtime.current.current.entries[0].selected = false;
+assert.equal(await runTranslation(false, true, "1"), false, "an unselected row retried explicitly still contributes its failure");
+assert.equal(runMessages.filter(row => row.level === "error").length, 2);
+assert.equal(runMessages.at(-1).message, "文本翻译结束，错误共 1 条：括号与引用结构错误 1 条");
+console.log("PASS explicit row retry summarizes only the retried row, including an unselected failure");
+
+screenMessages.length = 0;
+const successfulScreen = context.screenGameText;
+context.screenGameText = async (_rows, options) => {
+  options.onOllamaStatus("HTTP 503", "error");
+  throw new Error("HTTP 503 服务异常");
+};
+assert.equal(await runScreen(), false);
+const screeningErrors = screenMessages.filter(row => row.level === "error");
+assert.equal(screeningErrors.length, 2);
+assert.match(screeningErrors[1].message, /括号与引用结构错误 1 条，连接或服务异常 1 条/);
+context.screenGameText = successfulScreen;
+console.log("PASS screening service failure produces one notification and one aggregated final error line");

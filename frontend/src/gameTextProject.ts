@@ -16,9 +16,16 @@ export const gameTextImportPartial = (entry: UnityEntry) => {
   const partial = (entry as GameTextEntry).importPartial;
   return partial?.translation === entry.translation ? partial : undefined;
 };
-export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; version?: number }; messageCore?: boolean; positionRepairs?: number };
+export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; supplementalIds?: string[]; version?: number }; messageCore?: boolean; positionRepairs?: number };
 
 export const gameTextScreeningVersion = 2;
+
+export function gameTextSupplementIds(project: Pick<GameTextProject, "workflow">) {
+  const workflow = project.workflow;
+  if (workflow?.version !== gameTextScreeningVersion) return new Set<string>();
+  const skipped = new Set(workflow.skippedIds);
+  return new Set(workflow.supplementalIds ?? workflow.screenedIds?.filter(id => !skipped.has(id)));
+}
 
 export function resetGameTextScreening(project: GameTextProject): GameTextProject {
   const skipped = new Set(project.workflow?.skippedIds ?? []);
