@@ -310,7 +310,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (screening.signal.aborted) { setState("screen-stopped"); return false; }
       const selectedEntries = next.entries.filter(entry => entry.selected);
       const screeningEntries = selectedEntries.filter(entry => !messageCore || !hasMessageCoreNameOverride(entry.source, entry.translation));
-      const repaired = screeningEntries.filter(entry => entry.translation && entry.translation !== entry.source && gameTextNeedsNoTranslation(entry.source, options.target));
+      const repaired = screeningEntries.filter(entry => !entry.error && entry.translation && entry.translation !== entry.source && gameTextNeedsNoTranslation(entry.source, options.target));
       const preserved = await screenGameText(screeningEntries, {
         settings, model: options.screeningModel, prompts: promptState.selection, source: sourceFilter,
         target: options.target, skipTarget: options.skipTargetLanguage !== false, signal: screening.signal, onOllamaStatus: report,
@@ -331,8 +331,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       screening.signal.throwIfAborted();
       next.workflow = { screened: true, screenedIds: [...new Set([...(next.workflow?.screenedIds || []), ...selectedEntries.map(entry => entry.id)])] };
       await persist(next, true); publish(next); setDirty(false); setScreened(!screening.signal.aborted); setState(screening.signal.aborted ? "screen-stopped" : "screened");
-      const result = unityTranslationStats(selectedEntries, gameTextProblem, gameDialogueReuseKey, options.target);
-      report(`筛查完成：${preserved} 条原样保留，${result.total - result.completed} 种原文待翻译`, "success");
+      const result = unityTranslationStats(selectedEntries.filter(entry => entry.selected), gameTextProblem, gameDialogueReuseKey, options.target);
+      report(`筛查完成：${preserved} 条无需翻译已取消勾选，${result.total - result.completed} 种原文待翻译`, "success");
       if (options.skipTargetLanguage !== false && repaired.length) report(`已将 ${repaired.length} 条目标语言原文恢复为原样，替换此前重复翻译的结果。条目：${repaired.slice(0, 20).map(entry => "#" + entry.id).join("、")}`, "warning");
       finishGameStep(promptState.scope + ":text", !screening.signal.aborted);
       return !screening.signal.aborted;

@@ -295,10 +295,10 @@ export async function runTextScreening(ports: TextScreeningPorts) {
     await yieldUnityPreparation(controller.signal);
     const current = latestProject()!;
     const next = { ...current, entries: current.entries.map(entry => ({ ...entry })) };
-    const ids = unityLanguageScope(next.entries, source, onlySourceLanguage).ids;
-    const rows = next.entries.filter(entry => entry.selected && ids.has(entry.id));
+    const rows = next.entries.filter(entry => entry.selected);
+    const screeningSource = unityLanguageScope(next.entries, source, onlySourceLanguage).language;
     const kept = await screenGameText(rows, {
-      settings, model: textScreenModel, prompts: promptState.selection, source: onlySourceLanguage ? source : "auto",
+      settings, model: textScreenModel, prompts: promptState.selection, source: onlySourceLanguage ? screeningSource : "auto",
       target, skipTarget: skipTargetLanguage, signal: controller.signal, onOllamaStatus: logAction,
       onProgress: (completed, total) => {
         reportScreening(completed, total);
@@ -306,7 +306,7 @@ export async function runTextScreening(ports: TextScreeningPorts) {
     });
     controller.signal.throwIfAborted(); await saveTranslation(next); controller.signal.throwIfAborted(); setTextScreened(true);
     finishGameStep(promptState.scope + ":text", true);
-    setMessage(`筛选完成，${kept} 条目标语言文本原样保留，可开始翻译`);
+    setMessage(`筛选完成，${kept} 条无需翻译已取消勾选，可开始翻译`);
   } catch (error) { if (!controller.signal.aborted) throw error; setTextScreenPaused(true); setMessage("文本筛选已中止"); }
   finally { finishGameStep(promptState.scope + ":text"); endScreening(); }
 }
@@ -345,16 +345,18 @@ export async function runTextBranch<T extends TextBranchRun>(current: UnityProje
   ports: TextBranchPorts<T>) {
   const { getRun, deployment, textScreened, commitConfiguration, getExecution, settings, logAction, saveTranslation,
     setTextScreened, getCurrent, screenGameText, takeRetryIds } = ports;
-  const selectedIds = unityLanguageScope(current.entries, getRun().source, getRun().onlySourceLanguage !== false).ids;
-  if (current.entries.length && !current.entries.some(entry => entry.selected && selectedIds.has(entry.id))) throw new Error("当前原文语言范围内没有所选文本，请调整语言或选取文本");
+  const languageScope = unityLanguageScope(current.entries, getRun().source, getRun().onlySourceLanguage !== false);
+  const selectedIds = languageScope.ids;
+  const needsScreening = (getRun().automatic || deployment) && !getRun().layoutOnly && !textScreened;
+  if (!needsScreening && current.entries.length && !current.entries.some(entry => entry.selected && selectedIds.has(entry.id))) throw new Error("当前原文语言范围内没有所选文本，请调整语言或选取文本");
   let textProject = current;
-  if ((getRun().automatic || deployment) && !getRun().layoutOnly && !textScreened) {
+  if (needsScreening) {
     if (await commitConfiguration("screen") === false) throw new Error("文本筛选配置保存失败");
     const latestConfig = getExecution();
     textProject = { ...current, entries: current.entries.map(entry => ({ ...entry })) };
-    const rows = textProject.entries.filter(entry => entry.selected && selectedIds.has(entry.id));
+    const rows = textProject.entries.filter(entry => entry.selected);
     await screenGameText(rows, {
-      settings, model: latestConfig.parameters.textScreenModel, prompts: latestConfig.prompts, source: getRun().onlySourceLanguage === false ? "auto" : getRun().source,
+      settings, model: latestConfig.parameters.textScreenModel, prompts: latestConfig.prompts, source: getRun().onlySourceLanguage === false ? "auto" : languageScope.language,
       target: getRun().target, skipTarget: getRun().skipTargetLanguage !== false, signal: job.signal, onOllamaStatus: logAction,
       onProgress: (completed, total) => onProgress({ completed, total, detail: getRun().textScreenModel === undefined ? "正在按语言规则筛选文本" : "正在用大模型筛选文本", textStage: "screening", model: getRun().textScreenModel }),
     });
@@ -363,7 +365,7 @@ export async function runTextBranch<T extends TextBranchRun>(current: UnityProje
     setTextScreened(true);
   }
   const retryIds = takeRetryIds();
-  if (textProject.entries.length) {
+  if (textProject.entries.some(entry => retryIds ? retryIds.has(entry.id) : entry.selected && selectedIds.has(entry.id))) {
     if (getRun().automatic && await commitConfiguration("translate") === false) throw new Error("正文翻译配置保存失败");
     const latestConfig = getExecution();
     const options = getRun().automatic || deployment ? { ...getRun(), ...latestConfig.parameters } : getRun();
