@@ -98,12 +98,20 @@ inline bool writeText(
         }
 
 #ifdef _WIN32
-        if (!MoveFileExW(
-                temporary.c_str(),
-                target.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        for (unsigned attempt = 0;; ++attempt)
         {
-            if (error) *error = "替换文件失败，Windows 错误码 " + std::to_string(GetLastError());
+            if (MoveFileExW(temporary.c_str(), target.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) break;
+            const auto code = GetLastError();
+            const bool busy = code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION;
+            // Windows file scanners can briefly hold a file without delete sharing.
+            if (busy && attempt < 5) { Sleep(25u << attempt); continue; }
+            if (error) {
+                const auto path = target.u8string();
+                *error = "替换文件失败：" + std::string(path.begin(), path.end()) +
+                    "，Windows 错误码 " + std::to_string(code) +
+                    (busy ? "（访问被拒绝或文件被占用）" : "");
+            }
             return false;
         }
 #else
