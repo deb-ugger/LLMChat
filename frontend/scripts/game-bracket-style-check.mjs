@@ -74,7 +74,8 @@ assert.ok(project.gameTextProblem(String.raw`\C[2]説明`, String.raw`\C[3]说�
 assert.ok(project.gameTextProblem(String.raw`\C[2]説明`, String.raw`\C［2］说明`));
 assert.ok(project.gameTextProblem("{0}の説明", "｛0｝的说明"));
 assert.ok(project.gameTextProblem("%1の説明", "%2的说明"));
-await assert.rejects(display.translateGameDisplayText("『こんにちは』", async () => "『你好」", "zh-CN", "ja"), /括号|引用/);
+assert.equal(await display.translateGameDisplayText("『こんにちは』", async () => "『你好」", "zh-CN", "ja"), "『你好』", "restore mixed quote styles when opening/closing positions still match the source");
+await assert.rejects(display.translateGameDisplayText("『こんにちは』", async () => "『你好]", "zh-CN", "ja"), /括号|引用/);
 console.log("PASS actual model-output path restores source symbols in one request and still rejects changed controls, placeholders and broken pairs");
 
 const termRows = ["魔法追撃(全体)：炎", "魔法追撃(単体)：雷"].map((source, index) => ({ id: String(index), source, translation: "", error: "", selected: true, rpgTextKind: "skill" }));
@@ -103,3 +104,25 @@ const custom = prompts.gameTaskPrompt("text", { text: "custom" });
 assert.ok(custom.includes("保留我的翻译要求"));
 assert.ok(custom.includes(prompts.GAME_STRUCTURE_PROMPT));
 console.log("PASS every related built-in prompt/default configuration and custom prompt's common rules use the updated symbol policy");
+
+const quotedTerm = '私は"悪魔"だ';
+let wrappedCalls = 0;
+const wrappedTerm = await display.translateGameDisplayText(quotedTerm, async text => {
+  wrappedCalls++;
+  return text.replace("私は", "我是").replace("だ", "").replace(/\{LLMCHAT_FORMAT_\d+\}/g, marker => "{" + marker + "}");
+}, "zh-CN", "ja", new Map([["悪魔", "恶魔"]]));
+assert.equal(wrappedTerm, '我是"恶魔"');
+assert.equal(wrappedCalls, 1);
+const intentionalBraces = await display.translateGameDisplayText("{{0}}の説明", async text => text.replace("の説明", "的说明"), "zh-CN", "ja");
+assert.equal(intentionalBraces, "{{0}}的说明", "preserve double braces that already existed in the input");
+await assert.rejects(display.translateGameDisplayText(String.raw`こんにちは\V[19]の説明`, async () => "你好{{LLMCHAT_FORMAT_99}}", "zh-CN", "ja"), /括号|标记|占位符/, "do not repair unknown or invented placeholder IDs");
+const newlineSource = "最初の行\n次の行";
+assert.equal(await display.translateGameDisplayText(newlineSource, async () => String.raw`第一行\n第二行`, "zh-CN", "ja"), "第一行\n第二行");
+assert.equal(await display.translateGameDisplayText(newlineSource, async () => String.raw`第一行\\n第二行`, "zh-CN", "ja"), "第一行\n第二行", "decode doubled model-output escaping without leaving a stray backslash");
+assert.equal(await display.translateGameDisplayText("最初の行\r\n次の行", async () => String.raw`第一行\r\n第二行`, "zh-CN", "ja"), "第一行\r\n第二行");
+const mixedNewlines = String.raw`最初の行\n注釈` + "\n次の行";
+const mixedResult = await display.translateGameDisplayText(mixedNewlines, async text => text.replace("最初の行", "第一行").replace("注釈", "注释").replace("次の行", "第二行").replace(/\n/g, String.raw`\n`), "zh-CN", "ja");
+assert.equal(mixedResult, String.raw`第一行\n注释` + "\n第二行", "restore the model's encoded line break without decoding protected source controls");
+await assert.rejects(display.translateGameDisplayText("こんにちは", async () => String.raw`你好\n第二行`, "zh-CN", "ja"), /占位符|转义/);
+await assert.rejects(display.translateGameDisplayText("煙が出た", async () => "（冒烟了）", "zh-CN", "ja"), /括号|引用/);
+console.log("PASS redundant marker wrappers, mixed quote styles and encoded newlines are repaired while real added brackets and controls remain errors");

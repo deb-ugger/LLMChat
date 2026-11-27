@@ -178,6 +178,18 @@ export function gameTextScreeningResult(source: string, target: string, sourceLa
   return { source, unchanged, structured, retained, template };
 }
 
+function restoreModelFormatting(input: string, output: string) {
+  const markers = new Set(input.match(/\{LLMCHAT_FORMAT_\d+\}/g));
+  let value = output.replace(/\{\{(LLMCHAT_FORMAT_\d+)\}\}/g, (whole, name: string) =>
+    markers.has(`{${name}}`) && !input.includes(whole) ? `{${name}}` : whole);
+  // Original escaped controls are still protected markers at this point.
+  if (/[\r\n]/.test(input)) {
+    const newline = input.includes("\r\n") ? "\r\n" : input.includes("\n") ? "\n" : "\r";
+    value = value.replace(/\\+r\\+n|\\+[nr]/g, escape => input.includes(escape) ? escape : newline);
+  }
+  return value;
+}
+
 /** Keep the whole body and speaker together instead of translating tag-separated fragments. */
 export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string, retryReason?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true, preserveDialogueLines = false) {
   const tokens: string[] = [];
@@ -244,6 +256,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
       retryReason = "模型输出发生重复";
     }
   }
+  result = restoreModelFormatting(protectedText, result);
   // Specialized translation models can drop opaque markers. Retry visible spans
   // without asking the model to recreate controls, names or retained target text.
   const markerPattern = /\{LLMCHAT_FORMAT_\d+\}/g;
@@ -275,7 +288,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
       const trailing = piece.match(/\s*$/)?.[0] || "";
       const input = piece.trim();
       let translated = retriedSpans.get(input);
-      if (translated === undefined) { translated = (await translate(input, referenceText.trim() !== input ? referenceText : undefined, retryReason)).trim(); retriedSpans.set(input, translated); }
+      if (translated === undefined) { translated = restoreModelFormatting(input, await translate(input, referenceText.trim() !== input ? referenceText : undefined, retryReason)).trim(); retriedSpans.set(input, translated); }
       if (!translated) throw new Error("正文重译未返回有效内容，请检查模型与提示词；此条译文未保存");
       if (JSON.stringify(input.match(markerPattern) || []) !== JSON.stringify(translated.match(markerPattern) || []))
         throw new Error("完整括号或引用组重译未保留控制符标记，请更换模型或提示词；此条译文未保存");

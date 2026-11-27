@@ -7,7 +7,7 @@ const bracketWidth = new Map([["（", "("], ["）", ")"], ["［", "["], ["］", 
 const structureOf = (marks: BracketMark[]) => marks.map(mark => quoteSymbols.has(mark.symbol)
   ? mark.opening ? "“" : "”" : bracketWidth.get(mark.symbol) || mark.symbol).join("");
 
-function readBrackets(text: string) {
+function readBrackets(text: string, compatibleStyles = false) {
   const stack: { close: string; open: string; position: number }[] = [];
   const marks: BracketMark[] = [];
   let position = 0, index = 0;
@@ -38,7 +38,10 @@ function readBrackets(text: string) {
     else if (gameBracketEnds.has(char)) {
       const expected = stack.pop();
       if (!expected) return { marks, issue: `第 ${position} 字多出右括号「${char}」` };
-      if (expected.close !== char) return { marks, issue: `第 ${position} 字括号错配，应为「${expected.close}」，实际为「${char}」` };
+      const sameStyleFamily = quoteSymbols.has(expected.close) && quoteSymbols.has(char) ||
+        (bracketWidth.get(expected.close) || expected.close) === (bracketWidth.get(char) || char);
+      if (expected.close !== char && !(compatibleStyles && sameStyleFamily))
+        return { marks, issue: `第 ${position} 字括号错配，应为「${expected.close}」，实际为「${char}」` };
       marks.push({ symbol: char, index: at, opening: false });
     }
   }
@@ -51,7 +54,7 @@ export function gameBracketIssue(text: string) {
 }
 
 export function gameBracketProblem(source: string, translation: string) {
-  const original = readBrackets(source), translated = readBrackets(translation);
+  const original = readBrackets(source), translated = readBrackets(translation, true);
   if (original.issue) return "";
   if (translated.issue) return "译文括号或引用未成对：" + translated.issue;
   if (structureOf(original.marks) === structureOf(translated.marks)) return "";
@@ -61,7 +64,7 @@ export function gameBracketProblem(source: string, translation: string) {
 
 /** Restore source glyphs only when pairing, nesting and bracket families agree. */
 export function restoreGameBracketStyle(source: string, translation: string) {
-  const original = readBrackets(source), translated = readBrackets(translation);
+  const original = readBrackets(source), translated = readBrackets(translation, true);
   if (original.issue || translated.issue || structureOf(original.marks) !== structureOf(translated.marks)) return translation;
   let result = "", offset = 0;
   translated.marks.forEach((mark, index) => {
