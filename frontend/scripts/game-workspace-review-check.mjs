@@ -82,7 +82,11 @@ for (const scene of ["text", "dialogue", "names", "image", "review"]) {
   assert.ok(prompt.includes("整个引用连同标记"));
 }
 for (const scene of ["line", "layout"]) assert.ok(prompts.gameTaskPrompt(scene).includes(prompts.GAME_LAYOUT_STRUCTURE_PROMPT));
-for (const preset of prompts.BUILTIN_GAME_PROMPTS.filter(item => item.id.includes("-zh-cn-r18:"))) assert.ok(preset.prompt.includes(prompts.GAME_STRUCTURE_PROMPT));
+for (const preset of prompts.BUILTIN_GAME_PROMPTS.filter(item => item.id.includes("-zh-cn-r18:"))) {
+  if (["text", "dialogue", "names", "image", "review"].includes(preset.scene)) assert.ok(preset.prompt.includes(prompts.GAME_STRUCTURE_PROMPT));
+  else if (["line", "layout"].includes(preset.scene)) assert.ok(preset.prompt.includes(prompts.GAME_LAYOUT_STRUCTURE_PROMPT));
+  else assert.ok(!preset.prompt.includes("只翻译当前正文"), "screening and OCR prompts must retain their own task");
+}
 prompts.saveGamePromptCatalog([{ id: "custom", name: "自定义", scene: "text", prompt: "自定义翻译规则" }]);
 assert.ok(prompts.gameTaskPrompt("text", { text: "custom" }).includes(prompts.GAME_STRUCTURE_PROMPT));
 

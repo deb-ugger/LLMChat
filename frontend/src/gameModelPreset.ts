@@ -2,7 +2,7 @@ import { defaultMosaicSettings } from "./gameMosaic";
 import { api, type OcrMode, type TranslateProvider } from "./api";
 import { loadLocalModelProfiles, saveLocalModelProfiles } from "./modelPresets";
 import { gameDefaultTextModel, modelConcurrency, saveModelConcurrency } from "./gameModelPerformance";
-import type { GamePromptScene, GamePromptSelection } from "./gamePrompts";
+import { gameJapanesePromptId, type GamePromptScene, type GamePromptSelection } from "./gamePrompts";
 import type { GameTextOptions } from "./gameTextProject";
 import { loadUnityEngines, normalizeUnityEngines, UNITY_ENGINE_CHOICES_KEY, type UnityEngineChoice } from "./unityEnginePool";
 import type { UnityLineMode } from "./unityLineLayout";
@@ -37,6 +37,7 @@ export type GameTestConfigurationAccess = {
 export type SavedGameTestConfiguration = { id: string; name: string; value: GameTestConfiguration };
 export const DEFAULT_GAME_TEST_CONFIGURATION_ID = "builtin:default";
 export const JAPANESE_GAME_TEST_CONFIGURATION_ID = "builtin:japanese";
+export const JAPANESE_R18_GAME_TEST_CONFIGURATION_ID = "builtin:japanese-r18";
 
 const configurationsPrefix = "llmchat-game-test-configurations:";
 const configurationsKey = (scope: string) => configurationsPrefix + scope.replaceAll("\\", "/").toLowerCase();
@@ -124,12 +125,12 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   const modelId = (spec: typeof testModels[keyof typeof testModels]) => configured.find(model => spec.pattern.test(model)) || spec.id;
   const normal = modelId(testModels.hy);
   const setRole = (roles: GameTestRoles, scene: GamePromptScene, model?: string, concurrency = 1) => {
-    if (roles[scene]) roles[scene] = { model, concurrency, prompt: "builtin:" + scene };
+    roles[scene] = { model, concurrency, prompt: "builtin:" + scene };
   };
   const text = value.text;
   text.options.kind = "llm";
   text.options.includeContext = true;
-  if (text.options.lineMode) text.options.lineMode = "local";
+  text.options.lineMode = "local";
   setRole(text.roles, "textScreen"); setRole(text.roles, "line");
   for (const scene of ["text", "dialogue"] as const)
     setRole(text.roles, scene, normal, gameDefaultTextModel.concurrency);
@@ -143,7 +144,8 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   images.options.mode = hasScreeningStep ? (imageLanguage.source === "ja" || imageLanguage.source === "auto" ? "manga" : "precise") : "fast";
   images.options.concurrency = GAME_IMAGE_SCREENING_LANES;
   if (hasScreeningStep) images.options.strategy = "staged";
-  if (images.options.refine) Object.assign(images.options.refine, { method: "local", mode: "precise", concurrency: 2 });
+  if (hasScreeningStep && !images.options.refine) images.options.refine = { method: "local", mode: "precise", concurrency: 2, confidence: 50 };
+  else if (images.options.refine) Object.assign(images.options.refine, { method: "local", mode: "precise", concurrency: 2 });
   if (images.options.translation) Object.assign(images.options.translation, { kind: "llm", provider: "llm" });
   setRole(images.roles, "screen"); setRole(images.roles, "refine"); setRole(images.roles, "layout");
   setRole(images.roles, "recognize", hasScreeningStep ? defaultGameImageVision(configured) || modelId(testModels.vision) : undefined, 2);
@@ -152,8 +154,21 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   return value;
 }
 
+export function japaneseGameTestConfiguration(current: GameTestConfiguration, r18 = false): GameTestConfiguration {
+  const value = defaultGameTestConfiguration(current);
+  const language = { source: "ja", target: "zh-CN", onlySourceLanguage: true, skipTargetLanguage: true };
+  Object.assign(value.text.options, language);
+  if (value.images?.options.translation) Object.assign(value.images.options.translation, language);
+  if (value.images?.options.strategy) value.images.options.mode = "manga";
+  value.detectedSource = "ja";
+  for (const part of [value.text, value.images]) if (part) {
+    for (const [scene, role] of Object.entries(part.roles) as [GamePromptScene, GameTestRole][]) role.prompt = gameJapanesePromptId(scene, r18);
+  }
+  return value;
+}
+
 export function refreshSavedGameTestConfigurations() {
-  const revision = "llmchat-game-test-config-throughput-v1";
+  const revision = "llmchat-game-test-config-japanese-prompts-v2";
   if (localStorage.getItem(revision) !== null) return;
   const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
   let refreshed = 0;
@@ -165,8 +180,28 @@ export function refreshSavedGameTestConfigurations() {
     if (!Array.isArray(rows)) continue;
     const next = rows.map(row => {
       if (!row?.id || !row.name || !row.value?.text?.options || !row.value.text.roles) return row;
-      refreshed++;
-      return { ...row, value: defaultGameTestConfiguration(row.value) };
+      if (row.id === DEFAULT_GAME_TEST_CONFIGURATION_ID) { refreshed++; return { ...row, value: defaultGameTestConfiguration(row.value) }; }
+      if (row.id === JAPANESE_GAME_TEST_CONFIGURATION_ID || row.id === JAPANESE_R18_GAME_TEST_CONFIGURATION_ID) {
+        refreshed++; return { ...row, value: japaneseGameTestConfiguration(row.value, row.id === JAPANESE_R18_GAME_TEST_CONFIGURATION_ID) };
+      }
+      const r18 = /r18/i.test(row.name) || [row.value.text, row.value.images].some(part => Object.values(part?.roles || {}).some(role => role?.prompt?.startsWith("builtin:ja-zh-cn-r18:")));
+      const fallback = japaneseGameTestConfiguration(row.value, r18);
+      const value = structuredClone(row.value);
+      let changed = false;
+      for (const partName of ["text", "images"] as const) {
+        const part = value[partName], defaults = fallback[partName];
+        const language = partName === "text" ? value.text.options : value.images?.options.translation || value.text.options;
+        if (!part || !defaults || language?.source !== "ja" || language.target !== "zh-CN") continue;
+        for (const [scene, defaultRole] of Object.entries(defaults.roles) as [GamePromptScene, GameTestRole][]) {
+          const role = part.roles[scene];
+          if (!role) { part.roles[scene] = { ...defaultRole }; changed = true; continue; }
+          if (role.prompt !== "builtin:" + scene && !role.prompt?.startsWith("builtin:ja-zh-cn")) continue;
+          const prompt = gameJapanesePromptId(scene, r18);
+          if (role.prompt !== prompt) { role.prompt = prompt; changed = true; }
+        }
+      }
+      if (changed) { refreshed++; return { ...row, value }; }
+      return row;
     });
     localStorage.setItem(key, JSON.stringify(next));
   }
@@ -175,13 +210,9 @@ export function refreshSavedGameTestConfigurations() {
 
 export function builtinGameTestConfigurations(current: GameTestConfiguration): SavedGameTestConfiguration[] {
   const value = defaultGameTestConfiguration(current);
-  const japanese = defaultGameTestConfiguration(current);
-  const language = { source: "ja", onlySourceLanguage: true };
-  Object.assign(japanese.text.options, language);
-  if (japanese.images?.options.translation) Object.assign(japanese.images.options.translation, language);
-  if (japanese.images && japanese.images.options.strategy) japanese.images.options.mode = "manga";
   return [
     { id: DEFAULT_GAME_TEST_CONFIGURATION_ID, name: "默认配置", value },
-    { id: JAPANESE_GAME_TEST_CONFIGURATION_ID, name: "日语配置", value: japanese },
+    { id: JAPANESE_GAME_TEST_CONFIGURATION_ID, name: "日语配置", value: japaneseGameTestConfiguration(current) },
+    { id: JAPANESE_R18_GAME_TEST_CONFIGURATION_ID, name: "日语 R18 配置", value: japaneseGameTestConfiguration(current, true) },
   ];
 }

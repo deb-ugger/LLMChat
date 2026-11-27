@@ -46,10 +46,10 @@ const adultGameScenes = {
   image: "按钮和标题使用简洁的界面用语，精确保留数字、等级与快捷键。原文有挑逗、调侃或直白的成人向措辞时，译出同等程度的语气与含义，保留明确的术语、指代和比较方向。",
   review: "重新核对人名、否定、数值和控制符，修正漏译及语义错误。保留原有的成人向语气和用词强弱，只输出最终译文。",
 } satisfies Partial<Record<GamePromptScene, string>>;
-const localizedPrompts: GamePrompt[] = gameLocales.flatMap(locale =>
+const localizedPrompts: GamePrompt[] = gameLocales.filter(locale => locale.id !== "ja").flatMap(locale =>
   (Object.entries(adultGameScenes) as [GamePromptScene, string][]).map(([scene, guidance]) => ({
     id: `builtin:${locale.id}-zh-cn-r18:${scene}`,
-    name: `${locale.label} → 简体中文 · ${GAME_PROMPT_SCENES[scene]}`,
+    name: `${locale.label} R18 → 简体中文 · ${GAME_PROMPT_SCENES[scene]}`,
     scene,
     builtin: true,
     tags: ["R18", locale.label, "简体中文"],
@@ -60,7 +60,44 @@ ${locale.guidance}${guidance}
 使用术语表和已有译名。保留占位符、控制符、富文本标签、分页符和有意义的段落。只输出译文。`,
   })),
 );
-export const BUILTIN_GAME_PROMPTS = [...generalPrompts, ...localizedPrompts.map(entry => ({ ...entry, prompt: withGameStructurePrompt(entry.prompt) }))];
+export const gameJapanesePromptId = (scene: GamePromptScene, r18 = false) => `builtin:ja-zh-cn${r18 ? "-r18" : ""}:${scene}`;
+const japaneseScenePrompts: Record<GamePromptScene, string> = {
+  textScreen: "ゲーム原文の翻訳要否を判定する。対象言語は簡体字中国語。日本語の仮名、送り仮名、敬語や混在文が残る場合は翻訳対象とする。共通漢字だけの名前や短語を、中国語だと断定しない。指定された判定形式だけを返し、翻訳は生成しない。",
+  text: "現在の日本語ゲーム本文を自然な簡体字中国語に翻訳する。出来事、条件、否定、数量、行為の主体と対象を正確に保つ。括弧内の属性条件、引用されたアイテム名と説明を区別し、文の外へ移さない。用語集を優先し、既訳の中国語はそのまま保つ。",
+  dialogue: "現在の日本語ゲーム台詞を簡体字中国語に翻訳する。明示された会話状況から話者、聞き手、呼称、敬語、感情を判断する。省略された主語が不明なら補わない。吃音、間、強弱、語尾の人物らしさを保つ。引用された発言と地の文の動作を混ぜない。",
+  names: "日本語の人物名、呼称、地名、技能名、アイテム名やUI用語を、用途に合う一つの簡体字中国語表現に統一する。指定用語集と既存の訳名を優先する。肩書やあだ名を本名に変えない。動的な人物名パラメータは翻訳せず、周囲の接尾語だけを自然に訳す。",
+  image: "現在の画像領域から認識された日本語だけを簡体字中国語に翻訳する。ボタン、説明、タイトルと台詞の用途を区別する。数字、レベル、単位、ホットキー、名前と属性条件を落とさない。短く自然に訳すが、画面にない情報は補わない。",
+  screen: "画像内に実際に読める日本語や他言語の文字があるかを調べ、指定形式で位置を返す。日本語の縦書き、振り仮名、吹き出し、小さなUI文字を確認する。背景の模様、服や肌の線を文字にしない。翻訳や曖昧な文字の推測はしない。",
+  refine: "画像候補を再確認し、本当に読める文字があるかを判定する。日本語の縦書き、短いラベル、振り仮名を見落とさない。模様、装飾、背景の線や判読不能な箇所を文字と断定しない。文字の翻訳はせず、指定の判定形式だけを返す。",
+  recognize: "画像に実在する日本語の可読文字を原文のまま正確に転記し、各領域の座標を返す。縦書きの読み順、本文と振り仮名、句読点、引用符、括弧、数字を区別する。表示されている制御記号も維持する。翻訳、意訳、読めない文字の補完はしない。",
+  review: "校正理由を確認し、現在の日本語原文を最初から簡体字中国語に訳し直す。括弧と引用の種類・数・対応、内外の意味範囲、否定、行為の方向、人名、数量と制御パラメータを再確認する。誤った旧訳を継ぎ足さず、完成した訳文だけを返す。",
+  layout: "日本語原文に対応する中国語訳を画像領域へ自然に改行する。変更できるのは合法な改行位置だけ。文字、空白、数字、括弧、引用、制御記号を変更しない。短い括弧内属性やパラメータ入りの引用、名前と単位は一まとまりに保つ。",
+  line: "日本語原文と中国語訳の意味・段落対応を確認し、提示された候補から改行位置を選ぶ。語、名前、数字と単位、短い括弧内属性、制御記号を含む引用は分割しない。段落とリストの境界を保ち、文字列を書き換えず、指定された断点データだけを返す。",
+};
+const japaneseR18Guidance: Record<GamePromptScene, string> = {
+  textScreen: "成人向けの語彙や擬音があっても、言語判定は文字と文脈に基づく。共通漢字の身体語や短い感嘆だけで翻訳不要にしない。",
+  text: "成人向けR18作品の文体に合わせる。身体部位、状態、行為、感覚、比喩、意図や拒否の有無を原文どおりに伝える。意味を弱める置換、不要な過激化、原文にない動作や関係の追加はしない。",
+  dialogue: "成人向けR18台詞の吐息、擬音、途切れ、口調と感情の強さを保つ。誰が誰に何をしているか、拒否・肯定・否定の方向を取り違えない。文脈にない台詞、行為、人物関係を追加しない。",
+  names: "成人向けR18の技能、状態、身体部位やアイテムの名称も、用途を踏まえて一貫した中国語用語にする。固有名、あだ名、部位、行為名を混同しない。引用内の動的パラメータを姓名として再翻訳しない。",
+  image: "成人向けR18の画像内台詞・擬音・ラベルも、実際に認識された文の意味と強弱を保って訳す。絵から行為や台詞を創作せず、曖昧な語は勝手に補完しない。",
+  screen: "成人向けR18の場面でも実在する文字だけを調べる。人体、肌の陰影、液体や効果線を文字に見立てない。台詞、擬音、選択肢の文字は場面内容と分けて確認する。",
+  refine: "成人向けR18画像の台詞と擬音を、人体の輪郭、質感、効果線から区別する。視覚内容から文字を推測せず、読める文字の存在だけを判定する。",
+  recognize: "成人向けR18の吐息、擬音、ハート記号や反復記号も原表記のまま転記する。場面から言葉を補わず、本文と装飾記号を区別する。",
+  review: "成人向けR18の語彙と人物の口調を保ちながら、主体・対象、部位、意図、拒否・否定、引用内外の混同を修正する。誤訳を解説したり、原文にない表現を付け足したりしない。",
+  layout: "成人向けR18の短い吐息、擬音、反復、ハート記号を文字のまとまりとして扱う。括弧内の属性値や引用名を分割せず、文字そのものは一切変更しない。",
+  line: "成人向けR18台詞の短い吐息、擬音と記号の連なりはできるだけ一つの単位に保つ。引用や制御パラメータの途中で断行しない。",
+};
+const japanesePrompts: GamePrompt[] = [false, true].flatMap(r18 =>
+  (Object.keys(GAME_PROMPT_SCENES) as GamePromptScene[]).map(scene => {
+    const prefix = r18 ? "日本語の成人向けR18ゲーム。" : "日本語ゲーム。";
+    const task = `${prefix}${japaneseScenePrompts[scene]}${r18 ? "\n" + japaneseR18Guidance[scene] : ""}`;
+    const structural = ["text", "dialogue", "names", "image", "review", "layout", "line"].includes(scene);
+    return { id: gameJapanesePromptId(scene, r18), name: `日语${r18 ? " R18" : ""} → 简体中文 · ${GAME_PROMPT_SCENES[scene]}`,
+      scene, builtin: true, tags: ["日语", "简体中文", ...(r18 ? ["R18"] : [])],
+      prompt: structural ? withGameStructurePrompt(task, scene === "layout" || scene === "line") : task };
+  }),
+);
+export const BUILTIN_GAME_PROMPTS = [...generalPrompts, ...localizedPrompts.map(entry => ({ ...entry, prompt: withGameStructurePrompt(entry.prompt) })), ...japanesePrompts];
 
 const catalogKey = "llmchat-game-prompt-pool", eventName = "llmchat-game-prompts-changed";
 const subscribe = (listener:()=>void) => { window.addEventListener(eventName,listener);window.addEventListener("storage",listener);return()=>{window.removeEventListener(eventName,listener);window.removeEventListener("storage",listener);}; };
