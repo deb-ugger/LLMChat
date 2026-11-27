@@ -188,10 +188,10 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const failureReasons = useMemo(() => {
     const imported = new Map(importIssues.map(issue => [issue.id, issue.reason]));
     return new Map(entries.flatMap(entry => {
-      const problem = entry.error || (entry.translation ? gameTextImportPartial(entry) ? validateGameText(entry.source, entry.translation, messageCore) : gameTextProblem(entry.source, entry.translation) : "") || imported.get(entry.id);
+      const problem = entry.error || (entry.translation ? gameTextProblem(entry.source, entry.translation) : "") || imported.get(entry.id);
       return problem ? [[entry.id, problem] as const] : [];
     }));
-  }, [entries, importIssues, gameTextProblem, messageCore]);
+  }, [entries, importIssues, gameTextProblem]);
   const stats = useMemo(() => unityTranslationStats(selected.map(entry => gameTextImportPartial(entry) ? { ...entry, error: "仍有未替换原文" } : entry), gameTextProblem, gameDialogueReuseKey, options.target), [selected, gameTextProblem, options.target]);
   const partialWritable = useMemo(() => selected.filter(entry => gameTextImportPartial(entry) && entry.translation !== entry.source && !entry.error && textTranslationMatchesTarget(entry, options.target) && !validateGameText(entry.source, entry.translation, messageCore)).length, [selected, options.target, messageCore]);
   const writableChanged = stats.coverageChanged + partialWritable;
