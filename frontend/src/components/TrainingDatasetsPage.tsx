@@ -6,9 +6,9 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Mous
 import { useDatasetListSplit } from "../hooks/useDatasetListSplit";
 import type { AnnotatedImage } from "../benchmark/imageSampleSet";
 import { copyTrainingDataset, datasetManifestIn, datasetPurposeLabels, datasetPurposes, datasetVerdict,
-  datasetVerdictLabels, importTrainingDataset, labelDatasetImages, openTrainingDataset, partFor, readDatasetCatalog,
+  datasetVerdictLabels, datasetParts, importTrainingDataset, labelDatasetImages, labelDatasetParts, openTrainingDataset, partFor, readDatasetCatalog,
   rememberDataset, renameTrainingDataset, removeTrainingDataset, saveDatasetLabels, saveDatasetMasks, removeDatasetImage, emptyDatasetFilters, matchesDatasetFilters, writeTrainingDatasetFile, type DatasetPurpose,
-  type DatasetReference, type DatasetVerdict, type DatasetWriter, type TrainingDataset } from "../benchmark/trainingDatasets";
+  type DatasetPart, type DatasetReference, type DatasetVerdict, type DatasetWriter, type TrainingDataset } from "../benchmark/trainingDatasets";
 import { api } from "../api";
 import { getFixedMenuPoint, positionWindowPopover } from "../viewportLayout";
 import { GameDialog } from "./GameActionConfirm";
@@ -264,6 +264,14 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   function label(verdict: DatasetVerdict) {
     if (!dataset || !editable || !targets.size) return;
     run("正在保存标注…", () => saveDatasetLabels(dataset, labelDatasetImages(dataset, targets, purpose, verdict), dataset.parts, writer), false, true);
+  }
+
+  function labelParts(part: DatasetPart) {
+    if (!dataset || !editable || !targets.size || purpose !== "mosaic") return;
+    run("正在保存部位标注…", () => {
+      const next = labelDatasetParts(dataset, targets, part);
+      return saveDatasetLabels(dataset, next.samples, next.parts, writer);
+    }, false, true);
   }
 
   function saveMasks(hash: string, masks: DatasetMask[]): Promise<void> {
@@ -641,6 +649,10 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
                   onClick={() => { batchMenu.current?.hidePopover(); label(verdict); }}>
                   {verdict === "unmarked" ? "清除标注" : `标记${datasetVerdictLabels[purpose][verdict]}`}
                 </button>)}
+                {purpose === "mosaic" && (["male_external", "female_external"] as const).map(part =>
+                  <button key={part} type="button" className="training-dataset-catalog-item" disabled={blocked || !editable || !targets.size}
+                    data-tooltip={"将所选图片的全部去码蒙版标记为" + datasetParts[part] + "，跳过无蒙版的图片"}
+                    onClick={() => { batchMenu.current?.hidePopover(); labelParts(part); }}>标记为{datasetParts[part]}</button>)}
                 {dataset && !editable && <p className="hint">创建标注副本后可打标。</p>}
               </div>
             </div>

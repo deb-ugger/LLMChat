@@ -397,6 +397,25 @@ export function labelDatasetImages(dataset: TrainingDataset, hashes: ReadonlySet
   return samples;
 }
 
+export function labelDatasetParts(dataset: TrainingDataset, hashes: ReadonlySet<string>, part: DatasetPart) {
+  const samples = { ...dataset.data.annotations.samples };
+  const parts = { ...dataset.parts };
+  let changed = false;
+  for (const image of dataset.data.images) {
+    const annotation = samples[image.sourceHash];
+    const mosaic = annotation?.mosaic;
+    if (!hashes.has(image.sourceHash) || mosaic?.state !== "present" || !mosaic.boxes?.length) continue;
+    const boxes = mosaic.boxes.map(box => {
+      parts[boxKey(image.sourceHash, box)] = part;
+      return Object.assign([...box] as MosaicBox, { part });
+    });
+    samples[image.sourceHash] = { ...annotation, mosaic: { ...mosaic, boxes } };
+    changed = true;
+  }
+  if (!changed) throw new Error("所选图片没有可标注的去码蒙版");
+  return { samples, parts };
+}
+
 export async function saveDatasetLabels(dataset: TrainingDataset, samples: SampleSetAnnotations["samples"],
   parts: PartLabels, writer: DatasetWriter) {
   const { path, workId } = dataset.reference;
