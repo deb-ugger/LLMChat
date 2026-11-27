@@ -76,8 +76,8 @@ function clampCanvasScroll(view: HTMLDivElement, layout: CanvasLayout) {
   return { left: s, top: t };
 }
 
-export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0, read, masks, editable, busy, onChange, onUndo, canUndo, onRedo, canRedo, onContextMenu, readOnlyHint }: {
-  image: AnnotatedImage; galleryIndex?: number; galleryTotal?: number; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean;
+export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0, read, masks, editable, busy, status, onChange, onUndo, canUndo, onRedo, canRedo, onContextMenu, readOnlyHint }: {
+  image: AnnotatedImage; galleryIndex?: number; galleryTotal?: number; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean; status?: string;
   onChange: (masks: DatasetMask[]) => Promise<void>; onUndo: () => void; canUndo: boolean;
   onRedo: () => void; canRedo: boolean;
   onPreview: () => void; onContextMenu: (event: MouseEvent<HTMLDivElement>) => void; readOnlyHint?: string;
@@ -122,7 +122,8 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
     const element = viewport.current;
     if (!element) return;
     const measure = () => {
-      setViewportSize({ width: element.clientWidth, height: element.clientHeight });
+      const width = element.clientWidth, height = element.clientHeight;
+      setViewportSize(current => current.width === width && current.height === height ? current : { width, height });
       setFit(Math.max(.01, Math.min(4, (element.clientWidth - 58) / image.width, (element.clientHeight - 26) / image.height)));
     };
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
@@ -371,7 +372,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
       {galleryTotal > 0 && galleryIndex > 0 && <p className="training-dataset-gallery-position" aria-live="polite">
         第 {galleryIndex} / {galleryTotal} 张
       </p>}
-      <p className="training-dataset-editor-status" role="status">{error ? <>写入失败：{error}</> : saving ? "正在写入…" : null}</p>
+      <p className="training-dataset-editor-status" role="status">{error ? <>写入失败：{error}</> : status || (saving ? "正在写入…" : null)}</p>
     </header>
     <div className="training-dataset-editor-main">
     <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
@@ -475,7 +476,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
     </section>
     </div>
     <div className="training-dataset-write-state" role="status">{error ? <>写入失败：{error} <button className="unity-btn" type="button" onClick={() => persist(current.current)}>重试写入</button></>
-      : saving ? "正在写入工作副本…" : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白或中键平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
+      : editable ? `${drawing ? "添加蒙版：拖动画框" : "框选蒙版：拖空白或中键平移，B 添加蒙版"} · 双击框改部位 · Ctrl+Z 撤销 · Ctrl+Shift+Z 重做` : readOnlyHint || "只读数据集，创建标注副本后可编辑"}</div>
     <div ref={partsMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="选择部位" style={{inset:"auto",margin:0}}
       onKeyDown={event => { event.stopPropagation(); if (["ArrowUp","ArrowDown","Home","End"].includes(event.key)) {
         event.preventDefault();const buttons=[...event.currentTarget.querySelectorAll("button")],i=buttons.indexOf(document.activeElement as HTMLButtonElement);

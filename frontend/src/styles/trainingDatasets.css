@@ -812,6 +812,11 @@
   stroke: #fff;
 }
 .training-dataset-canvas .game-mosaic-resize-corner { stroke: #fff; }
+.training-dataset-canvas:not(.is-panning) .game-mosaic-mask.is-selected.is-clickable { cursor: move; }
+.training-dataset-canvas:not(.is-panning) :is([data-mosaic-resize="n"], [data-mosaic-resize="s"]) { cursor: ns-resize; }
+.training-dataset-canvas:not(.is-panning) :is([data-mosaic-resize="e"], [data-mosaic-resize="w"]) { cursor: ew-resize; }
+.training-dataset-canvas:not(.is-panning) :is([data-mosaic-resize="nw"], [data-mosaic-resize="se"]) { cursor: nwse-resize; }
+.training-dataset-canvas:not(.is-panning) :is([data-mosaic-resize="ne"], [data-mosaic-resize="sw"]) { cursor: nesw-resize; }
 .training-dataset-canvas-minimap {
   position: absolute;
   inset-block-end: 10px;

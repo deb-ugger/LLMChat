@@ -22,7 +22,8 @@ import "../styles/trainingDatasets.css";
 
 const pageSizes = [24, 48, 96];
 const verdicts = ["present", "none", "unmarked"] as const;
-type Filter = DatasetVerdict | "all";
+const partFilters = ["male_external", "female_external"] as const;
+type Filter = DatasetVerdict | "all" | typeof partFilters[number];
 type ImageLayout = "list" | "thumbnails";
 const layoutKey = "llmchat-training-dataset-image-layout";
 
@@ -105,8 +106,16 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const hasUnsavedChanges = pendingMaskWrites > 0 || maskWriteFailed;
   const canSave = editable && hasUnsavedChanges && !confirmingSave && (!busy || pendingMaskWrites > 0);
   const query = search.trim().toLowerCase();
-  const images = useMemo(() => dataset?.data.images.filter(image => (filter === "all" || datasetVerdict(image.annotation, purpose) === filter) &&
-    (!query || image.file.toLowerCase().includes(query)) && matchesDatasetFilters(image, conditions, dataset?.parts)) ?? [], [dataset, filter, purpose, query, conditions]);
+  const images = useMemo(() => {
+    if (!dataset) return [];
+    return dataset.data.images.filter(image => {
+      const matchesLabel = filter === "male_external" || filter === "female_external"
+        ? image.annotation.mosaic?.boxes?.some(box => partFor(dataset, image.sourceHash, box) === filter)
+        : filter === "all" || datasetVerdict(image.annotation, purpose) === filter;
+      return matchesLabel && (!query || image.file.toLowerCase().includes(query)) &&
+        matchesDatasetFilters(image, conditions, dataset.parts);
+    });
+  }, [dataset, filter, purpose, query, conditions]);
   const pages = Math.max(1, Math.ceil(images.length / pageSize));
   const currentPage = Math.min(page, pages - 1);
   const visible = images.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
@@ -359,12 +368,20 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   }
 
   function annotateParts(reference: DatasetReference) {
-    run("正在打开待标部位图片…", async () => {
+    run("正在打开部位标注…", async () => {
       await maskWrites.current;
       const next = await openTrainingDataset(reference.path, reference.workId);
       if (reference.path !== datasetRef.current?.reference.path) updateUndoHistory([]);
-      setPurpose("mosaic"); setFilter("all"); setSearch(""); setConditions({ ...emptyDatasetFilters, masks: "unmarked-parts" });
-      resetSelection(); setPreview(undefined); setView("datasets");
+      const hasUnknown = next.data.images.some(image =>
+        image.annotation.mosaic?.boxes?.some(box => !partFor(next, image.sourceHash, box)));
+      const masks = hasUnknown ? "unmarked-parts" : next.data.images.some(image => image.annotation.mosaic?.boxes?.length) ? "yes" : "all";
+      const nextConditions: typeof emptyDatasetFilters = { ...emptyDatasetFilters, masks };
+      const candidates = next.data.images.filter(image => matchesDatasetFilters(image, nextConditions, next.parts));
+      const first = candidates.find(image => image.annotation.mosaic?.boxes?.length) ?? candidates[0];
+      setPurpose("mosaic"); setFilter("all"); setSearch(""); setConditions(nextConditions);
+      setPage(first ? Math.floor(candidates.indexOf(first) / pageSize) : 0);
+      setSelectedIds(new Set(first ? [first.id] : [])); setFocusedId(first?.id ?? "");
+      setPreview(undefined); setView("datasets");
       requestAnimationFrame(() => setAdvancedOpen(true));
       return next;
     }, false);
@@ -460,7 +477,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
 
   return <section className="training-dataset-page">
     {headerChrome}
-    {busy && <p className="training-dataset-busy" role="status">{busy}</p>}
+    {busy && !focused && <p className="training-dataset-busy" role="status">{busy}</p>}
     {error && !renaming && <p className="training-dataset-error" role="alert">{error}</p>}
     <div ref={datasetMenu} id={id + "-dataset-ops"} popover="auto" className="unity-gallery-menu training-dataset-ops-menu" role="menu"
       aria-label="数据集操作" style={{ inset: "auto", margin: 0 }}>
@@ -568,6 +585,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               }}>
                 <option value="all">全部</option>
                 {verdicts.map(item => <option key={item} value={item}>{datasetVerdictLabels[purpose][item]}</option>)}
+                {purpose === "mosaic" && partFilters.map(part => <option key={part} value={part}>{datasetParts[part]}</option>)}
               </select>
             </label>
           </div>
@@ -649,7 +667,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
                   onClick={() => { batchMenu.current?.hidePopover(); label(verdict); }}>
                   {verdict === "unmarked" ? "清除标注" : `标记${datasetVerdictLabels[purpose][verdict]}`}
                 </button>)}
-                {purpose === "mosaic" && (["male_external", "female_external"] as const).map(part =>
+                {purpose === "mosaic" && partFilters.map(part =>
                   <button key={part} type="button" className="training-dataset-catalog-item" disabled={blocked || !editable || !targets.size}
                     data-tooltip={"将所选图片的全部去码蒙版标记为" + datasetParts[part] + "，跳过无蒙版的图片"}
                     onClick={() => { batchMenu.current?.hidePopover(); labelParts(part); }}>标记为{datasetParts[part]}</button>)}
@@ -690,7 +708,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
         <button {...listSplit.dividerProps} aria-controls={id + "-image-list"} />
         <div className="training-dataset-detail">
           {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
-            image={focused} galleryIndex={focusedGalleryIndex} galleryTotal={images.length} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked}
+            image={focused} galleryIndex={focusedGalleryIndex} galleryTotal={images.length} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked} status={busy}
             readOnlyHint={purpose !== "mosaic" ? "切换到去码用途可编辑部位蒙版" : undefined}
             masks={(focused.annotation.mosaic?.boxes ?? []).map(box => ({ box, part: partFor(dataset, focused.sourceHash, box) ?? "" }))}
             onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
