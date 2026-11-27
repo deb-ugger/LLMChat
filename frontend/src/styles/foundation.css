@@ -20,6 +20,7 @@
   --danger: #a3231a;
   --danger-soft: #f7e4df;
   --success: #2f6b46;
+  --info: #2563eb;
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
@@ -169,6 +170,7 @@
   --danger: #e0705f;
   --danger-soft: #3a2620;
   --success: #57b574;
+  --info: #8ab4ff;
   --warning: #e2ad59;
   --nav-bg: #0b0c09;
   --nav-fg: #a9a494;
@@ -773,6 +775,7 @@ select:not([hidden], [multiple], [size]):focus-visible {
 .output-vim-editor :is(.output-vim-error, .output-vim-fail) { color:var(--danger); }
 .output-vim-warning { color:var(--warning,#85530c); }
 .output-vim-success { color:var(--success); }
+.output-vim-editor :is(.output-vim-info, .output-vim-step) { color:var(--info); }
 .output-vim-match-row { background:var(--accent-soft); }
 @media (max-width:700px) {
   .global-output-toolbar { flex-wrap:wrap; gap:var(--space-1); }

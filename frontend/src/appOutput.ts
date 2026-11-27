@@ -78,7 +78,7 @@ export function formatOutputTime(value: string) {
 }
 
 export function outputStatusLabel(level: OutputLevel) {
-  return level === "success" || level === "fail" || level === "error" || level === "warning" ? level.toUpperCase() : "";
+  return level === "success" || level === "fail" || level === "error" || level === "warning" ? level.toUpperCase() : "INFO";
 }
 
 export function formatOutputMessage({ level, text }: OutputRow) {
