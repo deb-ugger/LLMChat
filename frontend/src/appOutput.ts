@@ -14,7 +14,8 @@ let initialization: Promise<void> | undefined;
 let warning = "";
 let historyWarning = "";
 let logPath = "";
-const unreadKey = "llmchat-output-unread-notices";
+const unreadKey = "llmchat-output-unread-warning-error";
+export const outputCountsForBadge = (level: OutputLevel) => level === "error" || level === "warning";
 let notices: number | undefined;
 let viewing = false;
 let snapshot = { rows, warning, logPath, unread: 0 };
@@ -108,7 +109,7 @@ function readLegacyRecords(text: string) {
 }
 
 function append(row: OutputRow) {
-  if (row.important && !viewing) setUnreadNotices(unreadNotices() + 1);
+  if (outputCountsForBadge(row.level) && !viewing) setUnreadNotices(unreadNotices() + 1);
   rows = rows.concat(row);
   if (!viewing && rows.length > limit) rows = rows.slice(-limit);
   pending.push(row);
