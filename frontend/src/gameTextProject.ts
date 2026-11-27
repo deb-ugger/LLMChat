@@ -1,5 +1,5 @@
 import type { GameWrapMode } from "./gameTextLayout";
-import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
+import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, gameTextMatchesSource, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
 import { API_BASE } from "./api";
 import type { UnityEntry } from "./unityOffline";
 import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRow, type UnityTranslationImportMode } from "./unityTranslationFiles";
@@ -55,6 +55,9 @@ export function hasMessageCoreNameOverride(source: string, translation: string) 
       withoutGameSpeakerNames(normalizedSource) === withoutGameSpeakerNames(normalizedTranslation));
 }
 
+const isVisibleGameBrace = (token: string) => /^\{[^{}\r\n"']+\}$/.test(token) && !/^\{(?:\d+|[A-Za-z_][\w.]*)(?:\s*,\s*[+-]?\d+)?(?::[^{}\r\n]*)?\}$/.test(token);
+const visibleGameBraces = (text: string) => text.replace(/\{[^{}\r\n"']+\}/g, token => isVisibleGameBrace(token) ? "｛" + token.slice(1, -1) + "｝" : token);
+
 export function gameTextProblem(source: string, translation: string, messageCore = false) {
   if (source === translation && !source.trim()) return "";
   if (hasTranslationPromptLeak(source, translation)) return TRANSLATION_PROMPT_LEAK;
@@ -70,6 +73,8 @@ export function gameTextProblem(source: string, translation: string, messageCore
         translation = translation.replace(translatedNames[0][0], () => originalNames[0][0]);
     }
   }
+  // Compare actual placeholders; a brace containing prose is visible text.
+  source = visibleGameBraces(source); translation = visibleGameBraces(translation);
   const error = unityTranslationError(withoutGameSpeakerNames(source), withoutGameSpeakerNames(translation));
   if (error) return error;
   const missing = gameDisplayTextProblem(source, translation) || rpgTextControlProblem(source, translation);
@@ -106,11 +111,28 @@ function importTextWrapper(source: string) {
   return new RegExp(`^((?:${token}[ \\t]*)*)([\\s\\S]*?)((?:[ \\t]*${token})*)$`, "i").exec(source)!;
 }
 
-type ImportTextSource = { source: string; line?: number };
+function restoreImportDisplayControls(source: string, translation: string) {
+  if (!translation.trim()) return translation;
+  const restore = (original: string, translated: string) => {
+    const wrapped = importTextWrapper(original.trim()), present = importTextWrapper(translated.trim());
+    if (!(wrapped[1] || wrapped[3]) || present[1] || present[3]) return translated;
+    // Only edge controls have an unambiguous position after translation.
+    if ([...wrapped[2].matchAll(gameFormatTokens())].some(token => importTextWrapper(token[0])[1])) return translated;
+    const text = translated.trim(), offset = translated.indexOf(text);
+    return translated.slice(0, offset) + wrapped[1] + text + wrapped[3] + translated.slice(offset + text.length);
+  };
+  const originals = source.split(/\r\n|\r|\n/), parts = translation.split(/(\r\n|\r|\n)/);
+  if (originals.length === (parts.length + 1) / 2)
+    return parts.map((part, index) => index % 2 ? part : restore(originals[index / 2], part)).join("");
+  return restore(source, translation);
+}
+
+type ImportTextSource = { source: string; line?: number; range?: [number, number] };
 type ImportTextChoices = Map<string, ImportTextSource>;
 type ImportTextSplit = { sourceLines: number; translationLines: number; available: boolean; reason: string };
 const normalizeImportText = (text: string) => text.replace(/\r\n|\r/g, "\n").normalize("NFKC");
-const importTextTokens = (source: string) => [...source.matchAll(gameFormatTokens())].filter(match => !/^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(match[0]));
+const importTextTokens = (source: string) => [...source.matchAll(gameFormatTokens())].filter(match => !/^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(match[0]) && !isVisibleGameBrace(match[0]));
+const importVisibleText = (text: string) => text.replace(gameFormatTokens(), token => isVisibleGameBrace(token) ? token : /^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(token) ? token.slice(token.indexOf("<") + 1, -1) : "");
 
 function indexGameTextImportFile(values: [string, string][]) {
   const splits = new Map<string, ImportTextSplit>();
@@ -126,12 +148,33 @@ function indexGameTextImportFile(values: [string, string][]) {
   // explicit single-line records take priority over derived line records.
   for (const [source, translation] of values) {
     add(lineIndex, source, translation, { source });
+    const wrapped = importTextWrapper(source.trim()), restored = importTextWrapper(restoreImportDisplayControls(source, translation).trim());
+    if ((wrapped[1] || wrapped[3]) && wrapped[2] && gameControlSignature(wrapped[1] + wrapped[3]) === gameControlSignature(restored[1] + restored[3])) {
+      const offset = source.indexOf(source.trim()) + wrapped[1].length;
+      add(derivedIndex, wrapped[2], restored[2], { source, range: [offset, offset + wrapped[2].length] });
+    }
+    const sourceTokens = importTextTokens(source), targetTokens = importTextTokens(translation);
+    if (sourceTokens.length && JSON.stringify(sourceTokens.map(token => token[0])) === JSON.stringify(targetTokens.map(token => token[0]))) {
+      let start = 0, targetStart = 0;
+      for (let index = 0; index <= sourceTokens.length; index++) {
+        const end = sourceTokens[index]?.index ?? source.length, targetEnd = targetTokens[index]?.index ?? translation.length;
+        add(derivedIndex, source.slice(start, end), translation.slice(targetStart, targetEnd), { source, range: [start, end] });
+        if (index < sourceTokens.length) { start = end + sourceTokens[index][0].length; targetStart = targetEnd + targetTokens[index][0].length; }
+      }
+    }
     const sourceLines = source.split(/\r\n|\r|\n/), translationLines = translation.split(/\r\n|\r|\n/);
     if (sourceLines.length <= 1) continue;
     const available = sourceLines.length === translationLines.length && sourceLines.every((line, index) => !line.trim() === !translationLines[index].trim());
     splits.set(source, { sourceLines: sourceLines.length, translationLines: translationLines.length, available,
       reason: available ? "原文和译文逐行对应" : "原文与译文行数或空行不对应，仅保留整段匹配" });
-    if (available) sourceLines.forEach((line, index) => add(derivedIndex, line, translationLines[index], { source, line: index }));
+    if (available) {
+      let offset = 0;
+      const separators = source.match(/\r\n|\r|\n/g) || [];
+      sourceLines.forEach((line, index) => {
+        add(derivedIndex, line, translationLines[index], { source, line: index, range: [offset, offset + line.length] });
+        offset += line.length + (separators[index]?.length || 0);
+      });
+    }
   }
   const normalizedIndex = (index: Map<string, ImportTextChoices>) => {
     const result = new Map<string, ImportTextChoices>();
@@ -148,18 +191,20 @@ function indexGameTextImportFile(values: [string, string][]) {
   return { lookup, splits };
 }
 
-function reassembleGameText(source: string, lookup: (line: string) => ImportTextChoices | undefined) {
+function reassembleGameText(source: string, lookup: (line: string) => ImportTextChoices | undefined, punctuation = false, preserveLatin = false) {
   const parts = source.split(/(\r\n|\r|\n)/);
-  type Plan = { text: string; used: ImportTextSource[]; missingLines: string[]; ambiguous: boolean };
-  const lines = (parts.length + 1) / 2;
+  const units = punctuation ? (source.match(/[^\p{P}\p{S}\r\n]+|[\p{P}\p{S}]|\r\n|\r|\n/gu) || [""]).map(text => ({ text, after: "" })) :
+    parts.filter((_, index) => index % 2 === 0).map((text, index) => ({ text, after: parts[index * 2 + 1] || "" }));
+  type Plan = { text: string; used: ImportTextSource[]; missingLines: string[]; ambiguous: boolean; retained: string[] };
+  const lines = units.length;
   const plans: Plan[] = [];
-  plans[lines] = { text: "", used: [], missingLines: [], ambiguous: false };
+  plans[lines] = { text: "", used: [], missingLines: [], ambiguous: false, retained: [] };
   // Match complete file blocks before shorter ones, but choose a partition that
   // covers every source line rather than committing to a dead-end prefix.
   for (let start = lines - 1; start >= 0; start--) {
     let best: Plan | undefined;
     for (let end = lines - 1; end >= start; end--) {
-      const original = parts.slice(start * 2, end * 2 + 1).join(""), text = original.trim();
+      const original = units.slice(start, end + 1).map((unit, index) => unit.text + (index < end - start ? unit.after : "")).join(""), text = original.trim();
       if (!text) continue;
       let choices = lookup(text), prefix = "", suffix = "";
       if (!choices?.size) {
@@ -170,29 +215,29 @@ function reassembleGameText(source: string, lookup: (line: string) => ImportText
       const tail = plans[end + 1], offset = original.indexOf(text);
       const [translation, origin] = choices.entries().next().value!;
       const plan: Plan = {
-        text: original.slice(0, offset) + prefix + translation + suffix + original.slice(offset + text.length) + (parts[end * 2 + 1] || "") + tail.text,
+        text: original.slice(0, offset) + prefix + translation + suffix + original.slice(offset + text.length) + units[end].after + tail.text,
         used: [...(choices.size === 1 ? [origin] : choices.values()), ...tail.used],
-        missingLines: tail.missingLines, ambiguous: choices.size !== 1 || tail.ambiguous,
+        missingLines: tail.missingLines, ambiguous: choices.size !== 1 || tail.ambiguous, retained: tail.retained,
       };
       if (!best || plan.missingLines.length < best.missingLines.length) best = plan;
     }
-    const tail = plans[start + 1], original = parts[start * 2];
-    const missing = /\p{L}/u.test(original.replace(gameFormatTokens(), "")) ? [original.trim()] : [];
-    const fallback: Plan = { text: original + (parts[start * 2 + 1] || "") + tail.text, used: tail.used, missingLines: [...missing, ...tail.missingLines], ambiguous: tail.ambiguous };
+    const tail = plans[start + 1], original = units[start].text, visible = importVisibleText(original);
+    const retained = preserveLatin && /\p{L}/u.test(visible) && /^[\p{Script=Latin}\p{N}\p{P}\p{S}\s]+$/u.test(visible);
+    const missing = /\p{L}/u.test(visible) && !retained ? [original.trim()] : [];
+    const fallback: Plan = { text: original + units[start].after + tail.text, used: tail.used, missingLines: [...missing, ...tail.missingLines], ambiguous: tail.ambiguous, retained: [...(retained ? [original.trim()] : []), ...tail.retained] };
     plans[start] = !best || fallback.missingLines.length < best.missingLines.length ? fallback : best;
   }
-  const { used, missingLines, ambiguous, text } = plans[0];
+  const { used, missingLines, ambiguous, text, retained } = plans[0];
   if (missingLines.length || ambiguous || !used.length)
-    return { used, missingLines, reason: ambiguous ? "跨行片段对应多条不同译文" : used.length && missingLines.length ? "缺少 " + missingLines.length + " 行译文" : "" };
-  return { used, translation: text };
+    return { used, missingLines, retained, reason: ambiguous ? "跨行片段对应多条不同译文" : used.length && missingLines.length ? "缺少 " + missingLines.length + " 行译文" : "" };
+  return { used, translation: text, retained };
 }
 
-function matchGameTextFragments(source: string, lookup: (text: string) => ImportTextChoices | undefined) {
+function matchGameTextFragments(source: string, lookup: (text: string) => ImportTextChoices | undefined, preserveLatin: boolean) {
   // MTool dictionaries also contain literal fragments between parameters.
   // Keep the original parameters in place; names inside speaker tags are text.
   const tokens = importTextTokens(source);
-  if (!tokens.length) return null;
-  const used: ImportTextSource[] = [], missingLines: string[] = [], output: string[] = [];
+  const used: ImportTextSource[] = [], missingLines: string[] = [], output: string[] = [], retained: string[] = [];
   let position = 0, ambiguity = "";
   const append = (text: string) => {
     if (!/\p{L}/u.test(text)) { output.push(text); return; }
@@ -207,9 +252,10 @@ function matchGameTextFragments(source: string, lookup: (text: string) => Import
     if (choices && choices.size > 1) {
       used.push(...choices.values()); ambiguity = "正文片段对应多条不同译文"; return;
     }
-    const lines = reassembleGameText(text, lookup);
+    const lines = reassembleGameText(text, lookup, true, preserveLatin);
     used.push(...lines.used);
-    if (lines.translation !== undefined) output.push(lines.translation);
+    if (lines.translation !== undefined) { output.push(lines.translation); retained.push(...lines.retained); }
+    else if (!lines.used.length && !lines.reason && !lines.missingLines?.length) { output.push(text); retained.push(...lines.retained); }
     else {
       if (lines.reason?.includes("不同译文")) ambiguity = lines.reason;
       missingLines.push(...(lines.missingLines?.length ? lines.missingLines : [literal]));
@@ -222,21 +268,28 @@ function matchGameTextFragments(source: string, lookup: (text: string) => Import
   append(source.slice(position));
   if (!used.length) return null;
   if (ambiguity || missingLines.length) return { used, missingLines, reason: ambiguity || "缺少 " + missingLines.length + " 个正文片段译文" };
-  return { used, translation: output.join("") };
+  return { used, translation: output.join(""), retained };
 }
 
-function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], values: [string, string][], links: Map<string, ImportTextSource[]>, matchingIssues: { id: string; reason: string; missingLines?: string[] }[], validate: (source: string, translation: string) => string, mode: UnityTranslationImportMode, options: { reassembled?: number; controlsRestored?: number; fragmentMatched?: number; splits?: Map<string, ImportTextSplit> } = {}) {
-  const { reassembled = 0, controlsRestored = 0, fragmentMatched = 0, splits = new Map<string, ImportTextSplit>() } = options;
-  const result = applyUnityTranslationRows(entries, rows, validate, { mode, allowClear: mode === "replace", partial: true });
+function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], values: [string, string][], links: Map<string, ImportTextSource[]>, matchingIssues: { id: string; reason: string; missingLines?: string[] }[], validate: (source: string, translation: string) => string, mode: UnityTranslationImportMode, options: { reassembled?: number; controlsRestored?: number; fragmentMatched?: number; splits?: Map<string, ImportTextSplit>; retainedFragments?: { id: string; fragments: string[] }[] } = {}) {
+  const { reassembled = 0, controlsRestored = 0, fragmentMatched = 0, splits = new Map<string, ImportTextSplit>(), retainedFragments = [] } = options;
+  const originals = new Map(entries.map(entry => [entry.id, entry]));
+  const restored = new Set<string>();
+  const prepared = rows.map(row => {
+    const translation = restoreImportDisplayControls(originals.get(row.id)!.source, row.translation);
+    if (translation === row.translation) return row;
+    restored.add(row.id); return { ...row, translation };
+  });
+  const result = applyUnityTranslationRows(entries, prepared, validate, { mode, allowClear: mode === "replace", partial: true });
+  const displayControlsRestored = result.entries.filter((entry, index) => entry !== entries[index] && restored.has(entry.id)).length;
   const issues = [...matchingIssues, ...result.issues];
   const problems = new Map(issues.map(issue => [issue.id, issue.reason]));
-  const originals = new Map(entries.map(entry => [entry.id, entry]));
-  const candidates = new Map(rows.map(row => [row.id, row.translation]));
+  const candidates = new Map(prepared.map(row => [row.id, row.translation]));
   const bySource = new Map<string, string[]>();
-  const uses = new Map<string, { id: string; line?: number }[]>();
+  const uses = new Map<string, { id: string; line?: number; range?: [number, number] }[]>();
   for (const [id, sources] of links) for (const origin of sources) {
     const ids = bySource.get(origin.source) || []; if (!ids.includes(id)) ids.push(id); bySource.set(origin.source, ids);
-    const rows = uses.get(origin.source) || []; rows.push({ id, line: origin.line }); uses.set(origin.source, rows);
+    const rows = uses.get(origin.source) || []; rows.push({ id, line: origin.line, range: origin.range }); uses.set(origin.source, rows);
   }
   // A dictionary can contain both a paragraph and separate translations of its
   // lines. Record unused alternatives separately from absent source text.
@@ -287,19 +340,24 @@ function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], val
     const accepted = (uses.get(source) || []).filter(use => acceptedIds.has(use.id));
     const usedLines = [...new Set(accepted.flatMap(use => use.line === undefined ? [] : [use.line + 1]))].sort((a, b) => a - b);
     const lineSplit = splits.get(source);
-    const partial = accepted.length > 0 && accepted.every(use => use.line !== undefined) && lineSplit && usedLines.length < lineSplit.sourceLines;
-    return { source, translation, entryIds, status: partial ? "部分应用" : status?.status || "未匹配", reason: partial ? `已应用 ${usedLines.length} / ${lineSplit.sourceLines} 行，其余行未匹配或未通过` : status?.reason || (status ? "" : "当前扫描中没有完整原文或可完整重组的对应条目"), usedLines, lineSplit };
+    const usedParts = accepted.flatMap(use => use.range ? [{ start: use.range[0], end: use.range[1], text: source.slice(...use.range) }] : []);
+    let partial = false;
+    if (accepted.length && accepted.every(use => use.range)) {
+      const controls = importTextTokens(source);
+      partial = [...source.matchAll(/[\p{L}\p{N}]/gu)].some(letter => !controls.some(token => letter.index! >= token.index! && letter.index! < token.index! + token[0].length) && !usedParts.some(part => letter.index! >= part.start && letter.index! < part.end));
+    }
+    return { source, translation, entryIds, status: partial ? "部分应用" : status?.status || "未匹配", reason: partial ? "已应用部分正文，其余片段未匹配或未通过" : status?.reason || (status ? "" : "当前扫描中没有完整原文或可完整重组的对应条目"), usedLines, usedParts, lineSplit };
   });
   const missingEntries = result.entries.filter(entry => !entry.translation.trim()).map(entry => ({ id: entry.id, source: entry.source, reason: problems.get(entry.id) || (candidates.has(entry.id) ? "导入译文为空" : "翻译文件中没有可匹配译文") }));
   const fileUsed = details.filter(row => row.status === "已应用" || row.status === "译文相同").length;
   const filePartiallyUsed = details.filter(row => row.status === "部分应用").length;
-  const audit = { fileTotal: values.length, fileUsed, filePartiallyUsed, fileUnused: values.length - fileUsed - filePartiallyUsed, projectTotal: entries.length, projectTranslated: result.entries.length - missingEntries.length, changed: result.changed, reassembled, controlsRestored, fragmentMatched, details, missingEntries, issues };
+  const audit = { fileTotal: values.length, fileUsed, filePartiallyUsed, fileUnused: values.length - fileUsed - filePartiallyUsed, projectTotal: entries.length, projectTranslated: result.entries.length - missingEntries.length, changed: result.changed, reassembled, controlsRestored, displayControlsRestored, fragmentMatched, retainedFragments, details, missingEntries, issues };
   return { ...result, issues, audit, unmatched: details.filter(row => row.status === "未匹配").length, reassembled, controlsRestored, fragmentMatched };
 }
 
 export type GameTextImportAudit = ReturnType<typeof finishGameTextImport>["audit"];
 
-export function importGameText(entries: UnityEntry[], contents: string, csv: boolean, mode: UnityTranslationImportMode, messageCore = false) {
+export function importGameText(entries: UnityEntry[], contents: string, csv: boolean, mode: UnityTranslationImportMode, messageCore = false, sourceLanguage = "auto") {
   const validate = (source: string, translation: string) => gameTextProblem(source, translation, messageCore);
   const data = csv ? null : JSON.parse(contents.replace(/^\uFEFF/, ""));
   if (csv) {
@@ -338,6 +396,7 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
     rows.set(entry.id, { id: entry.id, source, translation });
   }
   let reassembled = 0, controlsRestored = 0, fragmentMatched = 0;
+  const retainedFragments: { id: string; fragments: string[] }[] = [];
   const splits = fileIndex?.splits || new Map<string, ImportTextSplit>();
   if (fileIndex) {
     const { lookup } = fileIndex;
@@ -347,11 +406,12 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
       const whole = (wrapped[1] || wrapped[3]) ? lookup(wrapped[2]) : undefined;
       const choice = whole?.size === 1 ? whole.entries().next().value! : undefined;
       const offset = entry.source.indexOf(original);
-      let candidate: { used: ImportTextSource[]; translation?: string; reason?: string; missingLines?: string[] } = choice ? { used: [choice[1]], translation: entry.source.slice(0, offset) + wrapped[1] + choice[0] + wrapped[3] + entry.source.slice(offset + original.length) } :
+      let candidate: { used: ImportTextSource[]; translation?: string; reason?: string; missingLines?: string[]; retained?: string[] } = choice ? { used: [choice[1]], translation: entry.source.slice(0, offset) + wrapped[1] + choice[0] + wrapped[3] + entry.source.slice(offset + original.length) } :
         whole && whole.size > 1 ? { used: [...whole.values()], reason: "同一原文对应多条不同译文，无法唯一匹配" } : reassembleGameText(entry.source, lookup);
       let fragments = false;
       if (candidate.translation === undefined && !candidate.reason?.includes("不同译文")) {
-        const match = matchGameTextFragments(entry.source, lookup);
+        const preserveLatin = /^ja(?:-|$)/i.test(sourceLanguage) || sourceLanguage === "auto" && gameTextMatchesSource(entry.source, "ja");
+        const match = matchGameTextFragments(entry.source, lookup, preserveLatin);
         if (match) { candidate = match; fragments = true; }
       }
       const translation = candidate.translation;
@@ -367,8 +427,9 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
         reassembled++;
         if (choice) controlsRestored++;
         if (fragments) fragmentMatched++;
+        if (candidate.retained?.length) retainedFragments.push({ id: entry.id, fragments: candidate.retained });
       }
     }
   }
-  return finishGameTextImport(entries, [...rows.values()], values, links, reassemblyIssues, validate, mode, { reassembled, controlsRestored, fragmentMatched, splits });
+  return finishGameTextImport(entries, [...rows.values()], values, links, reassemblyIssues, validate, mode, { reassembled, controlsRestored, fragmentMatched, splits, retainedFragments });
 }

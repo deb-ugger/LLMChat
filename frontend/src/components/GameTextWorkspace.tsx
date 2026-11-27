@@ -531,7 +531,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     try {
       const contents = new TextDecoder("utf-8", { fatal: true }).decode(typeof file === "string" ? await readFileBytes(file) : await file.arrayBuffer());
       if (current.current !== importing) throw new Error("工程已更新，请重新导入");
-      const value = importGameText(importing.entries, contents, /\.csv$/i.test(typeof file === "string" ? file : file.name), mode, messageCore);
+      const value = importGameText(importing.entries, contents, /\.csv$/i.test(typeof file === "string" ? file : file.name), mode, messageCore, options.source === "auto" ? detectedSource : options.source);
       setImportIssues(value.issues); setImportReport(value.audit);
       if (value.changed) {
         const previous = new Map(importing.entries.map(entry => [entry.id, entry]));
@@ -541,6 +541,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       const parts = ["已应用 " + value.changed + " 条译文"];
       if (value.reassembled) parts.push("重组或还原控制符 " + value.reassembled + " 条");
       if (value.fragmentMatched) parts.push("其中按参数片段匹配 " + value.fragmentMatched + " 条");
+      if (value.audit.displayControlsRestored) parts.push("恢复显示控制符 " + value.audit.displayControlsRestored + " 条");
+      if (value.audit.retainedFragments.length) parts.push("保留原样片段 " + value.audit.retainedFragments.length + " 条");
       if (value.issues.length) parts.push(value.issues.length + " 条未通过，详情见「批量结果」");
       if (value.audit.filePartiallyUsed) parts.push("文件部分应用 " + value.audit.filePartiallyUsed + " 条");
       parts.push("文件未使用 " + value.audit.fileUnused + " / " + value.audit.fileTotal + " 条", "工程缺译 " + value.audit.missingEntries.length + " 条");

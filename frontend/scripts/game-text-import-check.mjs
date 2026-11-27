@@ -91,4 +91,37 @@ const explicitLine = run([entry("1", "こんにちは")], { ...groupedFile, "こ
 assert.equal(explicitLine.entries[0].translation, "您好");
 const crlf = run([entry("1", "一行目\r\n二行目\r\n三行目")], { "一行目\n二行目": "甲\n乙", "三行目": "丙" });
 assert.equal(crlf.entries[0].translation, "甲\n乙\r\n丙");
+const nightmare = "『NIGHTMARE』\n\\C[14]非常に高い難易度です\\C[0]\n敗北するほどクリアが難しくなります";
+const nightmareResult = run([entry("1208", nightmare)], { "非常に高い難易度です": "这是极高难度", "敗北するほどクリアが難しくなります": "失败越多，通关越困难" });
+assert.equal(nightmareResult.entries[0].translation, "『NIGHTMARE』\n\\C[14]这是极高难度\\C[0]\n失败越多，通关越困难");
+assert.deepEqual(nightmareResult.audit.retainedFragments, [{ id: "1208", fragments: ["NIGHTMARE"] }]);
+for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"], ["（", "）"], ["【", "】"], ["「", "」"]]) {
+  const source = "剣で与えたダメージが少し性感になって返ってくる\n" + open + "性感反動率+5%" + close;
+  const value = run([entry("rate", source)], { "剣で与えたダメージが少し性感になって返ってくる": "剑造成的伤害有少量反弹", "性感反動率+5%": "反弹率+5%" });
+  assert.equal(value.entries[0].translation, "剑造成的伤害有少量反弹\n" + open + "反弹率+5%" + close);
+  assert.equal(gameTextProblem(source, value.entries[0].translation), "");
+}
+const missingStyle = run([entry("style", "\\C[14]非常に高い難易度です\\C[0]")], { "\\C[14]非常に高い難易度です\\C[0]": "这是极高难度" });
+assert.equal(missingStyle.entries[0].translation, "\\C[14]这是极高难度\\C[0]");
+assert.equal(missingStyle.audit.displayControlsRestored, 1);
+const changedStyle = run([entry("style", "\\C[14]非常に高い難易度です\\C[0]")], { "\\C[14]非常に高い難易度です\\C[0]": "\\C[3]这是极高难度\\C[0]" });
+assert.equal(changedStyle.changed, 0, "do not overwrite conflicting supplied controls");
+const missingParameter = run([entry("param", "%1が出現！")], { "%1が出現！": "出现了！" });
+assert.equal(missingParameter.changed, 0, "missing dynamic parameters still require validation");
+const englishSource = importGameText([entry("en", "NIGHTMARE\nこんにちは")], JSON.stringify({ "こんにちは": "你好" }), false, "replace", false, "en");
+assert.equal(englishSource.changed, 0, "do not retain untranslated English when English is the source language");
+const controlFile = { "こんにちは\\C[2]またね": "你好\\C[2]再见" };
+const splitControl = run([entry("1", "こんにちは"), entry("2", "またね")], controlFile);
+assert.deepEqual(splitControl.entries.map(row => row.translation), ["你好", "再见"]);
+assert.equal(splitControl.audit.fileUsed, 1);
+const partialControl = run([entry("1", "こんにちは")], controlFile);
+assert.equal(partialControl.audit.filePartiallyUsed, 1);
+assert.equal(partialControl.audit.details[0].usedParts[0].text, "こんにちは");
+const edgeAlias = run([entry("1", "こんにちは")], { "\\C[1]こんにちは\\C[0]": "你好" });
+assert.equal(edgeAlias.entries[0].translation, "你好");
+assert.equal(edgeAlias.audit.fileUsed, 1);
+const actualPlaceholder = run([entry("1", "こんにちは{name}")], { "こんにちは": "你好" });
+assert.equal(actualPlaceholder.entries[0].translation, "你好{name}");
+assert.ok(gameTextProblem("こんにちは{name}", "你好{other}"));
+assert.ok(gameTextProblem("こんにちは", '{"translation":""}'));
 console.log("PASS game text import: face controls, parameters, literal fragments, multi-line blocks, missing fragments, ambiguity, partial validation and provenance");
