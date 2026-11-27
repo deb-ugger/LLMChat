@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-delete-download-file"
+description = "Allow deleting completed download files"
+commands.allow = ["delete_download_file"]

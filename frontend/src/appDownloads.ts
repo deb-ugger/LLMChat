@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { showAppNotice } from "./components/AppNotice";
 
 export type DownloadStatus = "queued" | "running" | "paused" | "cancelling" | "saving" | "completed" | "cancelled" | "failed" | "handed-off";
@@ -24,6 +25,7 @@ type DownloadMessage =
   | { kind: "control"; id: string; action: DownloadAction };
 const historyKey = "llmchat-downloads";
 const legacyKey = "llmchat-game-image-downloads";
+export const downloadStartedEvent = "llmchat:download-started";
 
 export const downloadFileName = (path: string) => path.split(/[\\/]/).at(-1) || path;
 export const downloadFinished = ({ status }: AppDownload) =>
@@ -88,7 +90,10 @@ export function initAppDownloads(mainWindow: boolean) {
   channel.onmessage = ({ data }: MessageEvent<DownloadMessage>) => {
     switch (data.kind) {
       case "add":
-        if (!downloads.some(task => task.id === data.task.id)) publish([data.task, ...downloads]);
+        if (!downloads.some(task => task.id === data.task.id)) {
+          publish([data.task, ...downloads]);
+          window.dispatchEvent(new Event(downloadStartedEvent));
+        }
         break;
       case "update": {
         const current = downloads.find(task => task.id === data.id);
@@ -132,6 +137,7 @@ export function addDownload(task: Omit<AppDownload, "id">, controls?: DownloadAc
   saveHistory([next, ...readHistory()]);
   publish([next, ...downloads]);
   broadcast({ kind: "add", task: next });
+  window.dispatchEvent(new Event(downloadStartedEvent));
   return id;
 }
 
@@ -151,11 +157,18 @@ export function updateDownload(id: string, patch: DownloadPatch) {
   } });
 }
 
-export function removeDownload(id: string) {
-  if (!downloads.some(task => task.id === id && downloadFinished(task))) return;
-  saveHistory(readHistory().filter(task => task.id !== id));
-  publish(downloads.filter(task => task.id !== id));
-  broadcast({ kind: "remove", id });
+export async function deleteDownloadFile(id: string) {
+  const task = downloads.find(task => task.id === id);
+  if (!task?.path || task.status !== "completed") throw new Error("只能删除已完成的下载文件");
+  const pathKey = (path: string) => path.replaceAll("/", "\\").toLowerCase();
+  const key = pathKey(task.path);
+  if (downloads.some(row => row.path && pathKey(row.path) === key && !downloadFinished(row)))
+    throw new Error("此文件仍有下载任务，请先等待下载完成");
+  await invoke("delete_download_file", { path: task.path });
+  const removed = new Set(downloads.filter(row => row.path && pathKey(row.path) === key && downloadFinished(row)).map(row => row.id));
+  saveHistory(readHistory().filter(row => !removed.has(row.id)));
+  publish(downloads.filter(row => !removed.has(row.id)));
+  for (const removedId of removed) broadcast({ kind: "remove", id: removedId });
 }
 
 export async function trackDownload<T>(

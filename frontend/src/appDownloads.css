@@ -1,61 +1,62 @@
 .app-download-panel {
-  --window-popover-width: 430px;
+  --window-popover-width: 440px;
   --window-popover-max-height: 560px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border, #dcd6c6);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-lg, 12px);
   background: var(--panel, var(--bg-panel));
   color: var(--text, #1b1a16);
   box-shadow: 0 8px 28px #0003;
   font-size: var(--fs-body);
 }
 .app-download-panel:popover-open { display: flex; flex-direction: column; }
-.app-download-panel > header, .app-download-heading {
+.app-download-panel > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
-}
-.app-download-panel > header {
   flex-shrink: 0;
-  padding: 10px var(--space-3) 10px var(--space-4);
-  border-bottom: 1px solid var(--border, #dcd6c6);
+  padding: 12px 14px;
 }
 .app-download-panel h2 { margin: 0; font-size: var(--fs-dialog); font-weight: 600; }
 .app-download-panel ul {
   display: grid;
-  gap: 0;
+  gap: 8px;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   list-style: none;
   margin: 0;
-  padding: 0 var(--space-3);
+  padding: 0 10px 10px;
 }
-.app-download-row { display: grid; gap: var(--space-1); min-width: 0; padding: 10px var(--space-1); }
-.app-download-row + .app-download-row { border-top: 1px solid var(--border, #dcd6c6); }
-.app-download-heading strong, .app-download-path {
+.app-download-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: start; gap: 10px; min-width: 0; padding: 12px; border-radius: 9px; background: color-mix(in srgb, var(--text, #1b1a16) 6%, var(--bg-panel, #fff)); }
+.app-download-file { display: flex; align-items: center; color: var(--muted, #6a675c); padding-top: 1px; }
+.app-download-content { display: grid; gap: 6px; min-width: 0; }
+.app-download-name, .app-download-detail {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.app-download-path, .app-download-status, .app-download-empty {
+.app-download-name { font-weight: 500; line-height: 1.35; }
+.app-download-source { max-width: 100%; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--text, #1b1a16) 7%, transparent); color: var(--muted, #6a675c); font-size: var(--fs-caption, 12px); line-height: 1.4; overflow-wrap: anywhere; }
+.app-download-detail, .app-download-status, .app-download-empty {
   color: var(--muted, #6a675c);
-  font-size: var(--fs-body);
+  font-size: var(--fs-caption, 12px);
 }
-.app-download-status, .app-download-actions { display: flex; flex-wrap: wrap; gap: var(--space-1) 10px; align-items: center; }
+.app-download-footer, .app-download-actions { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .app-download-status { font-variant-numeric: tabular-nums; }
-.app-download-error, .app-download-status .is-error { color: var(--danger, #a3231a); }
-.app-download-error { margin: 0; font-size: var(--fs-body); overflow-wrap: anywhere; }
+.app-download-error, .app-download-status.is-error { color: var(--danger, #a3231a); }
+.app-download-error { margin: 0; font-size: var(--fs-caption, 12px); overflow-wrap: anywhere; }
 .app-download-empty { margin: 0; padding: 20px var(--space-4); }
-.app-download-row progress { width: 100%; height: 6px; accent-color: var(--accent, #1b1a16); }
+.app-download-row progress { width: 100%; height: 5px; accent-color: var(--accent, #1b1a16); }
+.app-download-file-actions { display: flex; align-self: center; gap: 4px; }
 .app-download-panel button {
   flex: none;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm, 4px);
   background: transparent;
   color: var(--accent, #1b1a16);
   font: inherit;
@@ -69,6 +70,10 @@
   padding: 0;
   color: var(--muted, #6a675c);
 }
-.app-download-icon svg { width: 16px; height: 16px; }
-.app-download-actions button { padding: 3px 5px; font-size: var(--fs-body); }
+.app-download-panel .app-download-open { padding: 0; color: var(--link, #1465ad); font-size: var(--fs-body); line-height: 1.4; }
+.app-download-open:hover { text-decoration: underline; }
+.app-download-actions button { padding: 2px 4px; font-size: var(--fs-caption, 12px); }
 .app-download-panel button:hover { background: var(--accent-soft, #e8e2d4); color: var(--accent, #1b1a16); }
+.app-download-panel .app-download-delete:hover { color: var(--danger, #a3231a); }
+.app-download-panel button:focus-visible { outline: 2px solid var(--accent, #1b1a16); outline-offset: 2px; }
+.app-download-panel button:disabled { opacity: .45; cursor: default; }

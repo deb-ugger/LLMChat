@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "downloads",
+  "description": "Delete downloaded files from the shared download panel",
+  "windows": ["*"],
+  "permissions": ["allow-delete-download-file"]
+}

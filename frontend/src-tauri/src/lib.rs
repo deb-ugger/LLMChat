@@ -9,6 +9,7 @@ mod training_environment;
 mod training_results;
 mod clipboard;
 mod game_image_zip;
+mod download_files;
 mod style_redraw;
 mod speech;
 mod unity_offline;
@@ -893,6 +894,7 @@ pub fn run() {
             ollama::ollama_service_stop,
             clipboard::clipboard_read_image_png,
             write_file_bytes,
+            download_files::delete_download_file,
             style_redraw::run_style_redraw,
             style_redraw::cancel_mosaic_redraw,
             style_redraw::find_redraw_directories,

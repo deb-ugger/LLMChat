@@ -4,6 +4,7 @@ const glyphs: Record<string, ReactNode> = {
   download: <path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>,
   close: <path d="m6 6 12 12M18 6 6 18"/>,
   remove: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7"/>,
+  folder: <path d="M3 7V5a2 2 0 0 1 2-2h4l3 3h7a2 2 0 0 1 2 2v1M3 7h16a2 2 0 0 1 2 2l-2 10H3L1 9a2 2 0 0 1 2-2Z"/>,
   output: <><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 1h5"/></>,
   chat: <path d="M20 14a3 3 0 0 1-3 3h-6l-5 4v-4a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3zM7 8h9M7 12h6" />,
   "new-chat": <><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8m-4-4v8"/></>,
