@@ -116,7 +116,10 @@ export function gameDisplayTextProblem(source: string, translated: string) {
   const originalNames = [...source.matchAll(new RegExp(speaker, "gi"))];
   const translatedNames = [...translated.matchAll(new RegExp(speaker, "gi"))];
   if (originalNames.some((match, index) => /\p{L}/u.test(match[1]) && translatedNames[index] && !translatedNames[index][1].trim())) return "说话人姓名尚未填写";
-  return /\p{L}/u.test(body(source)) && !/\p{L}/u.test(body(translated)) ? "译文缺少正文，仅剩控制符或说话人，请重试此条" : "";
+  const sourceBody = body(source), translatedBody = body(translated);
+  // A small tsu can mark a gasp in otherwise symbolic dialogue.
+  const symbolicDialogue = /[っッ]/u.test(sourceBody) && !/[\p{L}\p{N}]/u.test(sourceBody.replace(/[っッ]/gu, "")) && /[\p{P}\p{S}]/u.test(translatedBody);
+  return /\p{L}/u.test(sourceBody) && !/\p{L}/u.test(translatedBody) && !symbolicDialogue ? "译文缺少正文，仅剩控制符或说话人，请重试此条" : "";
 }
 
 export function preserveTargetGameText(entries: UnityEntry[], target: string, sourceLanguage = "auto", skipTarget = true) {

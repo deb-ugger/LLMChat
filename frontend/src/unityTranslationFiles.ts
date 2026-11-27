@@ -5,8 +5,9 @@ export type MatchedTranslationRows = TranslationRow[] & { issues: UnityTranslati
 export type UnityTranslationImportIssue = TranslationRow & { reason: string };
 export class UnityTranslationImportError extends Error {
   constructor(public issues: UnityTranslationImportIssue[], public checked: number) {
-    super(`已检查 ${checked} 条，发现 ${issues.length} 条问题`);
-    this.issues = issues.map(issue => ({ ...issue, reason: issue.reason.replace(/[，,]?\s*请重试此条$/, "") }));
+    const details = issues.map(issue => ({ ...issue, reason: issue.reason.replace(/[，,]?\s*请重试此条$/, "") }));
+    super(`已检查 ${checked} 条，发现 ${issues.length} 条问题：${details.slice(0, 3).map(issue => `第 ${issue.id} 条：${issue.reason}`).join("；")}${details.length > 3 ? `；另有 ${details.length - 3} 条问题` : ""}`);
+    this.issues = details;
     this.name = "UnityTranslationImportError";
   }
 }
