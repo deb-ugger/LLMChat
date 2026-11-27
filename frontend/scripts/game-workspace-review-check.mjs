@@ -137,6 +137,7 @@ const context = {
   gameTextNeedsSupplement: project.gameTextNeedsSupplement, gameTextImportPartial: project.gameTextImportPartial,
   textTranslationMatchesTarget: session.textTranslationMatchesTarget,
   createTextRunErrors,
+  textScreeningErrorPrefix: "文本筛选失败：",
   gameTextNeedsNoTranslation: display.gameTextNeedsNoTranslation, messageCore: false, sourceFilter: "ja",
   options: { target: "zh-CN", skipTargetLanguage: true }, settings: {}, promptState: { scope: "fixture", selection: {} },
   failureReasons: new Map([["broken", "括号错误"]]),
@@ -310,3 +311,56 @@ runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
 assert.equal(await runTranslation(), true);
 assert.equal(runtime.current.current.entries[0].translation, "完成的译文", "translation does not locally preserve a model-selected target-language original");
 console.log("PASS model decisions survive workspace completion, supplemental filtering and subsequent translation");
+
+screenMessages.length = 0;
+context.current.current = { ...initialProject, entries: [{ ...missing, id: "retained" }, { ...missing, id: "failure" }] };
+context.screenGameText = async (rows, options) => {
+  rows[0].translation = rows[0].source; rows[0].selected = false;
+  rows[1].error = "文本筛选失败：筛选模型 JSON 条目不匹配";
+  options.onProgress(2, 2);
+  return 1;
+};
+assert.equal(await runScreen(), true, "item-level failures do not stop the screening stage");
+assert.equal(savedScreen.entries.find(row => row.id === "retained").selected, false);
+assert.match(savedScreen.entries.find(row => row.id === "failure").error, /文本筛选失败/);
+assert.equal(screenMessages.filter(row => row.level === "error").length, 2);
+assert.match(screenMessages.at(-1).message, /模型输出格式无效 1 条/);
+
+context.current.current = { ...initialProject, entries: [{ ...missing, id: "retained" }, { ...missing, id: "pending" }] };
+context.screenGameText = async rows => {
+  rows[0].translation = rows[0].source; rows[0].selected = false;
+  throw new Error("HTTP 503 服务异常");
+};
+assert.equal(await runScreen(), false);
+assert.equal(savedScreen.entries[0].translation, savedScreen.entries[0].source, "save completed screening results after a fatal request error");
+assert.equal(context.controller.current, null, "release the active task after screening failure");
+
+context.current.current = { ...initialProject, entries: [{ ...missing, id: "retained" }, { ...missing, id: "pending" }] };
+context.screenGameText = async rows => {
+  rows[0].translation = rows[0].source; rows[0].selected = false;
+  context.controller.current.abort();
+  context.controller.current.signal.throwIfAborted();
+};
+assert.equal(await runScreen(), false);
+assert.equal(savedScreen.entries[0].selected, false, "save completed screening results when interrupted");
+assert.equal(context.controller.current, null);
+console.log("PASS screen failures stay selected with one final error summary, while completed results survive request failure and interruption");
+
+const importStart = workspaceCode.indexOf("  const importFile = async");
+const importEnd = workspaceCode.indexOf("  const downloadImportReport", importStart);
+const importCode = (await transform(workspaceCode.slice(importStart, importEnd), { loader: "ts", target: "es2022" })).code;
+const importStates = [];
+const importContext = { ...context, importMode: "replace", importGameText: project.importGameText,
+  current: { current: { ...initialProject, entries: [entry] } }, options: { target: "zh-CN", source: "ja" }, detectedSource: "ja", membership: { current: null },
+  setImportingFile: value => importStates.push(value), setImportIssues() {}, setImportReport() {},
+};
+const runImport = new Function("context", "with(context) {" + importCode + ";return importFile;}")(importContext);
+await runImport({ name: "fixture.json", arrayBuffer: async () => {
+  assert.deepEqual(importStates, [true], "only a real file import turns on the import overlay");
+  return new TextEncoder().encode(JSON.stringify({ [entry.source]: "您好" }));
+} });
+assert.deepEqual(importStates, [true, false]);
+importStates.length = 0;
+await assert.rejects(runImport({ name: "broken.json", arrayBuffer: async () => { throw new Error("读取失败"); } }), /读取失败/);
+assert.deepEqual(importStates, [true, false], "clear the import overlay even if reading fails");
+console.log("PASS importing indicator is limited to file imports and clears after success or read errors");

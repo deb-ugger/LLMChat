@@ -101,13 +101,54 @@ assert.equal(localRows[2].selected, false);
 console.log("PASS local screening still uses local rules without model requests");
 
 for (const reply of [[], [{ id: 0, keep: "true" }], [{ id: 0, keep: true }, { id: 0, keep: true }]]) {
-  globalThis.screeningRequest = async () => reply;
+  let requests = 0;
+  globalThis.screeningRequest = async () => { requests++; return reply; };
   const rows = [row("1", "こんにちは"), row("2", "已经是中文")];
-  await assert.rejects(screenGameText(rows, { ...base, signal: new AbortController().signal }), /条目与请求不一致/);
+  await screenGameText(rows, { ...base, signal: new AbortController().signal });
+  assert.equal(requests, 2, "retry one time for invalid model output");
   assert.ok(rows.every(row => row.selected && !row.translation), "invalid model responses never silently fall back to local screening");
+  assert.ok(rows.every(row => /文本筛选失败：.*请求 2 条/.test(row.error)), "retain item errors and include diagnostic counts");
 }
+
+let retryRequests = 0;
+globalThis.screeningRequest = async (_settings, _model, prompt) => {
+  if (++retryRequests === 1) return [];
+  assert.match(prompt, /上次返回未通过校验/);
+  return [{ id: 0, keep: true }];
+};
+const retryRows = [row("retry", "已经是中文")];
+await screenGameText(retryRows, { ...base, signal: new AbortController().signal });
+assert.equal(retryRequests, 2);
+assert.equal(retryRows[0].error, "");
+assert.equal(retryRows[0].selected, false);
+
+let batchRequests = 0;
+const batchRows = Array.from({ length: 66 }, (_, index) => row(String(index), `説明${index}`));
+globalThis.screeningRequest = async (_settings, _model, prompt) => {
+  batchRequests++;
+  const items = JSON.parse(prompt.slice(prompt.lastIndexOf("\n") + 1));
+  assert.equal(items[0].id, 0, "each batch uses local IDs instead of accumulating global IDs");
+  if (items[0].text === "説明32") return [];
+  return items.map(item => ({ id: item.id, keep: true }));
+};
+await screenGameText(batchRows, { ...base, signal: new AbortController().signal });
+assert.equal(batchRequests, 4, "failed batch is retried and later batches still run");
+assert.ok(batchRows.slice(0, 32).every(row => !row.selected && !row.error));
+assert.ok(batchRows.slice(32, 64).every(row => row.selected && row.error.includes("缺少编号")));
+assert.ok(batchRows.slice(64).every(row => !row.selected && !row.error));
+globalThis.screeningRequest = async (_settings, _model, prompt) => JSON.parse(prompt.slice(prompt.lastIndexOf("\n") + 1)).map(item => ({ id: item.id, keep: false }));
+await screenGameText(batchRows.filter(row => row.selected), { ...base, signal: new AbortController().signal });
+assert.ok(batchRows.every(row => !row.error), "screening errors can be retried without clearing unrelated translation errors");
+
+let jsonRequests = 0;
+globalThis.screeningRequest = async () => { jsonRequests++; throw Object.assign(new Error("模型未返回有效 JSON"), { code: "GAME_MODEL_INVALID_JSON" }); };
+const jsonRows = [row("json", "こんにちは")];
+await screenGameText(jsonRows, { ...base, signal: new AbortController().signal });
+assert.equal(jsonRequests, 2);
+assert.match(jsonRows[0].error, /有效 JSON/);
+console.log("PASS bounded invalid-output retry, diagnostic details, batch-local IDs, continuing later batches and retrying screening failures");
 globalThis.screeningRequest = async () => { throw new Error("HTTP 503"); };
 const failed = [row("failed", "こんにちは")];
 await assert.rejects(screenGameText(failed, { ...base, signal: new AbortController().signal }), /HTTP 503/);
 assert.equal(failed[0].selected, true);
-console.log("PASS invalid output and service errors remain visible and retain selection");
+console.log("PASS service errors remain visible and retain selection");

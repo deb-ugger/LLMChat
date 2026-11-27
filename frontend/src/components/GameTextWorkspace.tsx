@@ -7,7 +7,7 @@ import type { BenchmarkInput } from "./GameTextBenchmarkDialog";
 import { beginGameStep, finishGameStep, clearGamePerformance, stepPerformance, gameDuration, measureGameAsync, measureGameWork, reportGameStepItems } from "../gameModelPerformance";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
-import { screenGameText } from "../gameTextScreening";
+import { screenGameText, textScreeningErrorPrefix } from "../gameTextScreening";
 import { createGameTranslationContext, gameDialogueReuseKey, GAME_CONTEXT_HINT, gameTranslationRetry, isGameDialogue } from "../gameTranslationContext";
 import { showAppNotice } from "./AppNotice";
 import { GamePageNumber } from "./GamePageNumber";
@@ -241,7 +241,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const discard = () => { setScreened(!!baseline.current?.workflow?.screened); if (baseline.current) { publish({ ...baseline.current, options }); } setDirty(false); report("未保存的文本修改已取消"); };
   const leave = async () => {
     optionWrite.current?.(); await writes.current;
-    if (controller.current) { report("请先中止文本翻译或等待任务完成", "warning"); return false; }
+    if (controller.current) { report("文本处理尚未结束，请先中止当前任务或等待完成", "warning"); return false; }
     if (!dirty) return true;
     const choice = await new Promise<"save" | "discard" | "cancel"> (resolve => setPendingLeave(() => resolve));
     if (choice === "cancel") return false;
@@ -340,6 +340,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (screening.signal.aborted) { setState("screen-stopped"); return false; }
       const selectedEntries = next.entries.filter(entry => entry.selected);
       const invalid = selectedEntries.filter(entry => {
+        if (entry.error?.startsWith(textScreeningErrorPrefix)) { entry.error = ""; return false; }
         const problem = failureReasons.get(entry.id);
         if (!problem) return false;
         entry.error = problem; return true;
@@ -353,8 +354,11 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         onlySource: options.onlySourceLanguage !== false,
         target: options.target, skipTarget: options.skipTargetLanguage !== false, signal: screening.signal, onOllamaStatus: errors.status,
         onProgress: (completed, total) => {
-          reportGameStepItems(promptState.scope + ":text", "screen", completed);
+          const failed = next.entries.filter(entry => entry.selected && entry.error).length;
+          if (failed) errors.notify();
+          reportGameStepItems(promptState.scope + ":text", "screen", completed, failed);
           setProgress({ completed, total, detail: "正在用大模型筛选文本", textStage: "screening", model: options.screeningModel });
+          publish({ ...next, entries: [...next.entries] });
         },
       });
       for (const entry of screeningEntries)
@@ -371,7 +375,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       next.workflow = { screened: true, version: gameTextScreeningVersion,
         screenedIds: selectedEntries.map(entry => entry.id), skippedIds: selectedEntries.filter(entry => !entry.selected).map(entry => entry.id),
         supplementalIds: selectedEntries.filter(entry => entry.selected).map(entry => entry.id) };
-      await persist(next, true); publish(next); setDirty(false); setScreened(!screening.signal.aborted); setState(screening.signal.aborted ? "screen-stopped" : "screened");
+      await persist(next, true); publish(next); setDirty(false); setScreened(!screening.signal.aborted); setState(screening.signal.aborted ? "screen-stopped" : next.entries.some(entry => entry.selected && entry.error) ? "error" : "screened");
       const result = unityTranslationStats(selectedEntries.filter(entry => entry.selected), gameTextProblem, gameDialogueReuseKey, options.target);
       report(`筛查完成：${preserved} 条无需处理已取消勾选，${result.total - result.completed} 种原文待翻译`, "success");
       if (options.skipTargetLanguage !== false && repaired.length) report(`已将 ${repaired.length} 条目标语言原文恢复为原样，替换此前重复翻译的结果。条目：${repaired.slice(0, 20).map(entry => "#" + entry.id).join("、")}`, "warning");
@@ -382,6 +386,13 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (!screening.signal.aborted) {
         fatalError = error instanceof Error ? error.message : String(error);
         setProgressFailure(fatalError); errors.notify();
+      }
+      try { await persist(next, true); publish(next); setDirty(false); }
+      catch (saveError) {
+        publish(next); setDirty(true);
+        const detail = `筛选结果保存失败：${saveError instanceof Error ? saveError.message : String(saveError)}`;
+        fatalError = fatalError ? fatalError + "，" + detail : detail;
+        setProgressFailure(fatalError); setState("error"); errors.notify();
       }
       return false;
     } finally {
