@@ -412,7 +412,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
       <div className="training-dataset-canvas-track" style={{
         paddingInline: canvasPadding.padX,
         paddingBlock: canvasPadding.padY,
-      }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: image.width * zoom, height: image.height * zoom, ["--mosaic-preview-zoom" as string]: String(zoom) }}>
+      }}><div ref={bitmap} className="training-dataset-canvas-image game-mosaic-stage" style={{ width: image.width * zoom, height: image.height * zoom }}>
         {picture.url ? <img src={picture.url} alt={image.name} draggable={false} /> : <span>{picture.failed ? "图片读取失败" : "正在读取图片…"}</span>}
         <svg viewBox={`0 0 ${image.width} ${image.height}`} className={editable ? "is-editing" : undefined} aria-label="去码蒙版"
           style={tool === "select" ? { cursor: panning ? "grabbing" : "grab" } : undefined}>
