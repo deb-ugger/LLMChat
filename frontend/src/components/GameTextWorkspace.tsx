@@ -36,7 +36,7 @@ import { gameTextRequest, gameTextProblem as validateGameText, createGameTextVal
 import { translateUnitySession, unityTranslationStats, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
 import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, prepareUnityTranslationText, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
-import { prepareGameTerms, gameTermProblem } from "../gameTermMemory";
+import { clearGameTermMemory, prepareGameTerms, gameTermProblem } from "../gameTermMemory";
 import { gameFormatTokens, gameJapaneseTextIssue, gameTextHasSpeaker, gameTextMatchesSource, gameTextNeedsNoTranslation, preserveTargetGameText, translateRpgSystemMessage } from "../gameDisplayText";
 import { createUnityEnginePool, normalizeUnityEngines } from "../unityEnginePool";
 import { engineReady, parseEngineKeys } from "../translateEngines";
@@ -401,8 +401,8 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     }
   };
   const resetTranslation = async (forTranslation = false) => {
-    if (busy || !current.current || !await confirmation.ask(forTranslation ? "重新翻译" : "清理译文缓存", "将清除本次翻译统计及所选条目的已有译文和草稿。")) return;
-    const next = { ...current.current, entries: current.current.entries.map(entry => entry.selected ? { ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined, importPartial: undefined } : entry) };
+    if (busy || !current.current || !await confirmation.ask(forTranslation ? "重新翻译" : "清理译文缓存", "将清除所选条目的译文、草稿、翻译统计及当前工程的目标语言术语缓存。重译时重新确认术语。")) return;
+    const next = { ...current.current, workflow: { ...current.current.workflow, screened: !!current.current.workflow?.screened, freshTerms: true }, entries: current.current.entries.map(entry => entry.selected ? { ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined, importPartial: undefined, translationResult: undefined } : entry) };
     if (screened && options.screeningModel === undefined) preserveTargetGameText(next.entries.filter(entry=>entry.selected),options.target,sourceFilter,options.skipTargetLanguage!==false);
     const cleared = current.current.entries.filter(entry => entry.selected);
     const counts = { text: cleared.filter(entry => !!entry.translation).length, drafts: cleared.filter(entry => !!entry.layoutDraft).length, errors: cleared.filter(entry => !!entry.error).length };
@@ -410,8 +410,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     setProgress({ detail: `正在清理 ${cleared.length} 条文本并保存工程：译文 ${counts.text} 条，草稿 ${counts.drafts} 条`, completed: 0, total: cleared.length });
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     try {
+      clearGameTermMemory(gamePath, options.target);
       await persist(next, true); publish(next); setDirty(false);
-      report(`清理完成：译文 ${counts.text} 条，排版草稿 ${counts.drafts} 条，错误记录 ${counts.errors} 条；原文保留`, "success");
+      report(`清理完成：译文 ${counts.text} 条，排版草稿 ${counts.drafts} 条，错误记录 ${counts.errors} 条，工程术语缓存已清理；原文保留`, "success");
       clearGamePerformance(promptState.scope + ":text", ["translate"]);
       setScreened(screened || forTranslation); setProgress(null); setState(screened || forTranslation ? "screened" : "idle");
       if (!screened && !forTranslation) setScreenStarted(false);
@@ -577,7 +578,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
         if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { timingScope: promptState.scope + ":text", onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
         const preparedTerms = await prepareGameTerms(taskEntries, next.entries, options.target, general.textGlossary,
           (name, context) => options.kind !== "engine" ? request("llm", name, context) : pool!.translate(name), abort.signal,
-          (detail, completed, total) => setProgress({ detail, completed, total, textStage: "names", model: options.kind !== "engine" ? options.nameModel || options.model : undefined }), gamePath);
+          (detail, completed, total) => setProgress({ detail, completed, total, textStage: "names", model: options.kind !== "engine" ? options.nameModel || options.model : undefined }), gamePath, !next.workflow.freshTerms);
         terminology = preparedTerms.terms;
         const partialValues = new Map(next.entries.filter(entry => gameTextImportPartial(entry)).map(entry => [entry.source, entry.translation]));
         await translateUnitySession(taskEntries, new Map(), { onQueue: value => { queue.current = value; }, signal: abort.signal, concurrency: options.kind === "engine" ? Math.max(1, pool!.concurrency) : options.kind === "local" || [options.model || general.model, options.nameModel, options.dialogueModel].some(model => model && loadLocalModelProfiles()[model]) ? 8 : 16, references: next.entries,
@@ -594,6 +595,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           validate: (source, translation) => partialValues.get(source) === translation ? "仍有未替换的导入原文" : gameTextProblem(source, translation), persist: checkpoint,
           progress: reportProgress,
         });
+        if (next.workflow.freshTerms && next.entries.every(entry => !entry.selected || !!entry.translation && !entry.error && !gameTextImportPartial(entry)))
+          next.workflow = { ...next.workflow, freshTerms: false };
+        try { await persist(next, true); } catch (error) { checkpointFailed = true; throw error; }
         publish({ ...next, entries: [...next.entries] }); setDirty(false);
         const failed = taskEntries.filter(entry => entry.error);
         setState(failed.length ? "error" : "done");
@@ -729,12 +733,13 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const textCleanupAvailable = !!stepPerformance(promptState.scope + ":text", "translate").taskId ||
     selected.some(entry => entry.layoutDraft || entry.error || (entry.translation && entry.translation !== entry.source));
   const clearScreen = async () => {
-    if (busy || !current.current || !await confirmation.ask("清理筛选及后续结果", "清除筛选状态、译文和排版草稿，保留原文。")) return;
+    if (busy || !current.current || !await confirmation.ask("清理筛选及后续结果", "清除筛选状态、译文、排版草稿及当前工程的目标语言术语缓存，保留原文。")) return;
     setSaving(true); setState("clearing");
     setProgress({ completed: 0, total: current.current.entries.length, detail: "正在清理全部文本的筛选状态、译文和草稿…" });
     try {
       optionWrite.current?.(); await writes.current;
-      const next = resetGameTextScreening({ ...current.current, entries: current.current.entries.map(entry => ({ ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined, importPartial: undefined, translationResult: undefined })) });
+      const next = resetGameTextScreening({ ...current.current, workflow: { ...current.current.workflow, screened: false, freshTerms: true }, entries: current.current.entries.map(entry => ({ ...entry, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined, importPartial: undefined, translationResult: undefined })) });
+      clearGameTermMemory(gamePath, options.target);
       await persist(next,true);
       const saved = await gameTextRequest<GameTextProject>("load", { gamePath, sourcePath: next.sourcePath });
       if (saved.entries.some(entry => entry.translation || entry.layoutDraft || entry.screeningDraft || entry.error)) throw new Error("清理后仍存在文本结果，工程未恢复为空，请重试");
@@ -742,7 +747,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       setScreened(false); setScreenStarted(false); setProgress(null); setState("idle");
       setImportIssues([]); setImportReport(undefined);
       clearGamePerformance(promptState.scope + ":text", ["screen", "translate"]);
-      report("筛选及后续译文、排版草稿已清理", "success");
+      report("筛选及后续译文、排版草稿、工程术语缓存已清理", "success");
     } catch(error) { setState("error"); report(String(error), "error"); }
     finally { setSaving(false); }
   };

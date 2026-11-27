@@ -410,3 +410,44 @@ runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
 assert.equal(await runTranslation(), true, runtime.progressFailure);
 assert.equal(runtime.current.current.entries[0].translation, noticeTranslation, "the real local-formatting path keeps the screenshot's short notice on one line");
 console.log("PASS actual natural translation keeps original layout in one model request, validates dialogue and avoids hard wrapping short system notices");
+
+const resetStart = workspaceCode.indexOf("  const resetTranslation = async");
+const resetEnd = workspaceCode.indexOf("  const run = async", resetStart);
+const resetCode = (await transform(workspaceCode.slice(resetStart, resetEnd), { loader: "ts", target: "es2022" })).code;
+const removedCaches = [];
+const resetContext = { ...context, busy: false, screened: true, gamePath: "fixture-game", confirmation: { ask: async () => true },
+  current: { current: { ...initialProject, entries: [{ ...entry, translationResult: { translation: "旧译文", target: "zh-CN" } }, { ...entry, id: "kept", selected: false }], workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: ["1"] } } },
+  clearGameTermMemory: (...args) => removedCaches.push(args), clearGamePerformance() {},
+};
+resetContext.publish = value => { resetContext.current.current = value; };
+resetContext.persist = async value => { resetContext.saved = JSON.parse(JSON.stringify(value)); };
+const resetTranslation = new Function("context", "with(context) {" + resetCode + ";return resetTranslation;}")(resetContext);
+await resetTranslation();
+assert.deepEqual(removedCaches, [["fixture-game", "zh-CN"]]);
+assert.equal(resetContext.saved.entries[0].translation, "");
+assert.equal(resetContext.saved.entries[0].translationResult, undefined);
+assert.equal(resetContext.saved.entries[1].translation, entry.translation, "clearing selected rows keeps other translations");
+assert.equal(resetContext.saved.workflow.freshTerms, true);
+
+const clearScreenStart = workspaceCode.indexOf("  const clearScreen = async");
+const clearScreenEnd = workspaceCode.indexOf("  const textReady =", clearScreenStart);
+const clearScreenCode = (await transform(workspaceCode.slice(clearScreenStart, clearScreenEnd), { loader: "ts", target: "es2022" })).code;
+const clearContext = { ...resetContext, current: { current: { ...initialProject, entries: [entry] } }, optionWrite: { current: null }, writes: { current: Promise.resolve() }, baseline: { current: null }, setImportIssues() {}, setImportReport() {} };
+clearContext.persist = async value => { clearContext.saved = JSON.parse(JSON.stringify(value)); };
+clearContext.publish = value => { clearContext.current.current = value; };
+clearContext.gameTextRequest = async () => clearContext.saved;
+const clearScreen = new Function("context", "with(context) {" + clearScreenCode + ";return clearScreen;}")(clearContext);
+await clearScreen();
+assert.equal(removedCaches.length, 2, "clearing either screening results or translation results deletes the terminology cache");
+assert.equal(clearContext.saved.entries[0].translation, "");
+assert.equal(clearContext.saved.workflow.freshTerms, true);
+
+runtime.current.current = { ...initialProject, entries: [{ ...entry, id: "4", source: "こんにちは", translation: "" }], workflow: { screened: true, version: project.gameTextScreeningVersion, freshTerms: true, screenedIds: ["4"] } };
+runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
+runtime.prepareGameTerms = async (...args) => { assert.equal(args.at(-1), false); return { terms: new Map(), issues: [] }; };
+runtime.persist = async value => { runtime.finalFile = JSON.parse(JSON.stringify(value)); };
+runtime.createUnityEnginePool = () => ({ concurrency: 1, dispose() {}, translate: async () => "你好" });
+assert.equal(await runTranslation(), true, runtime.progressFailure);
+assert.equal(runtime.finalFile.entries[0].translation, "你好", "write the complete file after the last result, not just incremental checkpoints");
+assert.equal(runtime.finalFile.workflow.freshTerms, false, "finish the fresh-term mode after all selected rows are complete");
+console.log("PASS actual clear removes terminology/provenance cache and completed runs refresh the complete translation file");

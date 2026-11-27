@@ -16,7 +16,7 @@ export const gameTextImportPartial = (entry: UnityEntry) => {
   const partial = (entry as GameTextEntry).importPartial;
   return partial?.translation === entry.translation ? partial : undefined;
 };
-export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; supplementalIds?: string[]; version?: number }; messageCore?: boolean; positionRepairs?: number };
+export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; supplementalIds?: string[]; version?: number; freshTerms?: boolean }; messageCore?: boolean; positionRepairs?: number };
 
 export const gameTextScreeningVersion = 2;
 
@@ -29,7 +29,7 @@ export function gameTextSupplementIds(project: Pick<GameTextProject, "workflow">
 
 export function resetGameTextScreening(project: GameTextProject): GameTextProject {
   const skipped = new Set(project.workflow?.skippedIds ?? []);
-  return { ...project, workflow: { screened: false }, entries: project.entries.map(entry =>
+  return { ...project, workflow: { screened: false, ...(project.workflow?.freshTerms ? { freshTerms: true } : {}) }, entries: project.entries.map(entry =>
     skipped.has(entry.id) ? { ...entry, selected: true } : entry) };
 }
 

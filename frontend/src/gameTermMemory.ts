@@ -13,8 +13,15 @@ const matchesTarget = (name: string, target: string) => target.startsWith("zh") 
 const validTranslation = (source: string, value: string, target: string) => literal(value) && !/[\r\n]/.test(value) && !gameBracketProblem(source, value) &&
   (!/^(zh|ja|ko|en)(?:-|$)/.test(target) || matchesTarget(value, target));
 
+const termMemoryKey = (scope: string, target: string) => "llmchat-game-term-memory:v1:" + JSON.stringify([scope.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase(), target]);
+
+export function clearGameTermMemory(scope: string, target: string) {
+  try { localStorage.removeItem(termMemoryKey(scope, target)); }
+  catch (error) { throw new Error("清理工程术语缓存失败：" + String(error)); }
+}
+
 function openTermMemory(scope: string | undefined, target: string) {
-  const key = scope ? "llmchat-game-term-memory:v1:" + JSON.stringify([scope.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase(), target]) : undefined;
+  const key = scope ? termMemoryKey(scope, target) : undefined;
   let memory = new Map<string, string>();
   if (key) {
     try {
@@ -39,7 +46,7 @@ function openTermMemory(scope: string | undefined, target: string) {
 
 /** Prepare a game-local, target-specific dictionary before concurrent dialogue requests. */
 export async function prepareGameTerms(selected: UnityEntry[], references: UnityEntry[], target: string, glossary: string | Term[] | undefined,
-  translate: (name: string, context: string) => Promise<string>, signal: AbortSignal, progress?: (detail: string, completed: number, total: number) => void, memoryScope?: string) {
+  translate: (name: string, context: string) => Promise<string>, signal: AbortSignal, progress?: (detail: string, completed: number, total: number) => void, memoryScope?: string, reuseReferences = true) {
   signal.throwIfAborted();
   progress?.("正在从插件姓名框和游戏数据库收集术语", 0, 0);
   const terms = new Map<string, string>();
@@ -73,7 +80,7 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   const memory = openTermMemory(memoryScope, target);
   progress?.(`已收集 ${requested.size} 个不同术语，正在匹配工程已有译名`, 0, requested.size);
   const votes = new Map<string, Map<string, { count: number; positions: string[] }>>();
-  for (const entry of references) {
+  for (const entry of reuseReferences ? references : []) {
     if (entry.error || !entry.translation || entry.translationTarget && entry.translationTarget !== target) continue;
     const term = entry.rpgTextKind && entry.rpgTextKind !== "interface" && !isGameDialogue(entry.source, entry);
     const original = term ? [entry.source.trim()] : gameSpeakerNames(entry.source);
