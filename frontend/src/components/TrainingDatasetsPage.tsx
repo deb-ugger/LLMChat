@@ -30,6 +30,13 @@ function maskCount(dataset: TrainingDataset) {
   return dataset.data.images.reduce((sum, image) => sum + (image.annotation.mosaic?.boxes?.length ?? 0), 0);
 }
 
+function DatasetCounts({ images, masks }: { images: number; masks: number | null | undefined }) {
+  return <span className="training-dataset-counts">
+    <span>{images} 张</span>
+    <span>{masks ?? (masks === null ? "—" : "…")} 蒙版</span>
+  </span>;
+}
+
 function DatasetOriginal({ dataset, image, onClose }: {
   dataset: TrainingDataset; image: AnnotatedImage; onClose: () => void;
 }) {
@@ -513,8 +520,8 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             <button type="button" className="unity-btn training-dataset-picker-trigger" popoverTarget={id + "-catalog"} disabled={blocked}
               onClick={event => { positionWindowPopover(event.currentTarget, datasetPicker.current); loadCatalogCounts(); }}
               onContextMenu={event => { if (dataset) openDatasetMenu(event, dataset.reference); }}>
-              <span title={dataset?.reference.title}>{dataset ? dataset.reference.title : "选择数据集"}</span>
-              {dataset && <small>· {dataset.reference.count} 张 · {maskCounts[dataset.reference.path]} 蒙版</small>}
+              <span className="training-dataset-name" title={dataset?.reference.title}>{dataset ? dataset.reference.title : "选择数据集"}</span>
+              {dataset && <DatasetCounts images={dataset.reference.count} masks={maskCounts[dataset.reference.path]} />}
               <span aria-hidden="true">▾</span>
             </button>
             <button type="button" className="unity-btn training-dataset-ops-trigger" disabled={blocked}
@@ -525,12 +532,10 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             {catalog.map(reference => <button key={reference.path} type="button" className="training-dataset-catalog-item"
               aria-current={reference.path === dataset?.reference.path} onClick={() => openReference(reference)}
               onContextMenu={event => openDatasetMenu(event, reference)}>
-              <span title={reference.title}>{reference.title}</span>
-              <small>· {reference.count} 张 · {maskCounts[reference.path] ?? (maskCounts[reference.path] === null ? "—" : "…")} 蒙版</small>
+              <span className="training-dataset-name" title={reference.title}>{reference.title}</span>
+              <DatasetCounts images={reference.count} masks={maskCounts[reference.path]} />
             </button>)}
             <button type="button" className="training-dataset-catalog-item" disabled={!desktop} onClick={openDirectory}>浏览本地目录…</button>
-            <button type="button" className="training-dataset-catalog-item" disabled={blocked}
-              onClick={event => { datasetPicker.current?.hidePopover(); openDatasetOpsMenu(event); }}>数据集操作…</button>
           </div>
           <input ref={element => { importInput.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
             aria-label="选择图片集目录" onChange={event => {
