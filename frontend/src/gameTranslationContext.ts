@@ -30,7 +30,7 @@ export function saveGameContextLengths(lengths: ContextLengths) {
 type Context = NonNullable<TranslateOptions["context"]>;
 const reference = (source: string): Context[number] => ({ source, translation: "" });
 export function gameTranslationRetry(context: Context | undefined, reason?: string) {
-  return reason ? { context: [...context || [], reference(`重译原因：${reason}。只翻译当前给出的正文片段，完整译为目标语言。`)], llmBatch: false } : { context };
+  return reason ? { context: [...context || [], reference(`重译原因：${reason}。只翻译当前给出的正文片段，完整译为目标语言。括号、引用及其中的控制符是完整结构，保留成对边界、包围范围和标记顺序；不要因片段重译新增半边括号或重复动作。`)], llmBatch: false } : { context };
 }
 export const GAME_RESOURCE_LABELS = { character: "角色名", place: "地点名", skill: "技能名", item: "物品或装备名", interface: "游戏界面用语" } as const;
 export const isGameDialogue = (source: string, entry?: UnityEntry) => !!entry?.dialoguePosition || gameTextHasSpeaker(source);

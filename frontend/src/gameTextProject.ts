@@ -1,4 +1,5 @@
 import type { GameWrapMode } from "./gameTextLayout";
+import { gameBracketPairs, gameBracketEnds, gameBracketIssue, gameBracketProblem } from "./gameTextStructure";
 import { gameDisplayTextProblem, gameControlSignature, gameFormatTokens, gameJapaneseTextIssue, gameTextMatchesSource, rpgTextControlProblem, withoutGameSpeakerNames, translateGameDisplayText } from "./gameDisplayText";
 import { API_BASE } from "./api";
 import type { UnityEntry } from "./unityOffline";
@@ -10,7 +11,11 @@ export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string;
 export type DialogueRepair = "position" | "continuation" | "alignment" | "name";
 export const dialogueRepairLabels: Record<DialogueRepair, string> = { position: "定位参数", continuation: "句尾对齐", alignment: "缺少行首定位", name: "姓名框" };
 export type DialogueRepairPreview = { input: string; text: string };
-export type GameTextEntry = UnityEntry & { dialogueRepairs?: DialogueRepair[]; dialogueRepairPreview?: DialogueRepairPreview; importPartial?: { translation: string; unmatched: string[] } };
+export type GameTextEntry = UnityEntry & { dialogueRepairs?: DialogueRepair[]; dialogueRepairPreview?: DialogueRepairPreview; importPartial?: { translation: string; unmatched: string[] }; translationResult?: { translation: string; target: string } };
+export const gameTextSupplementResult = (entry: UnityEntry, target?: string) => {
+  const result = (entry as GameTextEntry).translationResult;
+  return !!result && !!entry.translation.trim() && result.translation === entry.translation && (!target || result.target === target);
+};
 export const gameTextImportPartial = (entry: UnityEntry) => {
   const partial = (entry as GameTextEntry).importPartial;
   return partial?.translation === entry.translation ? partial : undefined;
@@ -84,6 +89,8 @@ export function gameTextProblem(source: string, translation: string, messageCore
   if (error) return error;
   const missing = gameDisplayTextProblem(source, translation) || rpgTextControlProblem(source, translation);
   if (missing) return missing;
+  const brackets = gameBracketProblem(importVisibleText(source), importVisibleText(translation));
+  if (brackets) return brackets;
   return gameControlSignature(source) === gameControlSignature(translation) ? "" : "游戏控制符发生变化，请保留原文中的反斜杠指令及参数";
 }
 
@@ -138,16 +145,8 @@ type ImportTextSplit = { sourceLines: number; translationLines: number; availabl
 const normalizeImportText = (text: string) => text.replace(/\r\n|\r/g, "\n").normalize("NFKC");
 const importTextTokens = (source: string) => [...source.matchAll(gameFormatTokens())].filter(match => !/^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(match[0]) && !isVisibleGameBrace(match[0]));
 const importVisibleText = (text: string) => text.replace(gameFormatTokens(), token => isVisibleGameBrace(token) ? token : /^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(token) ? token.slice(token.indexOf("<") + 1, -1) : "");
-const importBracketPairs = new Map(["()", "[]", "{}", "（）", "［］", "｛｝", "【】", "〔〕", "〈〉", "《》", "「」", "『』", "〖〗", "〘〙", "〚〛", "“”", "‘’"].map(pair => [pair[0], pair[1]]));
-const importBracketEnds = new Set(importBracketPairs.values());
-function balancedImportBrackets(text: string) {
-  const stack: string[] = [];
-  for (const char of text) {
-    if (importBracketPairs.has(char)) stack.push(importBracketPairs.get(char)!);
-    else if (importBracketEnds.has(char) && stack.pop() !== char) return false;
-  }
-  return stack.length === 0;
-}
+const importBracketPairs = gameBracketPairs, importBracketEnds = gameBracketEnds;
+const balancedImportBrackets = (text: string) => !gameBracketIssue(text);
 function importBracketUnits(text: string) {
   if (!balancedImportBrackets(text)) return [{ text, after: "" }];
   const units: { text: string; after: string }[] = [];
@@ -404,8 +403,7 @@ function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], val
 export type GameTextImportAudit = ReturnType<typeof finishGameTextImport>["audit"];
 
 export function importGameText(entries: UnityEntry[], contents: string, csv: boolean, mode: UnityTranslationImportMode, messageCore = false, sourceLanguage = "auto") {
-  const validate = (source: string, translation: string) => gameTextProblem(source, translation, messageCore) ||
-    (balancedImportBrackets(importVisibleText(source)) && !balancedImportBrackets(importVisibleText(translation)) ? "译文括号未成对或发生错配" : "");
+  const validate = (source: string, translation: string) => gameTextProblem(source, translation, messageCore);
   const data = csv ? null : JSON.parse(contents.replace(/^\uFEFF/, ""));
   if (csv) {
     const rows = readUnityTranslationRows(entries, contents, true, true);

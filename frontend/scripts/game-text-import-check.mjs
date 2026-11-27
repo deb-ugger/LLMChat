@@ -129,8 +129,8 @@ assert.ok(gameTextProblem("こんにちは{name}", "你好{other}"));
 assert.ok(gameTextProblem("こんにちは", '{"translation":""}'));
 for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"], ["（", "）"], ["［", "］"], ["｛", "｝"]]) {
   const source = "外側全文" + open + "括内全文" + close;
-  const whole = run([entry("1", source)], { [source]: "完整译文", "外側全文": "不应选外", "括内全文": "不应选内" });
-  assert.equal(whole.entries[0].translation, "完整译文");
+  const whole = run([entry("1", source)], { [source]: "完整译文" + open + "括内译文" + close, "外側全文": "不应选外", "括内全文": "不应选内" });
+  assert.equal(whole.entries[0].translation, "完整译文" + open + "括内译文" + close);
   assert.equal(whole.audit.partialEntries.length, 0);
   const outside = run([entry("1", source)], { "外側全文": "外侧译文" });
   assert.equal(outside.entries[0].translation, "外侧译文" + open + "括内全文" + close);
@@ -142,16 +142,16 @@ for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"], ["（", "）"],
   assert.equal(run([entry("1", source)], { ["外側全文" + open]: "不能只匹配左半边", ["括内全文" + close]: "不能只匹配右半边" }).changed, 0);
   assert.equal(run([entry("1", open + "括内全文")], { "括内全文": "不能按半括号拆分" }).changed, 0);
 }
-const linePriority = run([entry("1", "外側全文(括内全文)\n第二行全文")], { "外側全文(括内全文)": "整行译文", "外側全文": "不应选片段", "括内全文": "不应选片段" });
-assert.equal(linePriority.entries[0].translation, "整行译文\n第二行全文");
+const linePriority = run([entry("1", "外側全文(括内全文)\n第二行全文")], { "外側全文(括内全文)": "整行(译文)", "外側全文": "不应选片段", "括内全文": "不应选片段" });
+assert.equal(linePriority.entries[0].translation, "整行(译文)\n第二行全文");
 assert.equal(linePriority.audit.partialEntries.length, 1);
 assert.equal(run([entry("1", "外側全文，続き(括内全文)")], { "外側全文": "不能截断连续正文" }).changed, 0);
 assert.equal(run([entry("1", "外側全文(括内全文]")], { "外側全文": "错配括号不能成为分割点" }).changed, 0);
 const restoredPartial = JSON.parse(JSON.stringify(linePriority.entries[0]));
 assert.ok(gameTextImportPartial(restoredPartial));
 assert.equal(gameTextImportPartial({ ...restoredPartial, translation: "完整新译文" }), undefined);
-const fullReplacement = run(linePriority.entries, { "外側全文(括内全文)\n第二行全文": "全文已译" });
-assert.equal(fullReplacement.entries[0].translation, "全文已译");
+const fullReplacement = run(linePriority.entries, { "外側全文(括内全文)\n第二行全文": "全文(已译)" });
+assert.equal(fullReplacement.entries[0].translation, "全文(已译)");
 assert.equal(gameTextImportPartial(fullReplacement.entries[0]), undefined);
 const literalExample = run([entry("1", "yyyyy(xxxx)")], { yyyyy: "外部译文" });
 assert.equal(literalExample.entries[0].translation, "外部译文(xxxx)");

@@ -30,6 +30,12 @@ const imagePresenceConflictGroup = "复筛判断矛盾";
 export function batchFailureType(detail: string) {
   if (detail.includes(IMAGE_PRESENCE_CONFLICT)) return imagePresenceConflictGroup;
   const categories: [RegExp, string][] = [
+    [/括号|引用.*(?:成对|错配|嵌套)/, "括号与引用结构错误"],
+    [/仍含日文|日文残留|尚未翻译/, "译文残留原文"],
+    [/不同译文|无法唯一匹配|匹配.*歧义/, "导入匹配歧义"],
+    [/缺少.*(?:行译文|正文片段)|未替换.*原文/, "正文译文不完整"],
+    [/姓名|译名|术语/, "姓名或术语问题"],
+    [/缺少正文|仅剩控制符|混入.*提示|参考语境/, "正文内容错误"],
     [/输出被截断|输出达到长度上限/, "模型输出被截断"],
     [/置信度无效/, "置信度无效"],
     [/识别区域|区域.*坐标|坐标或置信度|缺少文字/, "识别区域无效"],

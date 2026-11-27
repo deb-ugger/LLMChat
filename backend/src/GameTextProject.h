@@ -111,7 +111,7 @@ inline void resetForScan(const fs::path& game) {
     const auto batches = checkpoints(base);
     if (fs::is_regular_file(file) || !batches.empty()) {
         auto value = fs::is_regular_file(file) ? read(file) : Json{{"entries", Json::array()}};
-        for (auto& entry : value["entries"]) { entry["translation"] = ""; entry["error"] = ""; entry.erase("layoutDraft"); entry.erase("screeningDraft"); entry.erase("importPartial"); }
+        for (auto& entry : value["entries"]) { entry["translation"] = ""; entry["error"] = ""; entry.erase("layoutDraft"); entry.erase("screeningDraft"); entry.erase("importPartial"); entry.erase("translationResult"); }
         if (!batches.empty()) value["checkpointSequence"] = batches.rbegin()->first;
         value["workflow"] = Json{{"screened", false}}; write(file, value);
     }
@@ -308,7 +308,7 @@ inline Json load(const Json& request) {
             if (const auto context = textContexts.find(it.key()); context != textContexts.end()) row["rpgTextContext"] = context->second;
         }
         if (previous.contains(it.key())) for (const auto& key : {"translation", "selected", "error"}) row[key] = previous[it.key()].at(key);
-        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget", "importPartial"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
+        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget", "importPartial", "translationResult"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
         flagPromptLeak(row, it.key());
         if (messageCore) {
             Json repairs = Json::array();

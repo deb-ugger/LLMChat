@@ -580,7 +580,9 @@
 .game-import-report { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
 .game-import-report > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
 .game-import-report small { color: var(--text-muted); }
-.game-import-report .game-import-errors { color: var(--danger); margin: 6px 0 0; }
+.game-text-workbench .unity-offline-table tr.has-error > td { background: color-mix(in srgb, var(--danger) 9%, var(--bg-panel)); }
+.game-text-workbench .unity-offline-table tr.has-error > td:first-child { box-shadow: inset 3px 0 var(--danger); }
+.game-text-workbench .unity-offline-table tr.has-error .unity-entry-editor textarea { border-color: var(--danger); }
 
 .embed-product-grid { flex: 1 1 100%; min-width: 0; }
 .embed-product-grid .embed-deploy-status { flex: none; }

@@ -1,5 +1,6 @@
 import { unityTranslationTokens, unityTranslationProblem } from "./unityTokens";
 import type { UnityEntry } from "./unityOffline";
+import { gameBracketProblem, splitGameTranslationSpans } from "./gameTextStructure";
 
 const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^><{}$\\])`;
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
@@ -258,11 +259,12 @@ export async function translateGameDisplayText(source: string, translate: (text:
     return duplicated ? `译文重复了术语「${duplicated[1]}」` : "";
   };
   const problemWith = (value: string) => unityTranslationProblem(withoutGameSpeakerNames(source), withoutGameSpeakerNames(value)) ||
-    gameDisplayTextProblem(source, value) || rpgTextControlProblem(source, value) || qualityProblem(value);
+    gameDisplayTextProblem(source, value) || rpgTextControlProblem(source, value) ||
+    gameBracketProblem(source, value) || qualityProblem(value);
   retryReason ||= JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ?
     "译文中的格式标记丢失、重复或顺序错误" : problemWith(restoreMarkers(result));
   if (retryReason) {
-    const pieces = protectedText.split(/(\{LLMCHAT_FORMAT_\d+\})/);
+    const pieces = splitGameTranslationSpans(protectedText);
     const translatedPieces: string[] = [];
     const retriedSpans = new Map<string, string>();
     for (const piece of pieces) {
@@ -272,7 +274,11 @@ export async function translateGameDisplayText(source: string, translate: (text:
       const input = piece.trim();
       let translated = retriedSpans.get(input);
       if (translated === undefined) { translated = (await translate(input, referenceText.trim() !== input ? referenceText : undefined, retryReason)).trim(); retriedSpans.set(input, translated); }
-      if (!translated || /\{LLMCHAT_FORMAT_\d+\}/.test(translated)) throw new Error("正文重译未返回有效内容，请检查模型与提示词；此条译文未保存");
+      if (!translated) throw new Error("正文重译未返回有效内容，请检查模型与提示词；此条译文未保存");
+      if (JSON.stringify(input.match(markerPattern) || []) !== JSON.stringify(translated.match(markerPattern) || []))
+        throw new Error("完整括号或引用组重译未保留控制符标记，请更换模型或提示词；此条译文未保存");
+      const bracketProblem = gameBracketProblem(input, translated);
+      if (bracketProblem) throw new Error(bracketProblem);
       translatedPieces.push(leading + translated + trailing);
     }
     result = translatedPieces.join("");

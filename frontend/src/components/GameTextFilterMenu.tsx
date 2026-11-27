@@ -2,22 +2,23 @@ import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 
-export type GameTextFilters = { checked: boolean; unchecked: boolean; pending: boolean; failed: boolean; done: boolean; quality: boolean; target: boolean; limit: string };
-export const defaultGameTextFilters: GameTextFilters = { checked: true, unchecked: true, pending: true, failed: true, done: true, quality: false, target: false, limit: "" };
-export function matchesGameTextFilters(filters: GameTextFilters, selected: boolean, valid: boolean, failed: boolean, quality: boolean, target: boolean) {
+export type GameTextFilters = { checked: boolean; unchecked: boolean; pending: boolean; failed: boolean; done: boolean; quality: boolean; target: boolean; supplemental: boolean; limit: string };
+export const defaultGameTextFilters: GameTextFilters = { checked: true, unchecked: true, pending: true, failed: true, done: true, quality: false, target: false, supplemental: false, limit: "" };
+export function matchesGameTextFilters(filters: GameTextFilters, selected: boolean, valid: boolean, failed: boolean, quality: boolean, target: boolean, supplemental = false) {
   const state = failed ? "failed" : valid ? "done" : "pending";
-  return filters[selected ? "checked" : "unchecked"] && filters[state] && (!filters.quality || quality) && (!filters.target || target);
+  return filters[selected ? "checked" : "unchecked"] && filters[state] && (!filters.quality || quality) && (!filters.target || target) && (!filters.supplemental || supplemental);
 }
 export function limitGameText<T>(entries: T[], limit: string) {
   return limit ? entries.slice(0, Number(limit)) : entries;
 }
 
-export function GameTextFilterMenu({ active, disabled, value, matched, shown, onChange, onLimitChange }: {
+export function GameTextFilterMenu({ active, disabled, value, matched, shown, onChange, onLimitChange, supplementalAvailable = false }: {
   active: boolean;
   disabled?: boolean;
   value: GameTextFilters;
   matched: number;
   shown: number;
+  supplementalAvailable?: boolean;
   onChange: (value: GameTextFilters) => void;
   onLimitChange: (limit: string) => void;
 }) {
@@ -31,6 +32,7 @@ export function GameTextFilterMenu({ active, disabled, value, matched, shown, on
     {createPortal(<div ref={menu} id={id} popover="auto" role="dialog" aria-label="文本筛选条件" className="unity-image-filter-menu">
       <div className="unity-image-filter-presets"><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit })}>全部选取</button><button type="button" onClick={() => onChange({ ...defaultGameTextFilters, limit: value.limit, checked: false, unchecked: false, pending: false, failed: false, done: false })}>取消全部选取</button></div>
       {([["checked", "已勾选"], ["unchecked", "未勾选"], ["pending", "未完成"], ["failed", "失败"], ["done", "已完成"], ["quality", "仅看疑似问题"], ["target", "仅看无需翻译"]] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={value[key]} onChange={event => onChange({ ...value, [key]: event.target.checked })} />{label}</label>)}
+      {supplementalAvailable && <label><input type="checkbox" checked={value.supplemental} onChange={event => onChange({ ...value, supplemental: event.target.checked })} />仅查看补译内容</label>}
       <div className="game-text-filter-limit">
         <label htmlFor={id + "-limit"}>最多显示</label>
         <input id={id + "-limit"} type="text" inputMode="numeric" placeholder="不限" value={value.limit}
