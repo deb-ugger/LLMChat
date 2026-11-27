@@ -164,8 +164,18 @@ try {
         }
     } finally {
         if ($locked) {
-            & $lock release -Global -Owner $owner | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw '无法释放构建测速锁。' }
+            try {
+                . (Join-Path $PSScriptRoot 'build-temp-cleanup.ps1')
+                $report = Join-Path $root ('backend/build/incremental/logs/build-speed-{0:yyyyMMdd-HHmmss-fff}-{1}.temp-cleanup.json' -f (Get-Date), $PID)
+                $cleanup = Invoke-BuildTempCleanup -ReportPath $report
+                Write-Output ('Temp cleanup: deleted {0} files; freed {1:N2} GiB; remaining {2} items; report: {3}' -f
+                    $cleanup.DeletedFiles, ($cleanup.DeletedBytes / 1GB), $cleanup.RemainingCount, $cleanup.ReportPath)
+            } catch {
+                Write-Warning "Temp cleanup failed: $($_.Exception.Message)"
+            } finally {
+                & $lock release -Global -Owner $owner | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw '无法释放构建测速锁。' }
+            }
         }
     }
 }

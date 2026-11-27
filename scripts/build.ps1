@@ -317,6 +317,15 @@ try {
     $buildResult = 1
 } finally {
     if ($locked) {
+        try {
+            . (Join-Path $PSScriptRoot 'build-temp-cleanup.ps1')
+            $cleanup = Invoke-BuildTempCleanup -ReportPath ([IO.Path]::ChangeExtension($logPath, '.temp-cleanup.json'))
+            Write-BuildLog ('Temp cleanup: deleted {0} files, {1} directories and {2} links; freed {3:N2} GiB; remaining {4} items' -f
+                $cleanup.DeletedFiles, $cleanup.DeletedDirectories, $cleanup.DeletedLinks, ($cleanup.DeletedBytes / 1GB), $cleanup.RemainingCount)
+            Write-BuildLog "Temp cleanup report: $($cleanup.ReportPath)"
+        } catch {
+            Write-BuildLog "Temp cleanup failed: $($_.Exception.Message)"
+        } finally { Complete-BuildStage 'Temp cleanup' }
         $release = Invoke-BuildLock @('release', '-Global', '-Owner', $Owner)
         if ($release.Code -ne 0) { [Console]::Error.WriteLine($release.Output); $buildResult = 1 }
     }
