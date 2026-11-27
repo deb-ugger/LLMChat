@@ -106,6 +106,8 @@ function importTextWrapper(source: string) {
   return new RegExp(`^((?:${token}[ \\t]*)*)([\\s\\S]*?)((?:[ \\t]*${token})*)$`, "i").exec(source)!;
 }
 
+const importTextTokens = (source: string) => [...source.matchAll(gameFormatTokens())].filter(match => !/^\\(?:n[1-5]?|nc|nr|name|speaker)</i.test(match[0]));
+
 function reassembleGameText(source: string, lookup: (line: string) => Map<string, string> | undefined) {
   const parts = source.split(/(\r\n|\r|\n)/);
   let found = 0, missing = 0, ambiguous = 0;
@@ -137,7 +139,45 @@ function reassembleGameText(source: string, lookup: (line: string) => Map<string
   return { used, translation: parts.join("") };
 }
 
-function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], values: [string, string][], links: Map<string, string[]>, matchingIssues: { id: string; reason: string; missingLines?: string[] }[], validate: (source: string, translation: string) => string, mode: UnityTranslationImportMode, reassembled = 0, controlsRestored = 0) {
+function matchGameTextFragments(source: string, lookup: (text: string) => Map<string, string> | undefined) {
+  // MTool dictionaries also contain literal fragments between parameters.
+  // Keep the original parameters in place; names inside speaker tags are text.
+  const tokens = importTextTokens(source);
+  if (!tokens.length) return null;
+  const used: string[] = [], missingLines: string[] = [], output: string[] = [];
+  let position = 0, ambiguity = "";
+  const append = (text: string) => {
+    if (!/\p{L}/u.test(text)) { output.push(text); return; }
+    const literal = text.trim(), choices = lookup(literal);
+    if (choices?.size === 1) {
+      const [translation, key] = choices.entries().next().value!;
+      used.push(key);
+      const offset = text.indexOf(literal);
+      output.push(text.slice(0, offset) + translation + text.slice(offset + literal.length));
+      return;
+    }
+    if (choices && choices.size > 1) {
+      used.push(...choices.values()); ambiguity = "正文片段对应多条不同译文"; return;
+    }
+    const lines = reassembleGameText(text, lookup);
+    used.push(...lines.used);
+    if (lines.translation !== undefined) output.push(lines.translation);
+    else {
+      if (lines.reason?.includes("不同译文")) ambiguity = lines.reason;
+      missingLines.push(...(lines.missingLines?.length ? lines.missingLines : [literal]));
+    }
+  };
+  for (const token of tokens) {
+    append(source.slice(position, token.index));
+    output.push(token[0]); position = token.index! + token[0].length;
+  }
+  append(source.slice(position));
+  if (!used.length) return null;
+  if (ambiguity || missingLines.length) return { used, missingLines, reason: ambiguity || "缺少 " + missingLines.length + " 个正文片段译文" };
+  return { used, translation: output.join("") };
+}
+
+function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], values: [string, string][], links: Map<string, string[]>, matchingIssues: { id: string; reason: string; missingLines?: string[] }[], validate: (source: string, translation: string) => string, mode: UnityTranslationImportMode, reassembled = 0, controlsRestored = 0, fragmentMatched = 0) {
   const result = applyUnityTranslationRows(entries, rows, validate, { mode, allowClear: mode === "replace", partial: true });
   const issues = [...matchingIssues, ...result.issues];
   const problems = new Map(issues.map(issue => [issue.id, issue.reason]));
@@ -147,8 +187,36 @@ function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], val
   for (const [id, sources] of links) for (const source of new Set(sources)) {
     const ids = bySource.get(source) || []; ids.push(id); bySource.set(source, ids);
   }
+  // A dictionary can contain both a paragraph and separate translations of its
+  // lines. Record unused alternatives separately from absent source text.
+  const alternatives = new Map<string, string[]>();
+  for (const entry of result.entries) {
+    const parts = [entry.source];
+    let offset = 0;
+    for (const token of importTextTokens(entry.source)) {
+      parts.push(entry.source.slice(offset, token.index)); offset = token.index! + token[0].length;
+    }
+    parts.push(entry.source.slice(offset));
+    const keys = new Set<string>();
+    for (const part of [...parts, ...parts.flatMap(text => text.split(/\r\n|\r|\n/))]) {
+      const literal = part.trim(); if (!literal) continue;
+      keys.add(literal.normalize("NFKC"));
+      const wrapped = importTextWrapper(literal);
+      if (wrapped[2]) keys.add(wrapped[2].normalize("NFKC"));
+    }
+    for (const key of keys) {
+      const ids = alternatives.get(key) || []; ids.push(entry.id); alternatives.set(key, ids);
+    }
+  }
+  const translatedIds = new Set(result.entries.filter(entry => entry.translation.trim()).map(entry => entry.id));
   const details = values.map(([source, translation]) => {
     const entryIds = bySource.get(source) || [];
+    if (!entryIds.length) {
+      const related = alternatives.get(source.trim().normalize("NFKC")) || [];
+      if (related.length) return { source, translation, entryIds: related,
+        status: related.some(id => translatedIds.has(id)) ? "备选未使用" : "未应用",
+        reason: related.some(id => translatedIds.has(id)) ? "对应条目已有整段或其他片段译文，此备选译文未使用" : "仅匹配正文片段，整条仍缺少其他译文" };
+    }
     const statuses = entryIds.map(id => {
       const original = originals.get(id)!;
       if (problems.has(id)) return { status: "未应用", reason: problems.get(id)! };
@@ -162,8 +230,8 @@ function finishGameTextImport(entries: UnityEntry[], rows: TranslationRow[], val
   });
   const missingEntries = result.entries.filter(entry => !entry.translation.trim()).map(entry => ({ id: entry.id, source: entry.source, reason: problems.get(entry.id) || (candidates.has(entry.id) ? "导入译文为空" : "翻译文件中没有可匹配译文") }));
   const fileUsed = details.filter(row => row.status === "已应用" || row.status === "译文相同").length;
-  const audit = { fileTotal: values.length, fileUsed, fileUnused: values.length - fileUsed, projectTotal: entries.length, projectTranslated: result.entries.length - missingEntries.length, changed: result.changed, reassembled, controlsRestored, details, missingEntries, issues };
-  return { ...result, issues, audit, unmatched: details.filter(row => row.status === "未匹配").length, reassembled, controlsRestored };
+  const audit = { fileTotal: values.length, fileUsed, fileUnused: values.length - fileUsed, projectTotal: entries.length, projectTranslated: result.entries.length - missingEntries.length, changed: result.changed, reassembled, controlsRestored, fragmentMatched, details, missingEntries, issues };
+  return { ...result, issues, audit, unmatched: details.filter(row => row.status === "未匹配").length, reassembled, controlsRestored, fragmentMatched };
 }
 
 export type GameTextImportAudit = ReturnType<typeof finishGameTextImport>["audit"];
@@ -205,7 +273,7 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
     }
     rows.set(entry.id, { id: entry.id, source, translation });
   }
-  let reassembled = 0, controlsRestored = 0;
+  let reassembled = 0, controlsRestored = 0, fragmentMatched = 0;
   if (data.kind !== "llmchat-unity-translations") {
     const lineIndex = new Map<string, Map<string, string>>();
     for (const [source, translation] of values) {
@@ -216,14 +284,27 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
       if (!choices) lineIndex.set(line, choices = new Map());
       choices.set(value, source);
     }
+    const widthIndex = new Map<string, Map<string, string>>();
+    for (const [text, choices] of lineIndex) {
+      const key = text.normalize("NFKC");
+      let normalized = widthIndex.get(key);
+      if (!normalized) widthIndex.set(key, normalized = new Map());
+      for (const [translation, source] of choices) normalized.set(translation, source);
+    }
+    const lookup = (text: string) => lineIndex.get(text) || widthIndex.get(text.normalize("NFKC"));
     for (const entry of entries) {
       if (conflicts.has(entry.id) || rows.get(entry.id)?.translation.trim() || mode === "replace" && rows.has(entry.id)) continue;
       const original = entry.source.trim(), wrapped = importTextWrapper(original);
-      const whole = (wrapped[1] || wrapped[3]) ? lineIndex.get(wrapped[2]) : undefined;
+      const whole = (wrapped[1] || wrapped[3]) ? lookup(wrapped[2]) : undefined;
       const choice = whole?.size === 1 ? whole.entries().next().value! : undefined;
       const offset = entry.source.indexOf(original);
-      const candidate: { used: string[]; translation?: string; reason?: string; missingLines?: string[] } = choice ? { used: [choice[1]], translation: entry.source.slice(0, offset) + wrapped[1] + choice[0] + wrapped[3] + entry.source.slice(offset + original.length) } :
-        whole && whole.size > 1 ? { used: [...whole.values()], reason: "同一原文对应多条不同译文，无法唯一匹配" } : reassembleGameText(entry.source, line => lineIndex.get(line));
+      let candidate: { used: string[]; translation?: string; reason?: string; missingLines?: string[] } = choice ? { used: [choice[1]], translation: entry.source.slice(0, offset) + wrapped[1] + choice[0] + wrapped[3] + entry.source.slice(offset + original.length) } :
+        whole && whole.size > 1 ? { used: [...whole.values()], reason: "同一原文对应多条不同译文，无法唯一匹配" } : reassembleGameText(entry.source, lookup);
+      let fragments = false;
+      if (candidate.translation === undefined && !candidate.reason?.includes("不同译文")) {
+        const match = matchGameTextFragments(entry.source, lookup);
+        if (match) { candidate = match; fragments = true; }
+      }
       const translation = candidate.translation;
       if (candidate.used.length) links.set(entry.id, candidate.used);
       const reason = candidate.reason || (translation ? validate(entry.source, translation) : "");
@@ -231,13 +312,14 @@ export function importGameText(entries: UnityEntry[], contents: string, csv: boo
         if (!(mode === "fill" && (entry.translation.trim() || entry.layoutDraft?.trim()))) reassemblyIssues.push({ id: entry.id, reason, missingLines: candidate.missingLines });
         continue;
       }
-      if (!translation || translation === entry.source) continue;
+      if (!translation) continue;
       rows.set(entry.id, { id: entry.id, source: entry.source, translation });
       if (translation !== entry.translation && !(mode === "fill" && (entry.translation.trim() || entry.layoutDraft?.trim()))) {
         reassembled++;
         if (choice) controlsRestored++;
+        if (fragments) fragmentMatched++;
       }
     }
   }
-  return finishGameTextImport(entries, [...rows.values()], values, links, reassemblyIssues, validate, mode, reassembled, controlsRestored);
+  return finishGameTextImport(entries, [...rows.values()], values, links, reassemblyIssues, validate, mode, reassembled, controlsRestored, fragmentMatched);
 }

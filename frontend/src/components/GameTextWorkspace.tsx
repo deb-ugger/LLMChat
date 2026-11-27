@@ -540,6 +540,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       }
       const parts = ["已应用 " + value.changed + " 条译文"];
       if (value.reassembled) parts.push("重组或还原控制符 " + value.reassembled + " 条");
+      if (value.fragmentMatched) parts.push("其中按参数片段匹配 " + value.fragmentMatched + " 条");
       if (value.issues.length) parts.push(value.issues.length + " 条未通过，详情见「批量结果」");
       parts.push("文件未使用 " + value.audit.fileUnused + " / " + value.audit.fileTotal + " 条", "工程缺译 " + value.audit.missingEntries.length + " 条");
       report(parts.join("，") + (value.changed ? "，请保存修改" : ""), value.issues.length ? "error" : value.audit.fileUnused ? "warning" : "success");
