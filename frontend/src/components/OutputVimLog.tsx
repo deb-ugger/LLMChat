@@ -22,7 +22,7 @@ Vim.defineEx("quit", "q", cm => closeDrawers.get(cm.cm6)?.());
 
 const theme = EditorView.theme({
   "&": { height: "100%", fontSize: "var(--fs-body)" },
-  ".cm-scroller": { fontFamily: "var(--font-mono, monospace)", lineHeight: "1.35" },
+  ".cm-scroller": { fontFamily: "var(--font-mono, monospace)", lineHeight: "1.35", overflowAnchor: "none", scrollBehavior: "auto" },
   ".cm-content": { padding: "0" },
   ".cm-line": { padding: "2px 6px" },
   ".cm-searchMatch": { backgroundColor: "#fce9a6", color: "#202d29" },
@@ -128,8 +128,27 @@ export default function OutputVimLog(props: Props) {
     });
     editor.current = view;
     closeDrawers.set(view, () => current.current.props.onClose());
+    const scroller = view.scrollDOM;
+    let viewportHeight = scroller.clientHeight;
+    let visibleBottom = scroller.scrollTop + viewportHeight;
+    const rememberBottom = () => {
+      // A resize can queue a native scroll event before the resize observer.
+      if (scroller.clientHeight === viewportHeight) visibleBottom = scroller.scrollTop + viewportHeight;
+    };
+    scroller.addEventListener("scroll", rememberBottom, { passive: true });
+    const resize = new ResizeObserver(() => {
+      const height = scroller.clientHeight;
+      if (height === viewportHeight) return;
+      const top = Math.max(0, Math.min(visibleBottom - height, scroller.scrollHeight - height));
+      scroller.scrollTop = top;
+      viewportHeight = height;
+      visibleBottom = top + height;
+    });
+    resize.observe(scroller);
     if (!initial.props.searchOpen) view.focus();
     return () => {
+      resize.disconnect();
+      scroller.removeEventListener("scroll", rememberBottom);
       closeDrawers.delete(view);
       editor.current = null;
       displayedMarks.current = null;
@@ -141,6 +160,7 @@ export default function OutputVimLog(props: Props) {
     const view = editor.current!;
     const previous = displayed.current;
     const documentChanged = previous !== model;
+    const firstRefresh = displayedMarks.current === null;
     const marksChanged = displayedMarks.current !== marks;
     const selection = view.state.selection.main;
     const selectedRecord = recordAt(previous, selection.head);
@@ -162,7 +182,7 @@ export default function OutputVimLog(props: Props) {
         annotations: logRefresh.of(true),
         selection: documentChanged || cursorChanged ? { anchor, head } : undefined,
         effects: [styles.current.reconfigure(EditorView.decorations.of(marks)),
-          EditorView.scrollIntoView(head, { y: "nearest" })],
+          ...(firstRefresh || documentChanged || cursorChanged ? [EditorView.scrollIntoView(head, { y: "nearest" })] : [])],
       });
     } finally { synchronizing.current = false; }
   }, [model, marks, targetId]);
