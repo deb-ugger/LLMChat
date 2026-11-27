@@ -15,12 +15,14 @@ const result = await build({
     export * as filters from './components/GameTextFilterMenu';
     export * as failures from './components/GameBatchResults';
     export * as session from './unityTranslationSession';
+    export * as layout from './gameTextLayout';
+    export * as translation from './unityTranslation';
   `, resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm",
   external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""' },
 });
-const { structure, display, project, prompts, output, filters, failures, session } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
+const { structure, display, project, prompts, output, filters, failures, session, layout, translation: translationModule } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
 
 const source = "\\P[1]は穴に『\\P[1]の母乳』を流し込んだ";
 const wrong = "\\P[1]往洞口灌入『\\P[1]灌入『的母乳』";
@@ -364,3 +366,47 @@ importStates.length = 0;
 await assert.rejects(runImport({ name: "broken.json", arrayBuffer: async () => { throw new Error("读取失败"); } }), /读取失败/);
 assert.deepEqual(importStates, [true, false], "clear the import overlay even if reading fails");
 console.log("PASS importing indicator is limited to file imports and clears after success or read errors");
+
+const naturalRequests = [];
+store.set("llmchat-model-profiles", JSON.stringify({ "fixture-dialogue": { apiUrl: "http://localhost:11434/v1/chat/completions", apiKey: "" } }));
+runtime.models = ["fixture-model"];
+runtime.options = { kind: "llm", model: "fixture-model", dialogueModel: "fixture-dialogue", target: "zh-CN", source: "ja", joinLines: true, wrapMode: "natural", lineMode: "model", lineModel: "unused-line-model" };
+runtime.wrapMode = "natural";
+runtime.api.getSettings = async () => ({ model: "fixture-model", apiUrl: "http://localhost:11434/v1/chat/completions", apiKey: "" });
+runtime.buildUnityTranslateOptions = translationModule.buildUnityTranslateOptions;
+runtime.gameTaskPrompt = prompts.gameTaskPrompt;
+runtime.prepareGameOllamaModels = async () => {};
+runtime.localTextRequestGroup = translationModule.localTextRequestGroup;
+runtime.translateGameControls = project.translateGameControls;
+runtime.prepareUnityTranslationRequest = translationModule.prepareUnityTranslationRequest;
+runtime.gameTranslationRetry = () => ({});
+runtime.canDisableOllamaNameThinking = () => false;
+runtime.isGameDialogue = () => true;
+let validations = 0;
+runtime.validateGameNaturalLines = (source, translated) => { validations++; return layout.validateGameNaturalLines(source, translated); };
+const naturalSource = "こんにちは\nお元気ですか";
+const naturalTranslation = "你好，最近\n怎么样？";
+runtime.translateGameWithOllama = async (input, _init, config) => {
+  naturalRequests.push({ input, config });
+  return { ok: true, translation: naturalTranslation };
+};
+runtime.current.current = { ...initialProject, entries: [{ ...entry, source: naturalSource, translation: "" }], workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: ["1"], skippedIds: [] } };
+runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
+assert.equal(await runTranslation(), true, runtime.progressFailure);
+assert.equal(naturalRequests.length, 1, "natural wrapping is integrated into the translation request, with no extra line-model call");
+assert.equal(naturalRequests[0].input, naturalSource, "the model sees original line lengths and line breaks");
+assert.equal(naturalRequests[0].config.model, "fixture-dialogue", "natural wrapping still uses the selected dialogue model");
+assert.ok(naturalRequests[0].config.prompt.includes(layout.GAME_NATURAL_LINE_PROMPT));
+assert.equal(runtime.current.current.entries[0].translation, naturalTranslation, "keep the model's chosen line breaks without local reflow");
+assert.equal(validations, 1, "dialogue output also goes through paragraph/line structure validation");
+
+const noticeSource = "%1 の%2を得た", noticeTranslation = "%1 获得了它的%2。";
+runtime.options = { ...runtime.options, kind: "engine", wrapMode: "join", lineMode: "local" };
+runtime.wrapMode = "join";
+runtime.wrapGameTextToSource = layout.wrapGameTextToSource;
+runtime.createUnityEnginePool = () => ({ concurrency: 1, dispose() {}, translate: async () => noticeTranslation });
+runtime.current.current = { ...initialProject, entries: [{ ...entry, source: noticeSource, translation: "" }], workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: ["1"], skippedIds: [] } };
+runtime.baseline.current = JSON.parse(JSON.stringify(runtime.current.current));
+assert.equal(await runTranslation(), true, runtime.progressFailure);
+assert.equal(runtime.current.current.entries[0].translation, noticeTranslation, "the real local-formatting path keeps the screenshot's short notice on one line");
+console.log("PASS actual natural translation keeps original layout in one model request, validates dialogue and avoids hard wrapping short system notices");

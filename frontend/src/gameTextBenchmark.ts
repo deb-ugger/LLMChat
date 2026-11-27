@@ -17,7 +17,7 @@ import { createUnityEnginePool, type UnityEngineChoice } from "./unityEnginePool
 import { engineReady, parseEngineKeys } from "./translateEngines";
 import { screenGameText } from "./gameTextScreening";
 import { loadLocalModelProfiles, resolveFeatureLlm } from "./modelPresets";
-import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, restoreUnityTranslationLines } from "./unityTranslation";
+import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest } from "./unityTranslation";
 import { translateUnitySession } from "./unityTranslationSession";
 import type { UnityEntry, UnityProgress } from "./unityOffline";
 
@@ -159,13 +159,13 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
     const role = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
     const model = models[role];
     return translateGameDisplayText(input, async (text, reference, retryReason) => {
-      const prepared = prepareUnityTranslationRequest(text, config.wrap !== "keep");
+      const prepared = prepareUnityTranslationRequest(text, config.wrap === "join");
       if (pool) return pool.translate(prepared);
       const result = await translateGameWithOllama(prepared, { signal },
         { ...model, ...gameTranslationRetry(context(entry, nameContext, reference), retryReason), ollamaReasoningOff: !!nameContext && canDisableOllamaNameThinking(model) }, report);
       if (!result.ok) throw new Error(result.error || result.code || "翻译请求失败");
       return result.translation;
-    }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue");
+    }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue" && config.wrap !== "natural");
   };
   try {
     const preparedTerms = await prepareGameTerms(rows.filter(entry => !entry.translation), references, config.target, settings.textGlossary,
@@ -177,8 +177,8 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
       timingScope: scope, requestGroup: pool ? undefined : localTextRequestGroup(models.text, models.dialogue), validate: gameTextProblem, persist: async () => {},
       translate: (text, entry) => request(text, entry),
       format: config.wrap === "natural" ? validateGameNaturalLines : config.wrap === "join" ? (source, translated) =>
-        wrapGameTextToSource(source, gameTextHasSpeaker(source) ? translated : restoreUnityTranslationLines(source, translated)) : undefined,
-      preserveLayout: !pool ? isGameDialogue : config.wrap === "keep" ? gameTextHasSpeaker : undefined, progress,
+        wrapGameTextToSource(source, translated) : undefined,
+      preserveLayout: config.wrap === "natural" ? undefined : !pool ? isGameDialogue : config.wrap === "keep" ? gameTextHasSpeaker : undefined, progress,
     });
   } finally { pool?.dispose(); }
   signal.throwIfAborted();

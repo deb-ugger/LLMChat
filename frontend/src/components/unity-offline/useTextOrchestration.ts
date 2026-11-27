@@ -174,7 +174,7 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
     }
     const formatted = parseUnityLineModel(plan, response); helperCache.set(key, response); return formatted;
   };
-  const format=async(original:string,translated:string)=>options.wrapMode==="natural"?validateGameNaturalLines(original,translated):wrapGameTextToSource(original,await formatUnbounded(original,translated));
+  const format=async(original:string,translated:string)=>options.wrapMode==="natural"?validateGameNaturalLines(original,translated):breakMode==="local"?wrapGameTextToSource(original,translated):formatUnbounded(original,translated);
   let formatQueue = Promise.resolve();
   const queuedFormat = (original: string, translated: string) => {
     const work = formatQueue.then(() => { controller.signal.throwIfAborted(); return format(original, translated); });
@@ -185,8 +185,9 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
   let termIssues: ReadonlyMap<string, string> = new Map();
   const requestTranslation = async (text: string, provider = options.provider, entry?: UnityEntry, nameContext?: string) => {
     const { engineIds: _engines, includeContext: withContext, skipTargetLanguage: _skipTargetLanguage, dialogueOptions, nameOptions, ...mainOptions } = options;
-    const preserveDialogue = provider === "llm" && isGameDialogue(text, entry);
-    const primaryOptions = provider === "llm" ? (nameContext ? nameOptions : preserveDialogue ? dialogueOptions : undefined) || mainOptions : mainOptions;
+    const dialogue = provider === "llm" && isGameDialogue(text, entry);
+    const preserveDialogue = dialogue && options.wrapMode !== "natural";
+    const primaryOptions = provider === "llm" ? (nameContext ? nameOptions : dialogue ? dialogueOptions : undefined) || mainOptions : mainOptions;
     const context = provider === "llm" ? contextForEntry(entry, nameContext) : undefined;
     const relevantText = text + (context || []).map(item => item.source).join("\n");
     const terms = glossary.filter(term => term.src?.trim() && term.dst?.trim() && relevantText.includes(term.src));
@@ -194,12 +195,12 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
       const reviewer = retryReason && provider === "llm" && primaryOptions.localModel
         ? Object.keys(localProfilesForRetry).find(id => /^qwen3\.5(?::|$)/i.test(id)) : undefined;
       const requestOptions = reviewer && reviewer !== primaryOptions.model
-        ? { ...primaryOptions, ...buildUnityTranslateOptions(settings, "llm", options.source || "auto", options.target || "zh-CN", reviewer, mergeLines, true) }
+        ? { ...primaryOptions, ...buildUnityTranslateOptions(settings, "llm", options.source || "auto", options.target || "zh-CN", reviewer, mergeLines, true, undefined, options.wrapMode) }
         : primaryOptions;
       const seconds = provider === "llm" ? 120 : 30;
       const signal = provider === "llm" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1000)]);
       const background = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
-      try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, textLog); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code });
+      try { const response = await translateGameWithOllama(prepareUnityTranslationRequest(block, mergeLines && options.wrapMode !== "natural"), { signal }, { ...requestOptions, glossary: terms, provider, ...background, autoFallback: provider === "llm" ? undefined : false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(requestOptions) ? { ollamaReasoningOff: true } : {}) }, textLog); if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译请求失败"), { code: response.code });
         return preserveDialogue && !/[\r\n]/.test(block) && /[\r\n]/.test(response.translation)
           ? prepareUnityTranslationText(response.translation) : response.translation; }
       catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
@@ -270,7 +271,7 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
       concurrency: (options.localModel || options.dialogueOptions?.localModel || options.nameOptions?.localModel) ? 8 : options.provider==="llm"?16:pool?.concurrency||1,
       timingScope: promptState.scope + ":text", modelFormats: breakMode === "model" && options.wrapMode !== "natural",
       canReuseDraft: mergeLines ? canReuseUnityStructuredDraft : undefined,
-      preserveLayout: options.provider === "llm" || !mergeLines ? gameTextHasSpeaker : undefined, format: mergeLines ? queuedFormat : undefined, retainDraft: mergeLines, persistDraftBeforeFormat: breakMode === "model" || breakMode === "wtp",
+      preserveLayout: options.wrapMode === "natural" ? undefined : options.provider === "llm" || !mergeLines ? gameTextHasSpeaker : undefined, format: mergeLines || options.wrapMode === "natural" ? queuedFormat : undefined, retainDraft: mergeLines || options.wrapMode === "natural", persistDraftBeforeFormat: options.wrapMode !== "natural" && (breakMode === "model" || breakMode === "wtp"),
       translate: pool ? (text, entry) => pool.translate(text, entry?.id) : (text, entry) => requestTranslation(text, options.provider, entry),
       persist: persistTextChanges,
     });

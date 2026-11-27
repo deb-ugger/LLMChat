@@ -130,7 +130,10 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   const text = value.text;
   text.options.kind = "llm";
   text.options.includeContext = true;
+  text.options.wrapMode = "natural";
+  text.options.joinLines = true;
   text.options.lineMode = "local";
+  delete text.options.lineModel;
   setRole(text.roles, "textScreen"); setRole(text.roles, "line");
   for (const scene of ["text", "dialogue"] as const)
     setRole(text.roles, scene, normal, gameDefaultTextModel.concurrency);
@@ -168,8 +171,9 @@ export function japaneseGameTestConfiguration(current: GameTestConfiguration, r1
 }
 
 export function refreshSavedGameTestConfigurations() {
-  const revision = "llmchat-game-test-config-japanese-prompts-v2";
+  const revision = "llmchat-game-test-config-natural-lines-v1";
   if (localStorage.getItem(revision) !== null) return;
+  const updateCustomPrompts = localStorage.getItem("llmchat-game-test-config-japanese-prompts-v2") === null;
   const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
   let refreshed = 0;
   for (const key of keys) {
@@ -184,6 +188,7 @@ export function refreshSavedGameTestConfigurations() {
       if (row.id === JAPANESE_GAME_TEST_CONFIGURATION_ID || row.id === JAPANESE_R18_GAME_TEST_CONFIGURATION_ID) {
         refreshed++; return { ...row, value: japaneseGameTestConfiguration(row.value, row.id === JAPANESE_R18_GAME_TEST_CONFIGURATION_ID) };
       }
+      if (!updateCustomPrompts) return row;
       const r18 = /r18/i.test(row.name) || [row.value.text, row.value.images].some(part => Object.values(part?.roles || {}).some(role => role?.prompt?.startsWith("builtin:ja-zh-cn-r18:")));
       const fallback = japaneseGameTestConfiguration(row.value, r18);
       const value = structuredClone(row.value);

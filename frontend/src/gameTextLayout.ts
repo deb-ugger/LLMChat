@@ -1,30 +1,25 @@
 import { gameFormatTokens } from "./gameDisplayText";
-import { unityListBlocks } from "./unityTextStructure";
+import { formatUnityStructure, unityListBlocks } from "./unityTextStructure";
+import { smartUnityLines } from "./unityLineLayout";
 export type GameWrapMode = "join" | "keep" | "natural";
-const graphemes=new Intl.Segmenter(undefined,{granularity:"grapheme"});
-const cjk=/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Extended_Pictographic}\u3000-\u303f\uff01-\uff60]/u;
-function units(text:string){const result:{text:string;width:number}[]=[];let offset=0;const append=(part:string)=>{for(const {segment}of graphemes.segment(part))result.push({text:segment,width:/^\s+$/u.test(segment)?.5:cjk.test(segment)?2:1});};for(const match of text.matchAll(gameFormatTokens())){append(text.slice(offset,match.index));result.push({text:match[0],width:0});offset=match.index!+match[0].length;}append(text.slice(offset));return result;}
-export function sourceGameLineWidth(source:string){return Math.max(0,...source.split(/\r\n|\r|\n|<br\s*\/?>|\\n(?![A-Za-z<]|\[)/i).map(line=>units(line).reduce((sum,unit)=>sum+unit.width,0)));}
-/** Relative character widths are used when the scanned resource supplies no font metrics. */
+export const GAME_NATURAL_LINE_PROMPT = "翻译时一并决定换行，不另行输出排版说明。根据当前原文可见文字的长度、各行长短和换行结构，自行估计适合的行长，不要求外部提供文本框宽度或固定字数。原文只有一行时译文保持一行，尤其是名称、按钮和简短系统提示；不要仅因译文比原文长就拆行。原文本来有多行时，在原文行长的参考范围内按完整语义安排段内换行，不机械按字符数切断，也不强凑原文行数。保留原有段落空行、列表边界、分页符和显式换行控制符，不合并不同段落或列表条目。不拆开词语、姓名、数值与单位、成对引用和短属性说明。动态占位符的实际显示长度未知，不把它们算成零宽，也不把保护标记的英文字符长度当作显示字数；控制符、占位符及参数必须完整保留。";
+
+/** Reflow within the source paragraph/list structure without imposing its width as a hard limit. */
 export function wrapGameTextToSource(source:string,translation:string){
-  const maximum=sourceGameLineWidth(source);if(!maximum)return translation;
-  const newline=source.includes("\r\n")?"\r\n":"\n";
-  return translation.split(/(\r\n|\r|\n)/).map((part,index)=>{
-    if(index%2)return part;
-    const list=units(part);let result="",start=0,width=0,boundary=-1;
-    for(let i=0;i<list.length;i++){
-      const unit=list[i];
-      if(unit.text==="\\n"||unit.text==="\\r"||/^<br\s*\/?>$/i.test(unit.text)){result+=list.slice(start,i+1).map(u=>u.text).join("");start=i+1;width=0;boundary=-1;continue;}
-      if(unit.width>maximum)throw new Error("译文字形宽于原文最长行，请调整换行方式或手动排版");
-      if(width+unit.width>maximum){const end=boundary>start?boundary:i;result+=list.slice(start,end).map(u=>u.text).join("")+newline;start=end;i=end-1;width=0;boundary=-1;continue;}
-      width+=unit.width;
-      const next=list[i+1]?.text||"";
-      if((/\s|[，。！？、,.!?;:；：]/u.test(unit.text)||cjk.test(unit.text)&&cjk.test(next))&&!/^[，。！？、,.!?;:；：）】》」』]/u.test(next))boundary=i+1;
-    }
-    return result+list.slice(start).map(unit=>unit.text).join("");
-  }).join("");
+  const tokens: string[] = [], markers = new Map<string, string>();
+  const protect = (text: string) => text.replace(gameFormatTokens(), token => {
+    let marker = markers.get(token);
+    if (!marker) { marker = `{LLMCHAT_LINE_${tokens.length}}`; tokens.push(token); markers.set(token, marker); }
+    return marker;
+  });
+  const result = formatUnityStructure(protect(source), protect(translation), (original, translated) =>
+    /[\r\n]/.test(original) ? smartUnityLines(original, translated) :
+      (original.match(/^[\t \u3000]*/)?.[0] || "") + translated + (original.match(/[\t \u3000]*$/)?.[0] || ""));
+  return result.replace(/\{LLMCHAT_LINE_(\d+)\}/g, (_, index: string) => tokens[Number(index)]);
 }
 export function validateGameNaturalLines(source:string,translation:string){
+  if (!/[\r\n]/.test(source.trim()) && /[\r\n]/.test(translation.trim()))
+    throw new Error("原文为单行文本，译文也应保持单行，请重试此条");
   unityListBlocks(source,translation);
   // Normalize before counting: a single CRLF must never backtrack into two line breaks.
   const count=(text:string)=>text.replace(/\r\n?/g, "\n").replace(gameFormatTokens(), "").trim().split(/\n[\t \u3000]*\n/).filter(part=>part.trim()).length;

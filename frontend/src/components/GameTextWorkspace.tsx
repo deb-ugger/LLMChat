@@ -540,7 +540,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
             if (!response.ok) throw new Error(response.error || "断行失败");
             return parseUnityLineModel(plan, response.translation);
           }
-          return wrapGameTextToSource(original,gameTextHasSpeaker(original)?translated:restoreUnityTranslationLines(original,translated));
+          return wrapGameTextToSource(original, translated);
         };
         if (options.kind !== "engine") {
           const roles: Role[] = ["text", "dialogue", "names"];
@@ -554,14 +554,14 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           const input = messageCore ? repairMessageCoreNameLineBreak(repairMessageCorePositionPrefix(text)) : text;
           const scene = nameContext ? "names" : isGameDialogue(input, entry) ? "dialogue" : "text";
           const primary = getOptions(provider, scene);
-          const preserveDialogueLines = provider === "llm" && scene === "dialogue";
+          const preserveDialogueLines = provider === "llm" && scene === "dialogue" && wrapMode !== "natural";
           const signal = provider === "llm" ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
           return translateGameControls(input, async (protectedText, originalContext, retryReason) => {
             const config = retryReason && reviewModel && reviewModel !== primary.model
               ? getOptions(provider, scene, reviewModel) : primary;
             try {
               const context = provider === "llm" ? gameTranslationRetry(contextForEntry(entry, nameContext, originalContext), retryReason) : {};
-              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines), { signal }, { ...config, ...context, autoFallback: false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, errors.status);
+              const response = await translateGameWithOllama(prepareUnityTranslationRequest(protectedText, options.joinLines && wrapMode !== "natural"), { signal }, { ...config, ...context, autoFallback: false, ...((nameContext || retryReason) && canDisableOllamaNameThinking(config) ? { ollamaReasoningOff: true } : {}) }, errors.status);
               if (!response.ok) throw Object.assign(new Error(response.error || response.code || "翻译失败"), { code: response.code });
               // The protected request already carries the original display breaks as tokens.
               return preserveDialogueLines && !/[\r\n]/.test(protectedText) && /[\r\n]/.test(response.translation)
@@ -587,7 +587,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
             return options.kind !== "engine" ? request("llm", text, undefined, entry) : pool!.translate(text, entry?.id);
           },
           format: wrapMode === "natural" ? validateGameNaturalLines : options.joinLines ? formatLines : undefined,
-          preserveLayout: options.kind !== "engine" ? isGameDialogue : options.joinLines ? undefined : gameTextHasSpeaker,
+          preserveLayout: wrapMode === "natural" ? undefined : options.kind !== "engine" ? isGameDialogue : options.joinLines ? undefined : gameTextHasSpeaker,
           timingScope: promptState.scope + ":text", requestGroup,
           key: gameDialogueReuseKey, targetLanguage: options.target, entryProblem: entry => gameTermProblem(entry.source, preparedTerms.issues),
           retainDraft: wrapMode === "natural",
@@ -851,7 +851,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     {configured === "translate" && <GameTextParameters step="translate"
       method={<GameTranslationMethod segmented kind={options.kind} disabled={configLocked} onChange={kind => setOptions({ ...options, kind, ...(kind==="engine"&&wrapMode==="natural"?{wrapMode:"join",joinLines:true}:{}) })} />}
       languages={languageFields} wrapping={<>
-        <label data-tooltip="恢复换行以原文最长行的估算显示宽度为上限；自然断行由翻译模型安排。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label>
+        <label data-tooltip="单行原文保持单行；多行文本按段落和语义处理。自然断行由翻译模型参考原文行长安排，不额外调用断行模型。">换行处理<select disabled={configLocked} value={wrapMode} onChange={event => { setOptions({ ...options, wrapMode:event.target.value as typeof wrapMode, joinLines:event.target.value!=="keep" }); }}><option value="join">合并翻译后恢复换行</option><option value="keep">保留换行翻译</option>{options.kind!=="engine"&&<option value="natural">大模型自然断行</option>}</select></label>
         {options.joinLines && wrapMode !== "natural" && <label>断行方式<select value={options.lineMode || "local"} disabled={configLocked} onChange={e=>setOptions({...options,lineMode:e.target.value as GameTextOptions["lineMode"]})}><option value="local">本地智能断行</option><option value="ratio">按比例断行</option><option value="wtp">WtP 断句</option><option value="model">大模型断行</option></select></label>}
       </>}
       modelTitle={options.kind === "engine" ? "翻译引擎" : "每类模型"}

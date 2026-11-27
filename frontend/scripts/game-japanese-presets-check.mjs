@@ -25,6 +25,12 @@ const original = JSON.stringify(current);
 const all = presets.builtinGameTestConfigurations(current);
 assert.equal(all.length, 3);
 assert.equal(new Set(all.map(row => row.id)).size, 3);
+for (const preset of all) {
+  assert.equal(preset.value.text.options.wrapMode, "natural");
+  assert.equal(preset.value.text.options.joinLines, true);
+  assert.equal(preset.value.text.options.lineMode, "local");
+  assert.equal(preset.value.text.options.lineModel, undefined);
+}
 assert.equal(JSON.stringify(current), original);
 const textScenes = ["textScreen", "text", "dialogue", "names", "line"];
 const imageScenes = ["screen", "refine", "recognize", "image", "review", "layout"];
@@ -94,3 +100,24 @@ presets.applyGameTestRoles(all.find(row => row.id === presets.JAPANESE_R18_GAME_
 assert.equal(applied.length, textScenes.length);
 assert.ok(applied.every(([scene, prompt]) => prompt === prompts.gameJapanesePromptId(scene, true)));
 console.log("PASS Japanese and R18 built-ins: all scene bindings, Japanese prompts, structure rules, models/concurrency, missing steps, source-language options, saved configuration refresh and role application");
+
+storage.delete("llmchat-game-test-config-natural-lines-v1");
+storage.set("llmchat-game-test-config-japanese-prompts-v2", "1");
+const oldDefaults = all.map(preset => {
+  const saved = structuredClone(preset);
+  Object.assign(saved.value.text.options, { wrapMode: "join", lineMode: "model", lineModel: "old-line-model" });
+  return saved;
+});
+const custom = structuredClone(user);
+custom.value.text.options.wrapMode = "keep";
+custom.value.text.roles.text.prompt = "builtin:text";
+presets.saveGameTestConfigurations("migration", [...oldDefaults, custom]);
+const customBefore = JSON.stringify(presets.readGameTestConfigurations("migration").find(row => row.id === custom.id));
+presets.refreshSavedGameTestConfigurations();
+const updated = presets.readGameTestConfigurations("migration");
+for (const preset of updated.filter(row => row.id.startsWith("builtin:"))) {
+  assert.equal(preset.value.text.options.wrapMode, "natural");
+  assert.equal(preset.value.text.options.lineModel, undefined);
+}
+assert.equal(JSON.stringify(updated.find(row => row.id === custom.id)), customBefore, "refresh saved defaults while retaining custom wrap settings and prompts");
+console.log("PASS all default configurations use integrated natural wrapping and saved defaults update without changing custom configurations");
