@@ -712,9 +712,13 @@
   flex: none;
   margin: 0;
   margin-inline-start: auto;
-  padding-inline: 8px;
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--signal) 50%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--signal) 10%, var(--bg-panel));
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -764,6 +768,9 @@
 .training-dataset-editor .unity-btn { min-block-size: 26px; block-size: 26px; padding: 0 7px; font-size: var(--fs-caption); }
 .training-dataset-canvas {
   position: relative;
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
+  scroll-behavior: auto;
   inline-size: 100%;
   block-size: 100%;
   min-block-size: 0;

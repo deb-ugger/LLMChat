@@ -123,7 +123,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
     if (!element) return;
     const measure = () => {
       setViewportSize({ width: element.clientWidth, height: element.clientHeight });
-      setFit(Math.max(.01, Math.min(4, (element.clientWidth - 58) / image.width, (element.clientHeight - 12) / image.height)));
+      setFit(Math.max(.01, Math.min(4, (element.clientWidth - 58) / image.width, (element.clientHeight - 26) / image.height)));
     };
     measure(); const observer = new ResizeObserver(measure); observer.observe(element);
     return () => observer.disconnect();
