@@ -9,7 +9,7 @@ const bundled = await build({
 });
 globalThis.window = { addEventListener() {}, removeEventListener() {}, location: { hostname: "localhost" } };
 globalThis.localStorage = { getItem() { return null; }, setItem() {} };
-const { importGameText, gameTextProblem } = await import("data:text/javascript;base64," + Buffer.from(bundled.outputFiles[0].text).toString("base64"));
+const { importGameText, gameTextProblem, gameTextImportPartial, gameTextDictionary } = await import("data:text/javascript;base64," + Buffer.from(bundled.outputFiles[0].text).toString("base64"));
 const entry = (id, source, translation = "") => ({ id, source, translation, error: "", selected: true });
 const run = (entries, dictionary, mode = "replace") => importGameText(entries, JSON.stringify(dictionary), false, mode);
 
@@ -46,8 +46,10 @@ assert.equal(run(result.entries, dict, "fill").audit.fileUsed, result.audit.file
 
 const missing = run([entry("1", "%1が出現！"), entry("2", "\\P[1]こんにちは\n未登録の文章")], { "が出現！": "出现了！", "こんにちは": "你好" });
 assert.equal(missing.entries[0].translation, "%1出现了！");
-assert.equal(missing.entries[1].translation, "");
-assert.deepEqual(missing.issues[0].missingLines, ["未登録の文章"]);
+assert.equal(missing.entries[1].translation, "\\P[1]你好\n未登録の文章");
+assert.deepEqual(gameTextImportPartial(missing.entries[1]).unmatched, ["未登録の文章"]);
+assert.equal(missing.issues.length, 0);
+assert.equal(gameTextDictionary(missing.entries)[missing.entries[1].source], missing.entries[1].translation);
 const speaker = run([entry("1", "\\nc<リナ>こんにちは")], { "こんにちは": "你好" });
 assert.equal(speaker.changed, 0, "do not silently preserve untranslated speaker names");
 const collision = run([entry("1", "%1が出現！")], { " が出現！": "出现了！", "が出現！ ": "现身了！" });
@@ -109,7 +111,8 @@ assert.equal(changedStyle.changed, 0, "do not overwrite conflicting supplied con
 const missingParameter = run([entry("param", "%1が出現！")], { "%1が出現！": "出现了！" });
 assert.equal(missingParameter.changed, 0, "missing dynamic parameters still require validation");
 const englishSource = importGameText([entry("en", "NIGHTMARE\nこんにちは")], JSON.stringify({ "こんにちは": "你好" }), false, "replace", false, "en");
-assert.equal(englishSource.changed, 0, "do not retain untranslated English when English is the source language");
+assert.equal(englishSource.entries[0].translation, "NIGHTMARE\n你好");
+assert.deepEqual(gameTextImportPartial(englishSource.entries[0]).unmatched, ["NIGHTMARE"], "untranslated source-language text remains explicitly pending");
 const controlFile = { "こんにちは\\C[2]またね": "你好\\C[2]再见" };
 const splitControl = run([entry("1", "こんにちは"), entry("2", "またね")], controlFile);
 assert.deepEqual(splitControl.entries.map(row => row.translation), ["你好", "再见"]);
@@ -124,4 +127,38 @@ const actualPlaceholder = run([entry("1", "こんにちは{name}")], { "こん�
 assert.equal(actualPlaceholder.entries[0].translation, "你好{name}");
 assert.ok(gameTextProblem("こんにちは{name}", "你好{other}"));
 assert.ok(gameTextProblem("こんにちは", '{"translation":""}'));
+for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"], ["（", "）"], ["［", "］"], ["｛", "｝"]]) {
+  const source = "外側全文" + open + "括内全文" + close;
+  const whole = run([entry("1", source)], { [source]: "完整译文", "外側全文": "不应选外", "括内全文": "不应选内" });
+  assert.equal(whole.entries[0].translation, "完整译文");
+  assert.equal(whole.audit.partialEntries.length, 0);
+  const outside = run([entry("1", source)], { "外側全文": "外侧译文" });
+  assert.equal(outside.entries[0].translation, "外侧译文" + open + "括内全文" + close);
+  assert.deepEqual(gameTextImportPartial(outside.entries[0]).unmatched, ["括内全文"]);
+  const inside = run([entry("1", source)], { "括内全文": "括内译文" });
+  assert.equal(inside.entries[0].translation, "外側全文" + open + "括内译文" + close);
+  assert.deepEqual(gameTextImportPartial(inside.entries[0]).unmatched, ["外側全文"]);
+  assert.equal(run([entry("1", source)], { "外側全": "不能替换短子串", "括内全": "不能替换短子串" }).changed, 0);
+  assert.equal(run([entry("1", source)], { ["外側全文" + open]: "不能只匹配左半边", ["括内全文" + close]: "不能只匹配右半边" }).changed, 0);
+  assert.equal(run([entry("1", open + "括内全文")], { "括内全文": "不能按半括号拆分" }).changed, 0);
+}
+const linePriority = run([entry("1", "外側全文(括内全文)\n第二行全文")], { "外側全文(括内全文)": "整行译文", "外側全文": "不应选片段", "括内全文": "不应选片段" });
+assert.equal(linePriority.entries[0].translation, "整行译文\n第二行全文");
+assert.equal(linePriority.audit.partialEntries.length, 1);
+assert.equal(run([entry("1", "外側全文，続き(括内全文)")], { "外側全文": "不能截断连续正文" }).changed, 0);
+assert.equal(run([entry("1", "外側全文(括内全文]")], { "外側全文": "错配括号不能成为分割点" }).changed, 0);
+const restoredPartial = JSON.parse(JSON.stringify(linePriority.entries[0]));
+assert.ok(gameTextImportPartial(restoredPartial));
+assert.equal(gameTextImportPartial({ ...restoredPartial, translation: "完整新译文" }), undefined);
+const fullReplacement = run(linePriority.entries, { "外側全文(括内全文)\n第二行全文": "全文已译" });
+assert.equal(fullReplacement.entries[0].translation, "全文已译");
+assert.equal(gameTextImportPartial(fullReplacement.entries[0]), undefined);
+const literalExample = run([entry("1", "yyyyy(xxxx)")], { yyyyy: "外部译文" });
+assert.equal(literalExample.entries[0].translation, "外部译文(xxxx)");
+assert.equal(run([entry("1", "yyyyy(xxxx)")], { yy: "不得截短", xx: "不得截短" }).changed, 0);
+const mixedLines = run([entry("1", "外側全文(括内全文)\n第二行全文")], { "外側全文": "外部译文", "第二行全文": "第二行译文" });
+assert.equal(mixedLines.entries[0].translation, "外部译文(括内全文)\n第二行译文");
+const sameTextFull = run(mixedLines.entries, { "外側全文(括内全文)\n第二行全文": mixedLines.entries[0].translation });
+assert.equal(sameTextFull.changed, 1, "full matching clears partial metadata even when the text is identical");
+assert.equal(gameTextImportPartial(sameTextFull.entries[0]), undefined);
 console.log("PASS game text import: face controls, parameters, literal fragments, multi-line blocks, missing fragments, ambiguity, partial validation and provenance");
