@@ -75,7 +75,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(48);
   const [focusedId, setFocusedId] = useState("");
-  const [checked, setChecked] = useState(new Set<string>());
+  const [selectedIds, setSelectedIds] = useState(new Set<string>());
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [maskWriteFailed, setMaskWriteFailed] = useState(false);
@@ -111,7 +111,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   const hasAdoption = dataset?.data.images.some(image => typeof image.adopted === "boolean");
   const conditionCount = Number(!!(conditions.widthMin || conditions.widthMax)) + Number(!!(conditions.heightMin || conditions.heightMax)) +
     Number(!!conditions.source) + Number(!!conditions.scene) + Number(conditions.masks !== "all") + Number(conditions.adopted !== "all") + Number(filter !== "all") + Number(!!query);
-  const targets = checked.size ? checked : new Set(focused ? [focused.sourceHash] : []);
+  const targets = new Set(images.filter(image => selectedIds.has(image.id)).map(image => image.sourceHash));
   useLayoutEffect(() => {
     const button = focusedId ? list.current?.querySelector<HTMLButtonElement>(`[data-image-id="${CSS.escape(focusedId)}"]`) : undefined;
     if (button?.getClientRects().length) button.scrollIntoView({ block: "nearest" });
@@ -173,7 +173,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
   function resetSelection() {
     setPage(0);
     setFocusedId("");
-    setChecked(new Set());
+    setSelectedIds(new Set());
   }
 
   function openDirectory() {
@@ -233,20 +233,19 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
       .finally(() => { busyRef.current = false; setBusy(""); });
   }
 
-  function toggleChecked(hashes: string[], selected?: boolean) {
-    setChecked(previous => {
-      const next = new Set(previous);
-      for (const hash of hashes) (selected ?? !next.has(hash)) ? next.add(hash) : next.delete(hash);
-      return next;
-    });
-  }
-
   function pickListImage(image: AnnotatedImage, event: ReactMouseEvent) {
     if (blocked) return;
-    if (event.ctrlKey || event.metaKey) event.preventDefault();
-    if (event.detail > 2) return;
-    // A double-click produces two click events before opening the image, restoring its initial checked state.
-    toggleChecked([image.sourceHash]);
+    const extend = event.ctrlKey || event.metaKey;
+    if (extend) event.preventDefault();
+    if (event.detail > 1) return;
+    setSelectedIds(previous => {
+      if (!extend) return new Set([image.id]);
+      const next = new Set(previous);
+      if (next.has(image.id)) next.delete(image.id);
+      else next.add(image.id);
+      return next;
+    });
+    setFocusedId(image.id);
   }
 
   function openListImage(image: AnnotatedImage) {
@@ -331,6 +330,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     if (blocked || !image) return;
     keyboardFocus.current = focus;
     setPage(Math.floor(next / pageSize));
+    setSelectedIds(new Set([image.id]));
     setFocusedId(image.id);
   }
 
@@ -380,22 +380,34 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
       const index = focused ? images.indexOf(focused) : currentPage * pageSize;
       let next: number;
       switch (event.key) {
-        case "ArrowUp": case "ArrowLeft": next = focused ? index - 1 : index; break;
-        case "ArrowDown": case "ArrowRight": next = focused ? index + 1 : index; break;
+        case "ArrowLeft": next = focused ? index - 1 : index; break;
+        case "ArrowRight": next = focused ? index + 1 : index; break;
+        case "ArrowUp": case "ArrowDown": {
+          if (!focused) { next = index; break; }
+          if (!inList) { next = index + (event.key === "ArrowUp" ? -1 : 1); break; }
+          const columns = layout === "list" ? 1 : getComputedStyle(list.current!).gridTemplateColumns.split(" ").length;
+          const local = index - currentPage * pageSize;
+          const column = local % columns;
+          let destination = local + (event.key === "ArrowUp" ? -columns : columns);
+          if (destination < 0) destination = column + Math.floor((visible.length - 1 - column) / columns) * columns;
+          else if (destination >= visible.length) destination = column;
+          next = currentPage * pageSize + destination;
+          break;
+        }
         case "Home": if (!inList) return; next = 0; break;
         case "End": if (!inList) return; next = images.length - 1; break;
         case "PageUp": next = Math.max(0, currentPage - 1) * pageSize; break;
         case "PageDown": if (currentPage + 1 === pages) return; next = (currentPage + 1) * pageSize; break;
         case " ":
           if (!inList || !focused) return;
-          event.preventDefault(); toggleChecked([focused.sourceHash], !checked.has(focused.sourceHash)); return;
+          event.preventDefault(); setSelectedIds(new Set([focused.id])); return;
         default: return;
       }
       event.preventDefault();
       navigateImage(next, inList ? "list" : "canvas");
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, [view, blocked, focused, preview, renaming, deleting, deletingDataset, images, currentPage, pageSize, pages, checked]);
+  }, [view, blocked, focused, preview, renaming, deleting, deletingDataset, images, visible.length, layout, currentPage, pageSize, pages]);
 
   function openDatasetOpsMenu(event: ReactMouseEvent<HTMLElement>, reference?: DatasetReference) {
     if (blocked || !datasetMenu.current) return;
@@ -413,6 +425,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
     event.preventDefault(); event.stopPropagation();
     if (blocked || !imageMenu.current) return;
     setMenuImage(image); setFocusedId(image.id);
+    setSelectedIds(previous => previous.has(image.id) ? previous : new Set([image.id]));
     const bounds = event.currentTarget.getBoundingClientRect();
     const point = getFixedMenuPoint(event.clientX || bounds.left, event.clientY || bounds.top, 190, 190);
     imageMenu.current.style.left = point.x + "px"; imageMenu.current.style.top = point.y + "px";
@@ -611,9 +624,11 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             </div>
             <div className="training-dataset-list-head-row training-dataset-list-head-row-actions">
             <div className="training-dataset-pagination training-dataset-list-batch" aria-label="批量选择">
-              <label><input type="checkbox" disabled={blocked || !visible.length} checked={!!visible.length && visible.every(image => checked.has(image.sourceHash))}
-                onChange={event => toggleChecked(visible.map(image => image.sourceHash), event.target.checked)} />本页</label>
-              <span className="training-dataset-result-count" aria-live="polite">已选 {checked.size} 张</span>
+              <button type="button" className="unity-btn" disabled={blocked || !visible.length} onClick={() => {
+                setSelectedIds(new Set(visible.map(image => image.id)));
+                if (visible[0] && !visible.some(image => image.id === focusedId)) setFocusedId(visible[0].id);
+              }}>选中本页</button>
+              <span className="training-dataset-result-count" aria-live="polite">已选 {targets.size} 张</span>
               <button type="button" className="unity-btn" disabled={blocked || !dataset} popoverTarget={id + "-batch"}
                 onClick={event => positionWindowPopover(event.currentTarget, batchMenu.current)}>批量打标</button>
               <div ref={batchMenu} id={id + "-batch"} popover="auto" className="training-dataset-batch" aria-label="批量打标">
@@ -631,18 +646,18 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             </div>
           </header>
           <ul ref={list} aria-label="数据集图片" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
-            className="training-dataset-images" data-layout={layout}>
+            className="training-dataset-images" data-layout={layout} role="listbox" aria-multiselectable="true">
             {dataset && visible.map((image, index) => {
               const verdict = datasetVerdict(image.annotation, purpose);
               const boxes = image.annotation.mosaic?.boxes?.length ?? 0;
               const status = purpose === "mosaic" && boxes ? `${boxes} 蒙版` : datasetVerdictLabels[purpose][verdict];
               const active = focused?.id === image.id;
-              const picked = checked.has(image.sourceHash);
-              return <li key={image.id} className="training-dataset-tile" data-active={active} data-checked={picked}
+              const selected = selectedIds.has(image.id);
+              return <li key={image.id} className="training-dataset-tile" data-active={active} role="option" aria-selected={selected} data-selected={selected}
                 onContextMenu={event => openImageMenu(event, image)}>
                 <button type="button" className="training-dataset-sample" data-image-id={image.id} tabIndex={active || (!focused && index === 0) ? 0 : -1}
-                  aria-pressed={picked} aria-current={active ? "true" : undefined} disabled={blocked}
-                  data-tooltip="单击勾选；双击查看并标注"
+                  aria-current={active ? "true" : undefined} disabled={blocked}
+                  data-tooltip="单击选中并预览；Ctrl+单击多选"
                   onClick={event => pickListImage(image, event)} onDoubleClick={() => openListImage(image)}>
                   <span className="training-dataset-thumbnail"><SamplePicture image={image} read={dataset.data.read} /></span>
                   <span className="training-dataset-tile-meta">
@@ -651,10 +666,6 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
                   </span>
                   <span className="training-dataset-status-dot" data-marked={verdict !== "unmarked"} aria-hidden="true" />
                 </button>
-                {picked && layout === "thumbnails" && <span className="training-dataset-check-badge" aria-hidden="true">✓</span>}
-                <input type="checkbox" aria-label={`选择 ${image.name}`} checked={picked} disabled={blocked}
-                  onClick={event => event.stopPropagation()}
-                  onChange={event => toggleChecked([image.sourceHash], event.target.checked)} />
               </li>;
             })}
           </ul>
@@ -668,7 +679,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             onChange={masks => saveMasks(focused.sourceHash, masks)} onUndo={undoEdit} canUndo={!blocked && !!undoHistory.length}
             onRedo={redoEdit} canRedo={!blocked && !!redoHistory.length}
             onPreview={() => setPreview(focused)} onContextMenu={event => openImageMenu(event, focused)} />
-            : <p className="training-dataset-gallery-empty hint">{dataset ? "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
+            : <p className="training-dataset-gallery-empty hint">{dataset ? images.length ? "从左侧选择图片预览。" : "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
         </div>
       </div>
     </div>
@@ -700,7 +711,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
         run("正在删除图片…", async () => {
           const next = await removeDatasetImage(dataset, image.sourceHash, writer);
           updateUndoHistory([]);
-          setDeleting(undefined); setChecked(values => new Set([...values].filter(hash => hash !== image.sourceHash)));
+          setDeleting(undefined); setSelectedIds(values => new Set([...values].filter(id => id !== image.id)));
           return next;
         }, false);
       }}>删除</button>
