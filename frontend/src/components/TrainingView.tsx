@@ -47,6 +47,7 @@ export function TrainingView({ onOpenDatasets, onAnnotateParts }: { onOpenDatase
     if (!available.includes(dataset)) setDataset(available[0] ?? "");
   }, [datasetIds, dataset]);
   const [limit, setLimit] = useState(0);
+  const [strategy, setStrategy] = useState("compare");
   const [env, setEnv] = useState<EnvReport>();
   useEffect(() => { if (env?.storage?.issue && env.status !== "ready") setStorageChoice(true); }, [env]);
   const [showChecks, setShowChecks] = useState(false);
@@ -132,15 +133,16 @@ export function TrainingView({ onOpenDatasets, onAnnotateParts }: { onOpenDatase
   }
 
   async function start() {
-    setStarting(true);setError("");setLogs([]);setProgress({ phase: "prepare", current: 0, total: 160 });
+    setStarting(true);setError("");setLogs([]);setProgress({ phase: "prepare", current: 0, total: strategy === "compare" ? 510 : 170 });
     const events = new Channel<TrainingEvent>();
     channel.current = events;
     events.onmessage = value => {
       setEvent(value);
-      if (value.phase === "fit" || value.phase === "features") setProgress(value);
+      if (value.phase === "fit") setProgress(value);
+      else if (value.phase === "features") setProgress(previous => ({ ...previous, phase: "features" }));
       setLogs(logs => [...logs.slice(-499), value.message]);
     };
-    try { await invoke<string>("start_training", { datasetWorkId: dataset, options: { comfyDir: comfy, limit, pythonPath, environmentDir }, events }); }
+    try { await invoke<string>("start_training", { datasetWorkId: dataset, options: { comfyDir: comfy, limit, pythonPath, environmentDir, strategy }, events }); }
     catch (error) { setError(String(error)); }
     finally { setStarting(false); }
   }
@@ -149,9 +151,9 @@ export function TrainingView({ onOpenDatasets, onAnnotateParts }: { onOpenDatase
   const storage = env?.storage;
   const softwareEnvironmentReady = env?.ready && storage && storage.directory.replaceAll("\\", "/") === `${storage.softwareDirectory.replaceAll("\\", "/")}/training-venv`;
   const historicalComplete = !event && selectedRun?.state === "complete";
-  const statusLine = starting ? "正在启动训练" : event?.state === "cancelled" ? `已中断 · 停在 ${progress.current}/160`
-    : running ? progress.phase === "features" ? "训练中 · 提取特征" : `训练中 · ${progress.current}/160`
-    : report && (event?.state === "complete" || !event) ? `已完成 · ${report.training_samples} 训练 / ${report.validation_samples} 验证`
+  const statusLine = starting ? "正在启动训练" : event?.state === "cancelled" ? `已中断 · 停在 ${progress.current}/${progress.total}`
+    : running ? progress.phase === "features" ? "训练中 · 提取特征" : `训练中 · ${progress.current}/${progress.total}`
+    : report && (event?.state === "complete" || !event) ? `已完成 · ${report.training_samples} 训练 / ${report.calibration_samples ?? 0} 校准 / ${report.validation_samples} 测试`
     : state;
 
   return <div className="training-run-workspace">
@@ -184,7 +186,13 @@ export function TrainingView({ onOpenDatasets, onAnnotateParts }: { onOpenDatase
             <p className="hint">训练需要一个已标注的数据集工作副本：在「数据集」里用「从图片集导入」或「新建标注副本」创建，并至少标注男、女两类。</p>
             <button type="button" className="unity-btn" onClick={onOpenDatasets}>去数据集页创建</button>
           </div>}
-          <label>验证集策略<span>按场景留出约 25%</span></label>
+          <label>训练方案<select value={strategy} onChange={event => setStrategy(event.target.value)}>
+            <option value="compare">A／B／C 同批对照</option>
+            <option value="A">A · 扩大裁图／固定特征</option>
+            <option value="B">B · 目标与上下文／固定特征</option>
+            <option value="C">C · 目标与上下文／部分微调</option>
+          </select></label>
+          <label>评估划分<span>固定场景划分，独立校准与测试</span></label>
           <label>样本上限<input type="number" min="0" max="100000" value={limit} onChange={e => setLimit(Number(e.target.value))} /></label>
           <p className="hint">0 表示全部已确认蒙版，需含男、女两类和至少三个场景。</p>
         </fieldset></section>

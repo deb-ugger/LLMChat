@@ -1745,29 +1745,13 @@ def mosaic_target_model(directory):
     return path, f"{info.st_mtime_ns}:{info.st_size}"
 
 
-def predict_mosaic_target(image, model_file):
+def predict_mosaic_target(image, model_file, box, classifier_code):
     import torch
-    from PIL import ImageOps
-    from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
-
     torch.set_num_threads(min(4, torch.get_num_threads()))
     state = torch.load(model_file, map_location="cpu", weights_only=True)
-    labels = state.get("classes", [])
-    if (state.get("format") != "mosaic-target-evidence-v1" or not 2 <= len(labels) <= 3
-            or len(set(labels)) != len(labels)
-            or not set(labels) <= {"male_external", "female_external", "other"}):
-        raise ValueError("部位分类器格式不匹配")
-    encoder = mobilenet_v3_small(weights=None).eval()
-    encoder.classifier = torch.nn.Identity()
-    encoder.load_state_dict(state["encoder"])
-    head = torch.nn.Linear(state["head"]["weight"].shape[1], len(labels)).eval()
-    head.load_state_dict(state["head"])
-    transform = MobileNet_V3_Small_Weights.DEFAULT.transforms()
-    tensor = transform(ImageOps.pad(image.convert("RGB"), (224, 224), color=(110, 110, 110))).unsqueeze(0)
-    with torch.inference_mode():
-        features = torch.nn.functional.normalize(encoder(tensor))
-        score, index = head(features).softmax(1)[0].max(0)
-    return {"part": labels[int(index)], "confidence": float(score)}
+    classifier = {"__name__": "llmchat_region_classifier"}
+    exec(classifier_code, classifier)
+    return classifier["predict"](image, box, state)
 
 
 async def run(data):
@@ -1792,7 +1776,7 @@ async def run(data):
             with path.open("rb") as model_file:
                 info = os.fstat(model_file.fileno())
                 if revision == f"{info.st_mtime_ns}:{info.st_size}":
-                    result = predict_mosaic_target(original, model_file)
+                    result = predict_mosaic_target(original, model_file, data["profile"]["box"], data["regionClassifier"])
         emit("result", result)
         return
     if data["mode"] == "workflow-input":

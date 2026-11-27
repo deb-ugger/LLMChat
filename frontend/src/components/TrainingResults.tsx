@@ -42,6 +42,8 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
 }) {
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [runId, setRunId] = useState("");
+  const [variant, setVariant] = useState("");
+  useEffect(() => setVariant(""), [runId]);
   const [result, setResult] = useState<TrainingResult>();
   const [snapshot, setSnapshot] = useState<AnnotatedSampleSet>();
   const [model, setModel] = useState<ModelStatus>();
@@ -67,14 +69,14 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     const current = ++version.current;
     setResult(undefined);setRows([]);setSnapshot(undefined);setSelection(undefined);setFilter({});setMessage("");setError("");
     if (!runId) return;
-    void invoke<TrainingResult>("read_training_result", { runId }).then(async value => {
+    void invoke<TrainingResult>("read_training_result", { runId, variant: variant || undefined }).then(async value => {
       const rows = parseValidation(value.csv);
       const snapshot = await loadAnnotatedSampleSet(value.snapshotPath, { includeUnannotated: true });
       if (current !== version.current) return;
       setResult(value);setRows(rows);setSnapshot(snapshot);
     }).catch(error => { if (current === version.current) setError(String(error)); });
     return () => { version.current++; };
-  }, [runId]);
+  }, [runId, variant]);
 
   useEffect(() => {
     let active = true;setModel(undefined);
@@ -90,13 +92,14 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
   const metrics = result && trainingMetrics(rows, result.report);
   const visible = rows.filter(row => (!low || row.confidence < .9) && (!filter.errors || row.expected !== row.prediction) &&
     (!filter.expected || row.expected === filter.expected) && (!filter.prediction || row.prediction === filter.prediction));
-  const enabled = !!result && model?.source?.runId === result.meta.runId;
+  const enabled = !!result && model?.source?.runId === result.meta.runId &&
+    (model?.source?.variant ?? "") === (result.report.variant ?? "");
 
   async function enable() {
     if (!model || !runId) return;
     setBusy(true);setError("");
     try {
-      setModel(await invoke<ModelStatus>("enable_training_model", { runId, comfyDir: comfy, expectedActiveHash: model.hash, pythonPath, environmentDir }));
+      setModel(await invoke<ModelStatus>("enable_training_model", { runId, variant: variant || undefined, comfyDir: comfy, expectedActiveHash: model.hash, pythonPath, environmentDir }));
       setMessage("已生效，下次重绘使用新模型");
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }
@@ -116,16 +119,45 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
     {!!runs.length && <><div className="training-result-history"><h3>运行历史</h3>
     {enabled && <span className="training-dataset-badge">已启用</span>}</div>
     <select aria-label="选择历史运行" value={runId} disabled={busy} onChange={event => setRunId(event.target.value)}>
-      {runs.map(run => <option key={run.runId} value={run.runId}>{time(run.createdAt)} · {run.report ? `${run.report.training_samples + run.report.validation_samples} 框 · ${percent(run.report.agreement)}` : run.state}
-        {model?.source?.runId === run.runId ? " · 已启用" : ""}</option>)}
+      {runs.map(run => <option key={run.runId} value={run.runId}>{time(run.createdAt)} · {run.report ? `${run.report.unique_samples ?? run.report.training_samples + (run.report.calibration_samples ?? 0) + run.report.validation_samples} 框 · ${percent(run.report.agreement)}` : run.state}
+        {model?.source?.runId === run.runId ? " · 已启用 " + (model.source.variant ?? "") : ""}</option>)}
     </select></>}
     {!runs.length && !error && <p className="training-no-results">{runState === "running" ? "训练结束后这里出现结果"
       : runState === "cancelled" ? "本次已中断，结果未生成；可重新开始" : "还没有训练记录，左侧配置好后点开始训练"}</p>}
     {error && <p role="alert" className="training-dataset-error">{error}</p>}
     {metrics && result && <>
-      <div className="training-result-metrics">{[["验证准确率", metrics.accuracy], ["宏平均 F1", metrics.macroF1],
+      {!!result.report.comparisons?.length && <>
+        <label>查看方案<select aria-label="训练对照方案" value={variant || result.report.variant}
+          disabled={busy} onChange={event => setVariant(event.target.value)}>
+          {result.report.comparisons.map(row => <option key={row.variant} value={row.variant}>{row.variant} · {row.strategy}</option>)}
+        </select></label>
+        <table><caption>同一固定测试集的方案对照 · 默认方案按校准集损失选择</caption>
+          <thead><tr><th>方案</th><th>测试准确率</th><th>宏平均 F1</th><th>0.90 覆盖率</th><th>耗时</th></tr></thead>
+          <tbody>{result.report.comparisons.map(row => <tr key={row.variant}>
+            <th>{row.variant}</th><td>{percent(row.agreement)}</td><td>{percent(row.macro_f1)}</td>
+            <td>{percent(row.at_runtime_threshold.accepted / row.validation_samples)}</td><td>{row.seconds.toFixed(1)} 秒</td>
+          </tr>)}</tbody>
+        </table>
+      </>}
+      {result.report.split_id && <p className="hint">
+        去重后 {result.report.unique_samples} 框 · 合并重复框 {result.report.duplicate_regions ?? 0} 个 ·
+        训练 {result.report.training_samples}／校准 {result.report.calibration_samples}／测试 {result.report.validation_samples}。
+        温度 {result.report.temperature?.toFixed(3)} · 划分 {result.report.split_id.slice(0, 12)}
+      </p>}
+      <div className="training-result-metrics">{[[result.report.split_id ? "测试准确率" : "验证准确率", metrics.accuracy], ["宏平均 F1", metrics.macroF1],
         ["0.90 阈值覆盖率", metrics.coverage], ["接受后准确率", metrics.acceptedAccuracy]].map(([name, value]) =>
         <div key={String(name)}><span>{name}</span><strong>{percent(value as number | undefined)}</strong></div>)}</div>
+      {!!result.report.confidence_curve?.length && <details><summary>置信度与覆盖率</summary>
+        {result.report.raw_at_runtime_threshold && <p className="hint">
+          校准前 0.90 接受 {result.report.raw_at_runtime_threshold.accepted}／{result.report.validation_samples} 框，
+          校准后接受 {result.report.at_runtime_threshold.accepted}／{result.report.validation_samples} 框。
+        </p>}
+        <table><thead><tr><th>门槛</th><th>覆盖率</th><th>接受后准确率</th></tr></thead>
+          <tbody>{result.report.confidence_curve.map(row => <tr key={row.threshold}><th>{row.threshold.toFixed(2)}</th>
+            <td>{percent(row.accepted / result.report.validation_samples)}</td>
+            <td>{percent(row.accepted ? row.matched / row.accepted : undefined)}</td></tr>)}</tbody>
+        </table>
+      </details>}
       <table><caption>逐类结果</caption><thead><tr><th>类别</th><th>样本</th><th>精确</th><th>召回</th><th>F1</th></tr></thead>
         <tbody>{metrics.classes.map(row => <tr key={row.label}><th>{label(row.label)}</th><td>{row.count}</td><td>{percent(row.precision)}</td><td>{percent(row.recall)}</td><td>{percent(row.f1)}</td></tr>)}</tbody></table>
       <table><caption>混淆矩阵 · 行为真值，列为预测</caption><thead><tr><th>真值 / 预测</th>{metrics.labels.map(item => <th key={item}>{label(item)}</th>)}</tr></thead>
@@ -142,6 +174,8 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
       </select>
       {selection && snapshot && <section className="training-validation-detail"><h3>框详情</h3><ValidationImage row={selection} snapshot={snapshot} />
         <p>真值 {label(selection.expected)} · 预测 {label(selection.prediction)} · 置信度 {percent(selection.confidence)}</p><p>场景 {selection.scene}</p>
+        {selection.rawConfidence !== undefined && <p>校准前置信度 {percent(selection.rawConfidence)}</p>}
+        {selection.diagnostics && <p>诊断 {selection.diagnostics}</p>}
         <div className="training-dataset-actions"><select aria-label="更正部位" value={part} onChange={event => setPart(event.target.value)}>
           {Object.entries(datasetParts).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select>
           <button type="button" className="unity-btn" disabled={busy} onClick={() => void correct()}>保存标签</button>
@@ -149,8 +183,8 @@ export function TrainingResults({ datasetId, finishedRun, comfy, onRetrain, onRu
         {message === "已保存，可重新训练" && <p role="status">{message}</p>}
       </section>}
       <section className="training-model-comparison"><h3>启用对照</h3>
-        <dl><dt>当前模型</dt><dd>{!comfy ? "启用模型时请配置 ComfyUI 模型目录" : model ? model.hash ? model.source ? `${model.source.runId} · ${time(model.source.createdAt)} · ${percent(model.source.accuracy)}` : "来源未知" : "尚未启用" : "正在读取…"}</dd>
-          <dt>待启用模型</dt><dd>{result.meta.runId} · {time(result.meta.createdAt)} · {percent(result.report.agreement)}</dd></dl>
+        <dl><dt>当前模型</dt><dd>{!comfy ? "启用模型时请配置 ComfyUI 模型目录" : model ? model.hash ? model.source ? `${model.source.runId}${model.source.variant ? " · " + model.source.variant : ""} · ${time(model.source.createdAt)} · ${percent(model.source.accuracy)}` : "来源未知" : "尚未启用" : "正在读取…"}</dd>
+          <dt>待启用模型</dt><dd>{result.meta.runId} · {result.report.variant ?? ""} · {time(result.meta.createdAt)} · {percent(result.report.agreement)}</dd></dl>
         {model?.hash && <p className="training-run-path">当前 SHA-256 {model.hash}</p>}
         <button type="button" className="unity-btn unity-btn-primary" disabled={!model || busy || enabled} onClick={() => void enable()}>{enabled ? "已启用" : "启用为线上模型"}</button>
         {enabled && <p role="status">已生效，下次重绘使用新模型</p>}

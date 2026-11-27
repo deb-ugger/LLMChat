@@ -17,6 +17,7 @@ static RENDER: Mutex<()> = Mutex::new(());
 const COMFY_URL: &str = "http://127.0.0.1:8188";
 const HISTORY_LIMIT: usize = 30;
 const REDRAW_WORKER: &str = include_str!("style_redraw.py");
+const REGION_CLASSIFIER: &str = include_str!("../../../scripts/region_classifier.py");
 const REDRAW_BOOTSTRAP: &str = "import sys; source = sys.stdin.buffer.read(int(sys.stdin.buffer.readline())); exec(compile(source, '<style-redraw>', 'exec'))";
 
 fn valid_mosaic_prompt_id(id: &str) -> bool {
@@ -133,6 +134,7 @@ async fn run_worker(directory: String, mut payload: Value, progress: Channel<Str
         let root = portable_directory(Path::new(&directory)).ok_or("请选择有效的 ComfyUI 便携版目录")?;
         let python = root.join("python_embeded/python.exe");
         payload["directory"] = json!(root);
+        if payload["mode"] == "mosaic-target-predict" { payload["regionClassifier"] = json!(REGION_CLASSIFIER); }
         let mut command = Command::new(python);
         #[cfg(windows)]
         command.creation_flags(0x08000000);

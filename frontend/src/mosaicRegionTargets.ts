@@ -110,11 +110,11 @@ async function activeTargetModel(): Promise<TargetModel | undefined> {
   }
 }
 
-async function predictPart(model: TargetModel, dataUrl: string, signal: AbortSignal): Promise<RegionPart> {
+async function predictPart(model: TargetModel, dataUrl: string, box: MosaicBox, signal: AbortSignal): Promise<RegionPart> {
   try {
     const result = await invoke<{ part?: RegionPart; confidence?: number }>("run_style_redraw", {
       directory: model.directory, image: dataUrl.split(",", 2)[1], steps: 1, mode: "mosaic-target-predict",
-      profile: { revision: model.revision }, regions: [], progress: new Channel<string>(),
+      profile: { revision: model.revision, box }, regions: [], progress: new Channel<string>(),
     });
     signal.throwIfAborted();
     if ((result.confidence ?? 0) >= .9 &&
@@ -143,6 +143,7 @@ export function createMosaicTargetResolver(root: string, config: MosaicRegionTar
       item.size[0] === image.width && item.size[1] === image.height ? item.evidence : []) : [];
     const evidence: TargetEvidence[] = [];
     let bitmap: ImageBitmap | undefined;
+    let classifierImage: Promise<string> | undefined;
     try {
       for (const box of boxes) {
         signal.throwIfAborted();
@@ -152,7 +153,16 @@ export function createMosaicTargetResolver(root: string, config: MosaicRegionTar
         const view = regionView(bitmap, box);
         const reused = matchingMosaicPart(box, view.context, nearby);
         if (reused) { evidence.push({ box, part: reused, context: view.context, direct: false }); continue; }
-        let part = model ? await predictPart(model, view.image(false), signal) : "unknown";
+        let part: RegionPart = "unknown";
+        if (model) {
+          classifierImage ??= new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(reader.error ?? new Error("无法读取分类原图"));
+            reader.readAsDataURL(source);
+          });
+          part = await predictPart(model, await classifierImage, box, signal);
+        }
         if (part !== "unknown") { evidence.push({ box, part, context: view.context, direct: false }); continue; }
         const configuration = await getSettings();
         const markedImage = view.image(true);

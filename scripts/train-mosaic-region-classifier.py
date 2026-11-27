@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageOps
+from region_classifier import scene_family, scene_groups
 
 
 PARTS = ("male_external", "female_external", "other")
@@ -44,24 +45,26 @@ def write_json(path, value):
     pending.replace(path)
 
 
-def scene_family(path):
-    family = re.sub(r"(?:[_~-]?\d+)+$", "", Path(path).stem.casefold()).rstrip("_-")
-    return str(Path(path).parent / (family or Path(path).stem))
-
-
 def dataset(root, annotation_file, limit):
     manifest = read_json(root / "manifest.json")
     annotations = read_json(root / (annotation_file or manifest["annotationsFile"]))["samples"]
     index = {p.stem: p for p in (root / "images").iterdir() if p.is_file()}
+    grouped = scene_groups(manifest["images"])
+    seen = set()
     scenes = defaultdict(list)
     for entry in manifest["images"]:
         sample = annotations.get(entry["id"], {}).get("mosaic", {})
         path = index.get(entry["id"])
         if not path or sample.get("state") != "present":
             continue
-        scene = scene_family(entry["path"])
-        for box in sample.get("boxes", []):
+        scene = grouped[entry["sha256"]]
+        for item in sample.get("boxes", []):
+            box = item.get("box") if isinstance(item, dict) else item
             if len(box) == 4 and 0 <= box[0] < box[2] <= entry["width"] and 0 <= box[1] < box[3] <= entry["height"]:
+                key = (entry["sha256"], tuple(box))
+                if key in seen:
+                    continue
+                seen.add(key)
                 scenes[scene].append((entry, path, tuple(box), scene))
     groups = list(scenes.values())
     rng = random.Random(12)
@@ -173,8 +176,15 @@ def review_entries(samples, records, model):
 
 
 def load_review(path):
+    corrected = {}
     with path.open(encoding="utf-8-sig", newline="") as file:
-        return {(row["sample"], row["box"]): row["corrected_part"].strip() for row in csv.DictReader(file)}
+        for row in csv.DictReader(file):
+            key = (row["sample"], json.dumps(json.loads(row["box"]), separators=(",", ":")))
+            value = row["corrected_part"].strip()
+            if key in corrected and corrected[key] and value and corrected[key] != value:
+                raise ValueError("同一图片和框存在冲突标签")
+            corrected[key] = value or corrected.get(key, "")
+    return corrected
 
 
 def write_table(path, fields, rows):
@@ -215,31 +225,14 @@ def publish_classifier(path, directory):
     print("Active model:", active.resolve(), flush=True)
 
 
-def split_scenes(records):
-    scenes = sorted({r["scene"] for r in records})
-    labels = {r["part"] for r in records}
-    if len(scenes) < 3 or len(labels) < 2:
-        return None
-    count = min(len(scenes)-1, max(2, round(len(scenes)*.25)))
-    for seed in range(64):
-        holdout = set(random.Random(seed).sample(scenes, count))
-        train = [r for r in records if r["scene"] not in holdout]
-        test = [r for r in records if r["scene"] in holdout]
-        if {r["part"] for r in train} == labels and {r["part"] for r in test} == labels:
-            return train, test
-    return None
-
-
 def train_classifier(args, samples, records):
+    import copy
+    import time
     import torch
-    from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
-    torch.manual_seed(23)
+    from region_classifier import FORMAT, VARIANTS, input_tensor, make_model, partition, calibrate, measured
+
     torch.set_num_threads(min(4, torch.get_num_threads()))
-    lookup = {(e["id"], box): path for e, path, box, _ in samples}
-    examples = [
-        r for r in records.values() if r["origin"] == "model" and r["visible"] and r["model"] == args.model
-        and (r["sample"], tuple(r["box"])) in lookup
-    ]
+    lookup = {(entry["id"], box): path for entry, path, box, _ in samples}
     if args.review:
         corrections = load_review(args.review)
         examples = []
@@ -248,83 +241,170 @@ def train_classifier(args, samples, records):
             if part in ("", "skip", "unknown"):
                 continue
             if part not in PARTS:
-                raise ValueError(f"纠错清单有不支持的部位标签：{part}")
+                raise ValueError("纠错清单含无效部位标签")
             examples.append({"sample": entry["id"], "box": box, "scene": scene, "part": part})
-        if not set(PARTS[:2]) <= {row["part"] for row in examples}:
-            raise ValueError("纠错清单需要包含 male_external 和 female_external 两类已确认样本")
-    split = split_scenes(examples)
-    if split is None:
-        raise ValueError("已确认样本的场景或类别不足，无法按场景独立划分训练和验证")
-    train, test = split
-    labels = sorted({r["part"] for r in examples})
-    weights = MobileNet_V3_Small_Weights.DEFAULT
-    encoder = mobilenet_v3_small(weights=weights).eval()
-    transform = weights.transforms()
-    encoder.classifier = torch.nn.Identity()
+    else:
+        examples = [dict(row) for row in records.values() if row["origin"] == "model" and row["visible"]
+                    and row["model"] == args.model and (row["sample"], tuple(row["box"])) in lookup]
+    unique = {}
+    for row in examples:
+        key = (row["sample"], tuple(row["box"]))
+        if key in unique and unique[key]["part"] != row["part"]:
+            raise ValueError("同一图片和框存在互相冲突的部位标签")
+        unique[key] = row
+    examples = list(unique.values())
+    if args.limit:
+        examples = examples[:args.limit]
+    if not set(PARTS[:2]) <= {row["part"] for row in examples}:
+        raise ValueError("训练需要男、女两类已确认样本")
+    groups, plan = partition(examples, args.split_plan or args.dataset / "classifier-split.json")
+    write_json(args.output / "classifier-split.json", plan)
+    fit, calibration, test = (groups[name] for name in ("fit", "calibration", "test"))
+    manifest = read_json(args.dataset / "manifest.json")
+    occurrences = Counter(entry["sha256"] for entry in manifest["images"])
+    duplicate_regions = sum(max(0, occurrences[row["sample"]] - 1) for row in examples)
+    labels = sorted({row["part"] for row in examples})
+    variants = list(VARIANTS) if args.strategy == "compare" else [args.strategy]
+    results = []
+    frozen_features = {}
+    total_steps = len(variants) * 170
+    print(f"去重后 {len(examples)} 框 · 训练 {len(fit)} · 校准 {len(calibration)} · 测试 {len(test)}", flush=True)
 
-    def features(rows):
-        data = []
-        for row in rows:
-            box = tuple(row["box"])
-            with Image.open(lookup[row["sample"], box]) as image:
-                original = image.convert("RGBA")
-                flattened = Image.alpha_composite(Image.new("RGBA", original.size, (128, 128, 128, 255)), original).convert("RGB")
-                crop, _ = crop_region(flattened, box)
-                crop.thumbnail((448, 448), Image.Resampling.BILINEAR)
-                data.append(transform(ImageOps.pad(crop, (224, 224), color=(110, 110, 110))))
+    for variant_index, variant in enumerate(variants):
+        started = time.monotonic()
+        torch.manual_seed(23)
+        mode = "legacy" if variant == "A" else "target-context"
+        model = make_model(labels, mode, pretrained=True).eval()
+        destination = args.output / variant
+        destination.mkdir(exist_ok=True)
+
+        def tensors(rows):
+            values = []
+            for row in rows:
+                with Image.open(lookup[row["sample"], tuple(row["box"])]) as image:
+                    values.append(input_tensor(image, row["box"], mode))
+            return torch.stack(values), torch.tensor([labels.index(row["part"]) for row in rows])
+
+        print("PROGRESS " + json.dumps({"phase": "features", "current": variant_index, "total": len(variants)}), flush=True)
+        fit_inputs, fit_y = tensors(fit)
+        cal_inputs, cal_y = tensors(calibration)
+        test_inputs, test_y = tensors(test)
+
+        def features(inputs):
+            with torch.inference_mode():
+                values = torch.cat([model.features(chunk) for chunk in inputs.split(16)])
+            return values.clone()
+
+        if mode not in frozen_features:
+            frozen_features[mode] = (features(fit_inputs), features(cal_inputs))
+        fit_x, cal_x = frozen_features[mode]
+        counts = torch.bincount(fit_y, minlength=len(labels)).float()
+        loss_fn = torch.nn.CrossEntropyLoss(weight=counts.sum() / counts)
+        optimizer = torch.optim.Adam(model.head.parameters(), lr=.03, weight_decay=.001)
+        best_loss, best_head = float("inf"), None
+        for step in range(160):
+            optimizer.zero_grad()
+            loss_fn(model.head(fit_x), fit_y).backward()
+            optimizer.step()
+            with torch.no_grad():
+                value = float(torch.nn.functional.cross_entropy(model.head(cal_x), cal_y))
+            if value < best_loss:
+                best_loss, best_head = value, copy.deepcopy(model.head.state_dict())
+            if (step + 1) % 5 == 0:
+                print("PROGRESS " + json.dumps({"phase": "fit", "current": variant_index*170+step+1, "total": total_steps}), flush=True)
+        model.head.load_state_dict(best_head)
+        if variant == "C":
+            for parameter in model.encoder.parameters():
+                parameter.requires_grad_(False)
+            for parameter in model.encoder.features[-3:].parameters():
+                parameter.requires_grad_(True)
+            parameters = [{"params": [p for p in model.encoder.parameters() if p.requires_grad], "lr": .0003},
+                          {"params": model.head.parameters(), "lr": .003}]
+            optimizer = torch.optim.Adam(parameters, weight_decay=.001)
+            best = copy.deepcopy(model.state_dict())
+            best_loss = float(torch.nn.functional.cross_entropy(model.head(cal_x), cal_y))
+            for epoch in range(10):
+                model.eval()
+                generator = torch.Generator().manual_seed(100 + epoch)
+                for indices in torch.randperm(len(fit), generator=generator).split(8):
+                    optimizer.zero_grad()
+                    loss_fn(model(fit_inputs[indices]), fit_y[indices]).backward()
+                    optimizer.step()
+                with torch.no_grad():
+                    logits = torch.cat([model(chunk) for chunk in cal_inputs.split(16)])
+                    value = float(torch.nn.functional.cross_entropy(logits, cal_y))
+                if value < best_loss:
+                    best_loss, best = value, copy.deepcopy(model.state_dict())
+                print("PROGRESS " + json.dumps({"phase": "fit", "current": variant_index*170+161+epoch, "total": total_steps}), flush=True)
+            model.load_state_dict(best)
+        model.eval()
         with torch.no_grad():
-            x = torch.cat([encoder(chunk) for chunk in torch.stack(data).split(8)])
-        y = torch.tensor([labels.index(r["part"]) for r in rows])
-        return torch.nn.functional.normalize(x), y
+            cal_logits = torch.cat([model(chunk) for chunk in cal_inputs.split(16)]).clone()
+            test_logits = torch.cat([model(chunk) for chunk in test_inputs.split(16)]).clone()
+        temperature = calibrate(cal_logits, cal_y)
+        raw = measured(test_logits, test_y)
+        calibrated = measured(test_logits, test_y, temperature=temperature)
+        cal_metrics = measured(cal_logits, cal_y, temperature=temperature)
+        scores, predictions = (test_logits / temperature).softmax(1).max(1)
+        raw_scores = test_logits.softmax(1).max(1).values
+        report = {
+            "variant": variant, "strategy": VARIANTS[variant], "classes": labels, "input_mode": mode,
+            "training_samples": len(fit), "calibration_samples": len(calibration), "validation_samples": len(test),
+            "unique_samples": len(examples), "duplicate_regions": duplicate_regions, "split_id": plan["id"],
+            "indexed_images": len(manifest["images"]),
+            "unique_images": len({entry["sha256"] for entry in manifest["images"]}),
+            "train_scenes": len({r["scene"] for r in fit}), "calibration_scenes": len({r["scene"] for r in calibration}),
+            "validation_scenes": len({r["scene"] for r in test}),
+            "validation": "fixed held-out scenes; independent calibration scenes",
+            "agreement": calibrated["accuracy"], "macro_f1": calibrated["macro_f1"],
+            "seconds": time.monotonic()-started, "temperature": temperature,
+            "calibration_nll": cal_metrics["nll"],
+            "at_runtime_threshold": {"threshold": .9, "accepted": calibrated["accepted"], "matched": calibrated["matched"]},
+            "raw_at_runtime_threshold": {"threshold": .9, "accepted": raw["accepted"], "matched": raw["matched"]},
+            "confidence_curve": [{"threshold": threshold, **measured(test_logits, test_y, threshold, temperature)}
+                                 for threshold in (.5, .6, .7, .8, .85, .9, .95, .98)],
+        }
+        validation = []
+        for row, index, score, raw_score in zip(test, predictions.tolist(), scores.tolist(), raw_scores.tolist()):
+            peers = [other for other in examples if other["sample"] == row["sample"] and other is not row]
+            x0, y0, x1, y1 = row["box"]
+            overlaps = sum(max(0, min(x1, p["box"][2])-max(x0, p["box"][0])) *
+                           max(0, min(y1, p["box"][3])-max(y0, p["box"][1])) > 0 for p in peers)
+            reasons = []
+            if labels[index] != row["part"]:
+                reasons.append("分类错误")
+            if score < .9:
+                reasons.append("置信度低于0.90")
+            if overlaps:
+                reasons.append(f"与{overlaps}个框重叠")
+            if max(x1-x0, y1-y0) < 32:
+                reasons.append("目标长边小于32像素")
+            validation.append({"sample": row["sample"], "box": json.dumps(row["box"], separators=(",", ":")),
+                               "scene": row["scene"], "image_path": str(lookup[row["sample"], tuple(row["box"])].resolve()),
+                               "expected": row["part"], "prediction": labels[index], "confidence": round(score, 6),
+                               "raw_confidence": round(raw_score, 6), "matched": labels[index] == row["part"],
+                               "diagnostics": "；".join(reasons)})
+        write_table(destination / "validation.csv", tuple(validation[0]), validation)
+        write_json(destination / "training-report.json", report)
+        torch.save({"format": FORMAT, "classes": labels, "encoder": model.encoder.state_dict(),
+                    "head": model.head.state_dict(), "input_mode": mode, "temperature": temperature,
+                    "image_size": 224, "report": report}, destination / "mobilenet-region-classifier.pt")
+        results.append(report)
+        print(f"{variant} · 测试准确率 {calibrated['accuracy']:.1%} · 校准后接受 {calibrated['accepted']}/{len(test)} · {report['seconds']:.1f} 秒", flush=True)
 
-    print('PROGRESS {"phase":"features","current":0,"total":1}', flush=True)
-    train_x, train_y = features(train)
-    test_x, test_y = features(test)
-    print('PROGRESS {"phase":"features","current":1,"total":1}', flush=True)
-    head = torch.nn.Linear(train_x.shape[1], len(labels))
-    optimizer = torch.optim.Adam(head.parameters(), lr=.03, weight_decay=.001)
-    counts = torch.bincount(train_y, minlength=len(labels)).float()
-    loss_fn = torch.nn.CrossEntropyLoss(weight=counts.sum() / counts)
-    for step in range(160):
-        optimizer.zero_grad()
-        loss = loss_fn(head(train_x), train_y)
-        loss.backward()
-        optimizer.step()
-        if (step + 1) % 5 == 0 or step == 159:
-            print("PROGRESS " + json.dumps({"phase": "fit", "current": step + 1, "total": 160}), flush=True)
-    actual = test_y.tolist()
-    with torch.inference_mode():
-        scores, predictions = head(test_x).softmax(dim=1).max(dim=1)
-    inferred = predictions.tolist()
-    confidence = scores.tolist()
-    confident = [(a, b) for a, b, score in zip(actual, inferred, confidence) if score >= .9]
-    report = {
-        "teacher": args.model, "classes": labels,
-        "validation": "held-out scenes, human reviewed labels" if args.review else "held-out scenes, agreement with provisional model labels",
-        "training_samples": len(train), "validation_samples": len(test),
-        "train_scenes": len({r["scene"] for r in train}), "validation_scenes": len({r["scene"] for r in test}),
-        "agreement": sum(a == b for a, b in zip(actual, inferred)) / len(actual),
-        "at_runtime_threshold": {"threshold": .9, "accepted": len(confident),
-                                 "matched": sum(a == b for a, b in confident)},
-        "class_agreement": {label: {"count": actual.count(i), "matched": sum(a == b == i for a, b in zip(actual, inferred))}
-                            for i, label in enumerate(labels)},
-    }
-    model_file = args.output / "mobilenet-region-classifier.pt"
-    torch.save({"format": POLICY, "classes": labels, "encoder": encoder.state_dict(), "head": head.state_dict(),
-                "image_size": 224, "report": report}, model_file)
-    write_json(args.output / "training-report.json", report)
-    validation = [
-        {"sample": row["sample"], "box": json.dumps(row["box"], separators=(",", ":")), "scene": row["scene"],
-         "image_path": str(lookup[row["sample"], tuple(row["box"])].resolve()),
-         "expected": labels[a], "prediction": labels[b], "confidence": round(score, 4), "matched": a == b}
-        for row, a, b, score in zip(test, actual, inferred, confidence)
-    ]
-    write_table(args.output / "validation.csv",
-                ("sample", "box", "scene", "image_path", "expected", "prediction", "confidence", "matched"), validation)
+    selected = min(results, key=lambda report: report["calibration_nll"])
+    comparisons = [{key: report[key] for key in ("variant", "strategy", "agreement", "macro_f1", "seconds",
+                    "calibration_nll", "temperature", "at_runtime_threshold", "validation_samples")} for report in results]
+    for report in results:
+        report["comparisons"] = comparisons
+        report["selection_basis"] = "lowest calibration NLL; test metrics excluded"
+        write_json(args.output / report["variant"] / "training-report.json", report)
+    for name in ("training-report.json", "validation.csv", "mobilenet-region-classifier.pt"):
+        shutil.copyfile(args.output / selected["variant"] / name, args.output / name)
     if args.publish_dir:
-        publish_classifier(model_file, args.publish_dir)
-    print(json.dumps(report, ensure_ascii=False), flush=True)
-
+        publish_classifier(args.output / "mobilenet-region-classifier.pt", args.publish_dir)
+    print("PROGRESS " + json.dumps({"phase": "fit", "current": total_steps, "total": total_steps}), flush=True)
+    print(json.dumps(selected, ensure_ascii=False), flush=True)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -333,6 +413,8 @@ def main():
     parser.add_argument("--annotations")
     parser.add_argument("--model", default="qwen3-vl:4b-instruct")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--strategy", choices=("A", "B", "C", "compare"), default="compare")
+    parser.add_argument("--split-plan", type=Path)
     parser.add_argument("--cpu-teacher", action="store_true")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--label-only", action="store_true")
@@ -344,7 +426,8 @@ def main():
     if args.publish_dir and (not args.train_only or not args.review):
         parser.error("发布时需使用 --train-only 和人工纠错清单 --review")
     args.output.mkdir(parents=True, exist_ok=True)
-    samples = dataset(args.dataset, args.annotations, args.limit)
+    sample_limit = 0 if args.review and not (args.review_only or args.label_only) else args.limit
+    samples = dataset(args.dataset, args.annotations, sample_limit)
     if not samples:
         raise ValueError("找不到现有文件对应的已确认蒙版")
     saved = args.output / "region-routes.json"

@@ -1,12 +1,20 @@
 import { csvRows } from "./trainingDatasets";
 import type { MosaicBox } from "../gameMosaic";
 
-export type ValidationRow = { sample: string; box: MosaicBox; scene: string; expected: string; prediction: string; confidence: number };
+export type ValidationRow = { sample: string; box: MosaicBox; scene: string; expected: string; prediction: string; confidence: number; rawConfidence?: number; diagnostics?: string };
+export type TrainingComparison = { variant: string; strategy: string; agreement: number; macro_f1: number;
+  seconds: number; calibration_nll: number; temperature: number; validation_samples: number;
+  at_runtime_threshold: { accepted: number; matched: number; threshold: number } };
 export type TrainingReport = { agreement: number; training_samples: number; validation_samples: number;
+  calibration_samples?: number; unique_samples?: number; duplicate_regions?: number; split_id?: string;
+  variant?: string; strategy?: string; seconds?: number; temperature?: number;
+  raw_at_runtime_threshold?: { accepted: number; matched: number; threshold: number };
+  comparisons?: TrainingComparison[];
+  confidence_curve?: { threshold: number; accuracy: number; accepted: number; matched: number }[];
   at_runtime_threshold: { threshold: number; accepted: number; matched: number } };
 export type TrainingRun = { runId: string; datasetWorkId: string; createdAt: number; state: string; report?: TrainingReport };
 export type TrainingResult = { meta: TrainingRun; report: TrainingReport; csv: string; snapshotPath: string };
-export type ModelStatus = { hash: string | null; source: { runId: string; createdAt: number; accuracy: number; hash: string } | null };
+export type ModelStatus = { hash: string | null; source: { runId: string; createdAt: number; accuracy: number; hash: string; variant?: string } | null };
 
 export function parseValidation(csv: string): ValidationRow[] {
   const [header, ...rows] = csvRows(csv.replace(/^\uFEFF/, ""));
@@ -18,7 +26,9 @@ export function parseValidation(csv: string): ValidationRow[] {
     const box = JSON.parse(field("box"));
     const confidence = Number(field("confidence"));
     if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isInteger) || !Number.isFinite(confidence)) throw new Error("验证文件包含无效坐标或置信度");
-    return { sample: field("sample"), box: box as MosaicBox, scene: field("scene"), expected: field("expected"), prediction: field("prediction"), confidence };
+    return { sample: field("sample"), box: box as MosaicBox, scene: field("scene"), expected: field("expected"), prediction: field("prediction"), confidence,
+      rawConfidence: header.includes("raw_confidence") ? Number(field("raw_confidence")) : undefined,
+      diagnostics: header.includes("diagnostics") ? field("diagnostics") : undefined };
   });
 }
 

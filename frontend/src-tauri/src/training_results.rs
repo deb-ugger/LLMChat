@@ -42,9 +42,11 @@ pub fn snapshot(dataset: &Path, output: &Path) -> Result<PathBuf,String> {
     }
     if changed { write_metadata(&annotation_path,&labels)?; }
     fs::create_dir(target.join("images")).map_err(|e|e.to_string())?;
+    let mut copied = std::collections::HashSet::new();
     for image in manifest["images"].as_array().ok_or("图片索引无效")? {
         let hash=image["sha256"].as_str().ok_or("图片哈希无效")?;
         if hash.len()!=64 || !hash.chars().all(|c|c.is_ascii_hexdigit()) {return Err("图片哈希无效".into());}
+        if !copied.insert(hash) { continue; }
         let name=format!("images/{hash}.png");
         fs::copy(managed(dataset,&dataset.join(&name))?,target.join(name)).map_err(|e|e.to_string())?;
     }
@@ -75,13 +77,22 @@ pub fn list_training_runs(app: tauri::AppHandle, dataset_work_id: String) -> Res
     Ok(runs)
 }
 
+fn artifact_directory(run: &Path, variant: Option<&str>) -> Result<PathBuf, String> {
+    match variant {
+        None => Ok(run.to_owned()),
+        Some(value) if ["A", "B", "C"].contains(&value) => managed(run, &run.join(value)),
+        _ => Err("训练方案无效".into()),
+    }
+}
+
 #[tauri::command]
-pub fn read_training_result(app:tauri::AppHandle,run_id:String)->Result<Value,String>{
+pub fn read_training_result(app:tauri::AppHandle,run_id:String,variant:Option<String>)->Result<Value,String>{
     let path=run_path(&app,&run_id)?;
     let meta=metadata(&path)?;
     if meta["state"]!="complete" {return Err("该次运行尚无完整结果".into());}
-    let report:Value=serde_json::from_slice(&fs::read(path.join("training-report.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let csv=fs::read_to_string(path.join("validation.csv")).map_err(|e|e.to_string())?;
+    let artifact = artifact_directory(&path, variant.as_deref())?;
+    let report:Value=serde_json::from_slice(&fs::read(artifact.join("training-report.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    let csv=fs::read_to_string(artifact.join("validation.csv")).map_err(|e|e.to_string())?;
     Ok(json!({"meta":meta,"report":report,"csv":csv,"snapshotPath":path.join("snapshot/manifest.json")}))
 }
 
@@ -106,7 +117,7 @@ pub async fn training_model_status(app:tauri::AppHandle,comfy_dir:String,python_
 
 #[tauri::command]
 pub async fn enable_training_model(
-    app: tauri::AppHandle, run_id: String, comfy_dir: String, expected_active_hash: Option<String>, python_path: Option<String>, environment_dir: Option<String>,
+    app: tauri::AppHandle, run_id: String, comfy_dir: String, expected_active_hash: Option<String>, python_path: Option<String>, environment_dir: Option<String>, variant: Option<String>,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if comfy_dir.trim().is_empty() {return Err("请先配置 ComfyUI 模型目录".into());}
@@ -115,10 +126,12 @@ pub async fn enable_training_model(
         if metadata(&path)?["state"] != "complete" {
             return Err("仅已完成训练可启用".into());
         }
+        artifact_directory(&path, variant.as_deref())?;
         let mut args = vec![
             ("--directory", model_dir(&comfy_dir)),
             ("--run", path.to_string_lossy().into()),
         ];
+        if let Some(value) = variant { args.push(("--variant", value)); }
         if let Some(hash) = expected_active_hash {
             args.push(("--expected-hash", hash));
         }

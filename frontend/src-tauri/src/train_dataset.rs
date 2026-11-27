@@ -5,7 +5,7 @@ use tauri::{ipc::Channel, Manager};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TrainingOptions { pub comfy_dir: String, pub limit: u32, pub python_path: Option<String>, pub environment_dir: Option<String> }
+pub struct TrainingOptions { pub comfy_dir: String, pub limit: u32, pub python_path: Option<String>, pub environment_dir: Option<String>, pub strategy: Option<String> }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingEvent {
@@ -31,7 +31,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn error(value: impl std::fmt::Display) -> String { value.to_string() }
 pub(super) fn resource(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let path = app.path().resource_dir().map_err(error)?.join("resources/training");
-    for file in ["mosaic-region-training.ps1", "train-mosaic-region-classifier.py", "torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth"] {
+    for file in ["mosaic-region-training.ps1", "train-mosaic-region-classifier.py", "region_classifier.py", "torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth"] {
         if !path.join(file).is_file() { return Err(format!("训练资源缺失：{file}，请重新安装完整程序")); }
     }
     path.canonicalize().map_err(error)
@@ -141,6 +141,8 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
         let _diagnostics=crate::training_diagnostics::scope(options.environment_dir.as_deref());
         let exclusive = win::exclusive()?;
         if options.limit > 100_000 { return Err("样本上限须为 0–100000".into()); }
+        let strategy = options.strategy.as_deref().unwrap_or("compare");
+        if !["A", "B", "C", "compare"].contains(&strategy) { return Err("训练方案无效".into()); }
         let resources = resource(&app)?;
         let dataset = work(&app, &dataset_work_id)?;
         let output_root = app.path().app_local_data_dir().map_err(error)?.join("training-runs");
@@ -154,7 +156,7 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
         let snapshot = crate::training_results::snapshot(&dataset, &output)?;
         let mut metadata = serde_json::json!({"runId": id, "datasetWorkId": dataset_work_id,
             "createdAt": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_millis() as u64,
-            "state": "running", "limit": options.limit});
+            "state": "running", "limit": options.limit, "strategy": strategy});
         crate::training_results::write_metadata(&output.join("run.json"), &metadata)?;
         let job = Arc::new(win::job()?);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -162,7 +164,8 @@ pub async fn start_training(app: tauri::AppHandle, dataset_work_id: String, opti
         let mut command = Command::new(&python.path);
         command.args(["-X", "utf8"]).arg(resources.join("train-mosaic-region-classifier.py"))
             .arg(&snapshot).arg(&output).arg("--train-only").arg("--review").arg(snapshot.join("review.csv"))
-            .arg("--limit").arg(options.limit.to_string())
+            .arg("--limit").arg(options.limit.to_string()).arg("--strategy").arg(strategy)
+            .arg("--split-plan").arg(dataset.join("classifier-split.json"))
             .env("TORCH_HOME", resources.join("torch")).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         win::suspended(&mut command);
         let mut child = command.spawn().map_err(error)?;

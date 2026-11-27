@@ -14,6 +14,6 @@ if (!(Get-FileHash -LiteralPath $weights -Algorithm SHA256).Hash.StartsWith('047
     throw 'Training pretrained weights checksum verification failed.'
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'training-requirements.txt') -Destination (Join-Path $destination 'requirements.txt')
-foreach ($name in @('mosaic-region-training.ps1', 'train-mosaic-region-classifier.py', 'training-results.py')) {
+foreach ($name in @('mosaic-region-training.ps1', 'train-mosaic-region-classifier.py', 'region_classifier.py', 'training-results.py')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $destination $name)
 }
