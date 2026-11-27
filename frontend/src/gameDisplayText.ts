@@ -1,6 +1,6 @@
 import { unityTranslationTokens, unityTranslationProblem } from "./unityTokens";
 import type { UnityEntry } from "./unityOffline";
-import { gameBracketProblem, splitGameTranslationSpans } from "./gameTextStructure";
+import { gameBracketIssue, gameBracketProblem, restoreGameBracketStyle, splitGameTranslationSpans } from "./gameTextStructure";
 
 const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^><{}$\\])`;
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
@@ -210,7 +210,9 @@ export async function translateGameDisplayText(source: string, translate: (text:
     }
     return protect(token);
   });
-  const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !keepTarget || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
+  // Keep delimiter fragments visible around protected controls.
+  const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !keepTarget ||
+    !/[\p{L}\p{N}]/u.test(part) || gameBracketIssue(part) || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
   let termPattern = termPatterns.get(terms);
   if (termPattern === undefined) {
     const escaped = [...terms].filter(([from, to]) => from !== to).map(([from]) => from)
@@ -289,6 +291,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
     if (result.split(marker).length !== 2) throw new Error(`翻译结果未保留格式控制符 ${token}（保护标记 ${marker} 缺失或重复）。此条译文未保存。请重试此条，或在译文中保留原控制符及参数后手动填写。`);
     result = result.replace(marker, () => token);
   }
+  result = restoreGameBracketStyle(source, result);
   const problem = problemWith(result);
   if (problem) throw new Error(problem);
   return result;
