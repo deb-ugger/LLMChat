@@ -4,7 +4,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import type { GameConfigurationSetup } from "../gameAuxWindows";
 import { GAME_PROMPT_SCENES, useGamePromptCatalog, type GamePromptScene } from "../gamePrompts";
 import { builtinGameTestConfigurations, defaultGameTestConfiguration, listGameTestOllamaModels, readGameTestConfigurations, saveGameTestConfigurations,
-  type GameTestConfiguration, type GameTestRole, type GameTestTextOptions, type SavedGameTestConfiguration } from "../gameModelPreset";
+  type GameTestConfiguration, type GameTestConfigurationPart, type GameTestRole, type GameTestTextOptions, type SavedGameTestConfiguration } from "../gameModelPreset";
 import { UNITY_LANGUAGES } from "../unityTranslation";
 import { OCR_MODE_OPTIONS } from "../ocr/modes";
 import { classicEngines, getEngineInfo } from "../translateEngines";
@@ -58,7 +58,7 @@ function Engines({ value, change }: { value: UnityEngineChoice[]; change: (value
 
 export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
   setup: GameConfigurationSetup; capture: () => Promise<GameTestConfiguration>;
-  onApply: (row: SavedGameTestConfiguration) => Promise<void>; onClose: () => void;
+  onApply: (row: SavedGameTestConfiguration, part?: GameTestConfigurationPart) => Promise<void>; onClose: () => void;
 }) {
   const [rows, setRows] = useState(() => readGameTestConfigurations(setup.scope));
   const presets = useMemo(() => builtinGameTestConfigurations(setup.current), [setup.current]);
@@ -128,6 +128,10 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
   const edited = !builtIn && !rows.some(row => row.id === draft.id);
   const duplicateName = !builtIn && rows.some(row => row.id !== draft.id && row.name === draft.name.trim());
   const named = draft.name.trim() && !duplicateName ? { ...draft, name: draft.name.trim() } : undefined;
+  const apply = (section?: GameTestConfigurationPart) => named && void run(async () => {
+    if (!builtIn) save(named);
+    await onApply(named, section); onClose();
+  });
   return <main className="game-test-page" aria-label="测试配置">
     <header className="game-test-toolbar">
     <div className="game-test-picker">
@@ -227,10 +231,12 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
     <footer className="game-test-actions">
       {working && <span role="status">正在处理…</span>}
       <button type="button" className="unity-btn" disabled={!named || builtIn || working} onClick={() => named && void run(async () => { save(named); showAppNotice("已保存测试配置单"); })}>保存配置单</button>
-      <button type="button" className="unity-btn unity-btn-primary" disabled={!named || working} onClick={() => named && void run(async () => {
-        if (!builtIn) save(named);
-        await onApply(named); onClose();
-      })}>应用所选配置</button>
+      <button type="button" className="unity-btn" disabled={!named || working || !value?.[part]}
+        data-tooltip={`仅应用当前「${part === "text" ? "文本翻译" : "图片翻译"}」页签中的全部步骤和参数。`}
+        onClick={() => apply(part)}>仅应用当前部分</button>
+      <button type="button" className="unity-btn unity-btn-primary" disabled={!named || working}
+        data-tooltip="应用整份配置单中包含的全部步骤和参数，包括文本翻译和图片翻译。"
+        onClick={() => apply()}>全部应用</button>
       <button type="button" className="unity-btn" disabled={working} onClick={onClose}>关闭</button>
     </footer>
   </main>;

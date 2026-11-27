@@ -278,15 +278,22 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       if (!text) throw new Error("请先读取文本工程");
       return { text: text.captureTestConfiguration(), images: imageHandle.current?.captureTestConfiguration(), detectedSource: text.detectedSource };
     },
-    apply: async preset => {
+    apply: async (preset, part) => {
       const text = textHandle.current, images = imageHandle.current;
-      if (busyRef.current || !text || !(textInfo.sourcePath || preset.images && imageWorkflow.loaded) || preset.images && !images) throw new Error("请等待工程读取或当前任务结束");
+      const applyText = part !== "images";
+      const applyImages = part !== "text" && !!preset.images;
+      const loaded = !!textInfo.sourcePath || applyImages && imageWorkflow.loaded;
+      if (busyRef.current || applyText && (!text || !textInfo.sourcePath) || applyImages && !images || !loaded || !applyText && !applyImages)
+        throw new Error("请等待工程读取或当前任务结束");
       setApplyingTestConfiguration(true);
       try {
-        if (textInfo.sourcePath) await text.applyTestConfiguration(preset.text);
-        if (preset.images && images) {
+        if (applyText && text) await text.applyTestConfiguration(preset.text);
+        if (applyImages && preset.images && images) {
           try { await images.applyTestConfiguration(preset.images); }
-          catch (error) { throw new Error(`文本测试配置已保存，图片配置保存失败：${error instanceof Error ? error.message : String(error)}`); }
+          catch (error) {
+            if (applyText) throw new Error(`文本测试配置已保存，图片配置保存失败：${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+          }
         }
         appendLog("已应用测试配置", "success");
       } finally { setApplyingTestConfiguration(false); }

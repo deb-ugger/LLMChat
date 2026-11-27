@@ -2,7 +2,7 @@ import { useLayoutEffect } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { GameTestConfiguration, GameTestConfigurationAccess, SavedGameTestConfiguration } from "./gameModelPreset";
+import type { GameTestConfiguration, GameTestConfigurationAccess, GameTestConfigurationPart, SavedGameTestConfiguration } from "./gameModelPreset";
 
 export type GameAuxKind = "help" | "configuration" | "benchmark-review";
 export type GameHelpSetup = { kind: "help"; mode: "unity-offline" | "unity-runtime" | "embedded"; supportsImages: boolean };
@@ -16,7 +16,7 @@ export type GameAuxOpenSetup = GameHelpSetup | GameConfigurationSetup | GameBenc
 export type GameAuxSetup = GameAuxOpenSetup & { session: string };
 export type GameAuxRequest = { action: "setup"; kind: GameAuxKind } |
   { action: "open-benchmark-review"; setup: GameBenchmarkReviewSetup } |
-  { action: "capture"; session: string } | { action: "apply"; session: string; row: SavedGameTestConfiguration };
+  { action: "capture"; session: string } | { action: "apply"; session: string; row: SavedGameTestConfiguration; part?: GameTestConfigurationPart };
 
 export const gameAuxOpenEvent = "llmchat:open-game-aux";
 export const gameAuxChannel = "llmchat:game-auxiliary";

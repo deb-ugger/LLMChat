@@ -31,8 +31,9 @@ export type GameTestImageOptions = {
   };
 };
 export type GameTestConfiguration = { text: GameTestPart<GameTestTextOptions>; images?: GameTestPart<GameTestImageOptions>; detectedSource?: string };
+export type GameTestConfigurationPart = "text" | "images";
 export type GameTestConfigurationAccess = {
-  scope: string; models: string[]; capture: () => GameTestConfiguration; apply: (value: GameTestConfiguration) => Promise<void>;
+  scope: string; models: string[]; capture: () => GameTestConfiguration; apply: (value: GameTestConfiguration, part?: GameTestConfigurationPart) => Promise<void>;
 };
 export type SavedGameTestConfiguration = { id: string; name: string; value: GameTestConfiguration };
 export const DEFAULT_GAME_TEST_CONFIGURATION_ID = "builtin:default";
@@ -85,16 +86,19 @@ export function listGameTestOllamaModels() {
   return api.listOllamaModels(localStorage.getItem("llmchat-ollama-directory") || "", gameOllamaEndpoint());
 }
 
-export async function prepareGameTestModels(value: GameTestConfiguration, available: string[]) {
-  const text = value.text;
-  const images = value.images;
-  const roles = [text.roles.textScreen];
-  if (text.options.kind !== "engine") roles.push(text.roles.text, text.roles.dialogue, text.roles.names);
-  if (text.options.joinLines && text.options.wrapMode !== "natural" && text.options.lineMode === "model") roles.push(text.roles.line);
+export async function prepareGameTestModels(value: GameTestConfiguration, available: string[], part?: GameTestConfigurationPart) {
+  const text = part === "images" ? undefined : value.text;
+  const images = part === "text" ? undefined : value.images;
+  const roles: (GameTestRole | undefined)[] = [];
+  if (text) {
+    roles.push(text.roles.textScreen);
+    if (text.options.kind !== "engine") roles.push(text.roles.text, text.roles.dialogue, text.roles.names);
+    if (text.options.joinLines && text.options.wrapMode !== "natural" && text.options.lineMode === "model") roles.push(text.roles.line);
+  }
   if (images) {
     roles.push(images.roles.screen, images.roles.recognize, images.roles.layout);
     if (images.options.refine?.method === "llm") roles.push(images.roles.refine);
-    const modelTranslation = (images.options.translation?.kind ?? text.options.kind) !== "engine";
+    const modelTranslation = (images.options.translation?.kind ?? value.text.options.kind) !== "engine";
     if (modelTranslation) roles.push(images.roles.image);
     if (modelTranslation || images.options.translation) roles.push(images.roles.review);
   }

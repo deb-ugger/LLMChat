@@ -1100,13 +1100,15 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         roles: captureGameTestRoles({ screen: imageScreeningOptions.filterModel, refine: imageRefineModel, recognize: imageVisionModel, image: imageModel, review: imageReviewModel, layout: imageLayoutModel }, promptState,
           { screen: imageScreeningOptions.filterModel, refine: imageRefineModel, recognize: imageVisionModel, image: imageModel || settings.model, review: imageReviewModel, layout: imageLayoutModel }) },
     }),
-    apply: async preset => {
+    apply: async (preset, part) => {
       const current = latest.current;
       if (testConfigurationDisabled || !current || running.current || imageEditorWork.current) throw new Error("请先完成工程读取或等待当前任务结束");
       setApplyingTestConfiguration(true);
       try {
-        const { options, roles } = preset.text;
-        const images = preset.images;
+        const applyText = part !== "images";
+        const { options, roles } = (applyText ? preset : testConfigurations.capture()).text;
+        const images = part === "text" ? undefined : preset.images;
+        if (part === "images" && !images) throw new Error("配置单中没有图片翻译部分");
         const next = {
           translationKind: options.kind, source: options.source, target: options.target, joinLines: options.joinLines,
           wrapMode: options.wrapMode || (options.joinLines ? "join" as const : "keep" as const), lineMode: options.lineMode || "local" as const,
@@ -1133,21 +1135,25 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           checkpointRef.current = previous; setCheckpoint(previous); setGeneration(previous?.progress ?? null);
           throw error;
         }
-        setTranslationKind(next.translationKind); setLlmModel(next.llmModel); setDialogueModel(next.dialogueModel); setNameModel(next.nameModel);
-        setSource(next.source); setTarget(next.target); setOnlySourceLanguage(next.onlySourceLanguage); setSkipTargetLanguage(next.skipTargetLanguage);
-        setTextScreenModel(next.textScreenModel); setIncludeContext(next.includeContext); setEngineChoices(next.engines);
-        setWrapMode(next.wrapMode); setJoinLines(next.joinLines); setLineMode(next.lineMode); setLineModel(next.lineModel);
-        setImageModel(next.imageModel); setImageReviewModel(next.imageReviewModel); setImageVisionModel(next.imageVisionModel); setImageLayoutModel(next.imageLayoutModel);
-        setImageOcrMode(next.imageOcrMode); setImageConcurrency(next.imageConcurrency); setImageConfidenceThreshold(next.imageConfidenceThreshold);
-        setImageScreeningOptions(next.imageScreeningOptions);
-        setImageRedrawProfile(next.imageRedrawProfile);
+        if (applyText) {
+          setTranslationKind(next.translationKind); setLlmModel(next.llmModel); setDialogueModel(next.dialogueModel); setNameModel(next.nameModel);
+          setSource(next.source); setTarget(next.target); setOnlySourceLanguage(next.onlySourceLanguage); setSkipTargetLanguage(next.skipTargetLanguage);
+          setTextScreenModel(next.textScreenModel); setIncludeContext(next.includeContext); setEngineChoices(next.engines);
+          setWrapMode(next.wrapMode); setJoinLines(next.joinLines); setLineMode(next.lineMode); setLineModel(next.lineModel);
+          const main = next.llmModel || settings.model;
+          applyGameTestRoles(roles, promptState, { text: main, dialogue: next.dialogueModel || main, names: next.nameModel || main, line: next.lineModel || settings.model });
+        }
+        if (images) {
+          setImageModel(next.imageModel); setImageReviewModel(next.imageReviewModel); setImageVisionModel(next.imageVisionModel); setImageLayoutModel(next.imageLayoutModel);
+          setImageOcrMode(next.imageOcrMode); setImageConcurrency(next.imageConcurrency); setImageConfidenceThreshold(next.imageConfidenceThreshold);
+          setImageScreeningOptions(next.imageScreeningOptions);
+          setImageRedrawProfile(next.imageRedrawProfile);
+          applyGameTestRoles(images.roles, promptState, { image: next.imageModel || settings.model });
+        }
         if (images?.options.translation) changePicture(images.options.translation);
         if (images?.options.mosaic) saveMosaicSettings(root, images.options.mosaic);
-        const main = next.llmModel || settings.model;
-        applyGameTestRoles(roles, promptState, { text: main, dialogue: next.dialogueModel || main, names: next.nameModel || main, line: next.lineModel || settings.model });
-        if (images) applyGameTestRoles(images.roles, promptState, { image: next.imageModel || settings.model });
         setConfigurationRevision(value => value + 1);
-        logAction("已应用文本和图片测试配置", "success");
+        logAction(part ? `已应用${part === "text" ? "文本翻译" : "图片翻译"}测试配置` : "已应用全部测试配置", "success");
       } finally { setApplyingTestConfiguration(false); }
     },
   };

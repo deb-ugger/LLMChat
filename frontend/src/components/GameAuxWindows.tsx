@@ -63,10 +63,10 @@ export function GameAuxiliaryHost() {
       if (applying) throw new Error("正在应用测试配置");
       applying = true;
       try {
-        await prepareGameTestModels(request.row.value, source.models);
+        await prepareGameTestModels(request.row.value, source.models, request.part);
         if (sessions.configuration?.session !== request.session) throw new Error("配置窗口的游戏工程已切换");
-        await gameTestSource(setup.scope).apply(request.row.value);
-        showAppNotice(`已应用「${request.row.name}」`);
+        await gameTestSource(setup.scope).apply(request.row.value, request.part);
+        showAppNotice(`已应用「${request.row.name}」${request.part ? `的${request.part === "text" ? "文本翻译" : "图片翻译"}部分` : "的全部配置"}`);
       } finally { applying = false; }
     };
     let active = true;
@@ -114,6 +114,6 @@ export function GameAuxiliaryWindow({ kind }: { kind: GameAuxKind }) {
       : setup.kind === "benchmark-review" ? <BenchmarkReviewWindow key={setup.session} setup={setup} onClose={close} />
       : <GameTestConfigurations key={setup.session} setup={setup}
         capture={() => requestGameAux<GameTestConfiguration>(channel, { action: "capture", session: setup.session })}
-        onApply={row => requestGameAux<void>(channel, { action: "apply", session: setup.session, row }, 120000)} onClose={close} />}
+        onApply={(row, part) => requestGameAux<void>(channel, { action: "apply", session: setup.session, row, part }, 120000)} onClose={close} />}
   </AuxiliaryWindowChrome>;
 }
