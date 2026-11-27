@@ -84,6 +84,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const [options, setOptions] = useState<GameTextOptions>({ kind: "llm", model: "", source: "auto", target: "zh-CN", joinLines: true, skipTargetLanguage: true, onlySourceLanguage: true });
   const [engines, setEngines] = useState(() => loadGameWorkflowEngines(promptState.scope)), [expanded, setExpanded] = useState(false);
   const [running, setRunning] = useState(false), [loading, setLoading] = useState(false), [saving, setSaving] = useState(false), [dirty, setDirty] = useState(false);
+  const [importingFile, setImportingFile] = useState(false);
   const latestOptions = useRef(options);
   latestOptions.current = options;
   const configurationCommit = useRef<GameStepConfigurationCommit | null>(null);
@@ -606,7 +607,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const importFile = async (file: GameImportSource, mode = importMode) => {
     const importing = current.current;
     if (!importing) return;
-    setSaving(true);
+    setSaving(true); setImportingFile(true);
     try {
       const contents = new TextDecoder("utf-8", { fatal: true }).decode(typeof file === "string" ? await readFileBytes(file) : await file.arrayBuffer());
       if (current.current !== importing) throw new Error("工程已更新，请重新导入");
@@ -627,7 +628,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (value.audit.filePartiallyUsed) parts.push("文件部分应用 " + value.audit.filePartiallyUsed + " 条");
       parts.push("文件未使用 " + value.audit.fileUnused + " / " + value.audit.fileTotal + " 条", "工程缺译 " + value.audit.missingEntries.length + " 条");
       report(parts.join("，") + (value.changed ? "，请保存修改" : ""), value.issues.length ? "error" : value.audit.fileUnused || value.audit.partialEntries.length ? "warning" : "success");
-    } finally { setSaving(false); }
+    } finally { setSaving(false); setImportingFile(false); }
   };
   const downloadImportReport = async () => {
     if (!importReport) return;
@@ -637,7 +638,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     } catch (error) { report(String(error), "error"); }
   };
   const root = useRef<HTMLElement>(null);
-  const drop = useGameFileDrop({ root, active: active && visible && !busy, busy: saving, match: (_target, names) => names.length === 1 && /\.(json|csv)$/i.test(names[0]) ? root.current : null, label: () => "松开以导入翻译文件", drop: async file => { if (await leave()) await importFile(file); }, error: text => report(text, "error") });
+  const drop = useGameFileDrop({ root, active: active && visible && !busy, busy: importingFile, match: (_target, names) => names.length === 1 && /\.(json|csv)$/i.test(names[0]) ? root.current : null, label: () => "松开以导入翻译文件", drop: async file => { if (await leave()) await importFile(file); }, error: text => report(text, "error") });
   const pickImport = async (mode: "fill"|"replace") => { try { if (!await leave()) return; setImportMode(mode); const path = await open({ defaultPath: gamePath, multiple: false, filters: [{ name: "翻译文件", extensions: ["json", "csv"] }] }); if (typeof path === "string") await importFile(path,mode); } catch (error) { report(String(error), "error"); } };
   const download = async (range:"all"|"filtered") => { try { const path = await saveOutputFile("游戏译文.json", new TextEncoder().encode(JSON.stringify(gameTextDictionary(range==="all"?entries:filtered, true, options.target), null, 2)), ["json"], "MTool JSON", "text", gamePath); if (path) report("译文已导出", "success"); } catch (error) { report(String(error), "error"); } };
   const qualityCache = useMemo(() => new WeakMap<UnityEntry, { translation: string; warnings: string[] }>(), [options.target]);
