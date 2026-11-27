@@ -542,6 +542,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       if (value.reassembled) parts.push("重组或还原控制符 " + value.reassembled + " 条");
       if (value.fragmentMatched) parts.push("其中按参数片段匹配 " + value.fragmentMatched + " 条");
       if (value.issues.length) parts.push(value.issues.length + " 条未通过，详情见「批量结果」");
+      if (value.audit.filePartiallyUsed) parts.push("文件部分应用 " + value.audit.filePartiallyUsed + " 条");
       parts.push("文件未使用 " + value.audit.fileUnused + " / " + value.audit.fileTotal + " 条", "工程缺译 " + value.audit.missingEntries.length + " 条");
       report(parts.join("，") + (value.changed ? "，请保存修改" : ""), value.issues.length ? "error" : value.audit.fileUnused ? "warning" : "success");
     } finally { setSaving(false); }
@@ -777,7 +778,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           onLimitChange={limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); }}
           onChange={value => { void changeView(() => { setTextFilters(value); setFilter("all"); }); }} /></div><div className="unity-result-tools"><input type="search" placeholder="搜索" aria-label="搜索原文和译文" value={search} onChange={event => { const value = event.target.value; void changeView(() => setSearch(value)); }} /><button className="unity-btn unity-text-discard" disabled={!dirty || busy} onClick={async () => { if (await confirm("取消尚未保存的文本修改？", { title: "取消修改", kind: "warning", okLabel: "取消修改", cancelLabel: "返回" })) discard(); }}>取消修改</button><button className={"unity-btn" + (!busy && dirty && project?.sourcePath ? " is-primary" : "")} disabled={busy || !dirty || !project?.sourcePath} onClick={() => void save()}>保存</button></div></div>
     {importReport && <div className="game-import-report" role="status">
-      <div><span>本次导入：已应用 {importReport.changed} 条</span><span>文件未使用 {importReport.fileUnused} / {importReport.fileTotal} 条</span><span>工程缺译 {importReport.missingEntries.length} / {importReport.projectTotal} 条</span><button className="unity-btn" onClick={() => void downloadImportReport()}>导出导入明细</button></div>
+      <div><span>本次导入：已应用 {importReport.changed} 条</span><span>文件未使用 {importReport.fileUnused} / {importReport.fileTotal} 条</span>{!!importReport.filePartiallyUsed && <span>文件部分应用 {importReport.filePartiallyUsed} 条</span>}<span>工程缺译 {importReport.missingEntries.length} / {importReport.projectTotal} 条</span><button className="unity-btn" onClick={() => void downloadImportReport()}>导出导入明细</button></div>
       <small>明细包含每条文件译文的应用状态、对应条目、未应用原因和工程缺译清单。</small>
       {!!importIssues.length && <p className="game-import-errors">{importIssues.length} 条未通过：{importIssues.slice(0, 3).map(issue => `#${issue.id} ${issue.reason}`).join("；")}。完整失败项见「批量结果」。</p>}
     </div>}
