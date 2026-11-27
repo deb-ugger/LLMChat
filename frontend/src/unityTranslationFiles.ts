@@ -13,7 +13,7 @@ export class UnityTranslationImportError extends Error {
 }
 const kind = "llmchat-unity-translations";
 export type UnityTranslationImportMode = "fill" | "replace";
-type ImportOptions = { mode?: UnityTranslationImportMode; allowClear?: boolean };
+type ImportOptions = { mode?: UnityTranslationImportMode; allowClear?: boolean; partial?: boolean };
 
 export function unityTranslationFileName(gameExe: string, gameDir: string) {
   const name = (gameExe.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") || gameDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "游戏")
@@ -132,13 +132,13 @@ export function applyUnityTranslationRows(entries: UnityEntry[], rows: Translati
     if (mode === "fill" && (entry.translation.trim() || entry.layoutDraft?.trim())) { preservedExisting++; return entry; }
     const problem = translation ? validate(entry.source, translation) : "";
     if (problem) { issues.push({ id: entry.id, source: entry.source, translation, reason: problem }); return entry; }
-    if (translation === entry.translation && !(translation === "" && entry.layoutDraft)) return entry;
+    if (translation === entry.translation && !entry.error && !(translation === "" && entry.layoutDraft)) return entry;
     changed++;
     if (!translation.trim()) cleared++;
     return { ...entry, translation, error: "", layoutDraft: undefined };
   });
-  if (issues.length) throw new UnityTranslationImportError(issues, rows.length);
-  return { entries: next, matched: replacements.size, changed, cleared, skippedEmpty, preservedExisting, unchanged: replacements.size - changed, remaining: entries.length - replacements.size };
+  if (issues.length && !options.partial) throw new UnityTranslationImportError(issues, rows.length);
+  return { entries: next, matched: replacements.size, changed, cleared, skippedEmpty, preservedExisting, issues, unchanged: replacements.size - changed - issues.length, remaining: entries.length - replacements.size };
 }
 
 export function importUnityTranslations(entries: UnityEntry[], contents: string, csv: boolean, validate: (source: string, translation: string) => string, options: ImportOptions = {}) {

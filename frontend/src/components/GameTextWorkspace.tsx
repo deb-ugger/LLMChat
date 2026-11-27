@@ -32,7 +32,7 @@ import { api, type Settings, type TranslateProvider } from "../api";
 import { loadLocalModelProfiles } from "../modelPresets";
 import { readFileBytes } from "../localDocFile";
 import { saveOutputFile } from "../outputFiles";
-import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions } from "../gameTextProject";
+import { gameTextRequest, gameTextProblem as validateGameText, createGameTextValidator, gameTextDictionary, importGameText, translateGameControls, isTextSelectionScreened, restoreGameTextState, sameTextEdit, hasMessageCoreNameOverride, dialogueRepairLabels, repairMessageCoreNameLineBreak, repairMessageCorePositionPrefix, type GameTextProject, type GameTextOptions, type GameTextImportAudit } from "../gameTextProject";
 import { translateUnitySession, unityTranslationStats, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
 import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest, prepareUnityTranslationText, restoreUnityTranslationLines, UNITY_LANGUAGES } from "../unityTranslation";
 import { unityTranslationQuality } from "../unityTranslationQuality";
@@ -81,9 +81,9 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
       baseline.current.workflow = { screened: false };
     }
   }, [loading, options.source, options.target, options.skipTargetLanguage, options.onlySourceLanguage]);
-  const [importPreview, setImportPreview] = useState<{ project: GameTextProject; rows: UnityEntry[]; page: number }>();
+  const [importReport, setImportReport] = useState<GameTextImportAudit>();
   const [importIssues, setImportIssues] = useState<{ id: string; reason: string }[]>([]);
-  useEffect(() => setImportIssues([]), [gamePath, sourcePath]);
+  useEffect(() => { setImportIssues([]); setImportReport(undefined); }, [gamePath, sourcePath]);
   const [progressFailure, setProgressFailure] = useState("");
   const [state, setState] = useState("idle"), [progress, setProgress] = useState<UnityProgress | null>(null);
   const [search, setSearch] = useState(""), [filter, setFilter] = useState("all"), [page, setPage] = useState(0), [importMode, setImportMode] = useState<"fill" | "replace">("fill");
@@ -168,7 +168,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     if (!onBatchFailures) return;
     const issues = new Map(importIssues.map(issue => [issue.id, issue.reason]));
     onBatchFailures(project?.entries.flatMap((entry): BatchRow[] => {
-      const reason = entry.error || (!entry.translation.trim() && issues.get(entry.id));
+      const reason = entry.error || issues.get(entry.id);
       return reason ? [{ id: entry.id, label: "#" + entry.id, detail: reason, kind: "text" }] : [];
     }) || []);
   }, [project?.entries, importIssues, onBatchFailures]);
@@ -271,6 +271,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
   const editEntries = (ids: ReadonlySet<string>, patch: Partial<UnityEntry>) => {
     const project = current.current;
     if (!project) return;
+    if (patch.translation !== undefined) setImportIssues(previous => previous.filter(issue => !ids.has(issue.id)));
     const saved = new Map(baseline.current?.entries.map(entry => [entry.id, entry]));
     const entries = project.entries.map(entry => {
       if (!ids.has(entry.id)) return entry;
@@ -524,31 +525,32 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     work.current = task(); return await work.current;
   };
   const importFile = async (file: GameImportSource, mode = importMode) => {
-    if (!current.current) return;
-    const contents = new TextDecoder("utf-8", { fatal: true }).decode(typeof file === "string" ? await readFileBytes(file) : await file.arrayBuffer());
-    const value = importGameText(current.current.entries, contents, /\.csv$/i.test(typeof file === "string" ? file : file.name), mode, messageCore);
-    setImportIssues(value.reassemblyIssues);
-    if (value.changed) {
-      const previous = new Map(current.current.entries.map(entry => [entry.id, entry.translation]));
-      for (const entry of value.entries) if (entry.translation !== previous.get(entry.id)) entry.translationTarget = options.target;
-      const rows = value.entries.filter(entry => entry.translation !== previous.get(entry.id));
-      setImportPreview({ project: current.current, rows, page: 0 });
-    }
-    const parts = ["导入 " + value.changed + " 条译文"];
-    if (value.reassembled) parts.push("按原换行重组 " + value.reassembled + " 条");
-    if (value.reassemblyIssues.length) parts.push(value.reassemblyIssues.length + " 条重组失败，详情见「批量结果」");
-    if (value.unmatched) parts.push(value.unmatched + " 条导入原文未匹配");
-    report(parts.join("，") + (value.changed ? "，请检查导入预览" : ""), value.unmatched || value.reassemblyIssues.length ? "warning" : "success");
+    const importing = current.current;
+    if (!importing) return;
+    setSaving(true);
+    try {
+      const contents = new TextDecoder("utf-8", { fatal: true }).decode(typeof file === "string" ? await readFileBytes(file) : await file.arrayBuffer());
+      if (current.current !== importing) throw new Error("工程已更新，请重新导入");
+      const value = importGameText(importing.entries, contents, /\.csv$/i.test(typeof file === "string" ? file : file.name), mode, messageCore);
+      setImportIssues(value.issues); setImportReport(value.audit);
+      if (value.changed) {
+        const previous = new Map(importing.entries.map(entry => [entry.id, entry]));
+        const entries = value.entries.map(entry => entry !== previous.get(entry.id) ? { ...entry, translationTarget: entry.translation ? options.target : undefined } : entry);
+        publish({ ...importing, entries }); setDirty(true); setState("idle");
+      }
+      const parts = ["已应用 " + value.changed + " 条译文"];
+      if (value.reassembled) parts.push("重组或还原控制符 " + value.reassembled + " 条");
+      if (value.issues.length) parts.push(value.issues.length + " 条未通过，详情见「批量结果」");
+      parts.push("文件未使用 " + value.audit.fileUnused + " / " + value.audit.fileTotal + " 条", "工程缺译 " + value.audit.missingEntries.length + " 条");
+      report(parts.join("，") + (value.changed ? "，请保存修改" : ""), value.issues.length ? "error" : value.audit.fileUnused ? "warning" : "success");
+    } finally { setSaving(false); }
   };
-  const finishImport = () => {
-    if (!importPreview || !current.current || current.current !== importPreview.project) {
-      setImportPreview(undefined); showAppNotice("工程已更新，请重新导入", "error"); return;
-    }
-    const errors = importPreview.rows.filter(entry => entry.translation && gameTextProblem(entry.source, entry.translation));
-    if (errors.length) { showAppNotice(`还有 ${errors.length} 条译文需要校验`, "error"); return; }
-    const changes = new Map(importPreview.rows.map(entry => [entry.id, { ...entry, error: "" }]));
-    publish({ ...current.current, entries: current.current.entries.map(entry => changes.get(entry.id) || entry) });
-    setDirty(true); setState("idle"); setImportPreview(undefined);
+  const downloadImportReport = async () => {
+    if (!importReport) return;
+    try {
+      const path = await saveOutputFile("译文导入明细.json", new TextEncoder().encode(JSON.stringify(importReport, null, 2)), ["json"], "导入明细", "text", gamePath);
+      if (path) report("导入明细已导出", "success");
+    } catch (error) { report(String(error), "error"); }
   };
   const root = useRef<HTMLElement>(null);
   const drop = useGameFileDrop({ root, active: active && visible && !busy, busy: saving, match: (_target, names) => names.length === 1 && /\.(json|csv)$/i.test(names[0]) ? root.current : null, label: () => "松开以导入翻译文件", drop: async file => { if (await leave()) await importFile(file); }, error: text => report(text, "error") });
@@ -709,10 +711,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     {progress && (!screeningProgress || progress.textStage === "screening") && <UnityTranslationProgress progress={progress} running={running || state === "screening"} failure={state === "error" ? progressFailure : undefined} onLocate={locateEntry} />}
     {!progress && state === "error" && progressFailure && <p className="game-text-progress-failure" role="alert">{progressFailure}</p>}
   </>;
-  return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{active && visible && importPreview && createPortal(<div className="game-import-backdrop"><section role="dialog" aria-modal="true" aria-label="导入预览" className="game-import-dialog">
-      <header><strong>导入预览 · {importPreview.rows.length} 条</strong><button type="button" className="unity-btn" onClick={()=>setImportPreview(undefined)}>取消</button></header>
-      <div className="game-import-rows">{importPreview.rows.slice(importPreview.page*40,importPreview.page*40+40).map(entry=><label key={entry.id}><span>#{entry.id} · {entry.source}</span><textarea value={entry.translation} onChange={event=>{const translation=event.target.value;setImportPreview({...importPreview,rows:importPreview.rows.map(row=>row.id===entry.id?{...row,translation}:row)});}}/><small>{entry.translation && gameTextProblem(entry.source, entry.translation)}</small></label>)}</div>
-      <footer><button className="unity-btn" disabled={!importPreview.page} onClick={()=>setImportPreview({...importPreview,page:importPreview.page-1})}>上一页</button><span>{importPreview.page+1} / {Math.ceil(importPreview.rows.length/40)}</span><button className="unity-btn" disabled={(importPreview.page+1)*40>=importPreview.rows.length} onClick={()=>setImportPreview({...importPreview,page:importPreview.page+1})}>下一页</button><button className="unity-btn unity-btn-primary" onClick={finishImport}>校验并应用</button></footer></section></div>, document.body)}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}><div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
+  return <>{active && visible && loading && openedGame.current !== gamePath && <UnityProjectLoading project={gamePath.split(/[\\/]/).filter(Boolean).at(-1) || "游戏工程"} path={gamePath} detail="正在读取文本、译文和处理进度…"/>}{confirmation.dialog}{closingPhase&&<ClosingProgress phase={closingPhase}/>}{drop.overlay}{controls && createPortal(<div className="engine-workflow-content" hidden={!visible || step !== 2}><div className="unity-step-panel"><GamePromptContext.Provider value={promptState}><GameFlowSequence runningParameters={[
       { scope: "config", label: "原文语言", value: UNITY_LANGUAGES.find(language => language.value === options.source)?.label ?? "自动检测" },
       { scope: "config", label: "目标语言", value: UNITY_LANGUAGES.find(language => language.value === options.target)?.label ?? options.target },
       { scope: "config", label: "仅翻译原语言", value: options.onlySourceLanguage !== false ? "开启" : "关闭" },
@@ -776,6 +775,11 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
     ]} onSelect={range=>void download(range)}/><GameTextFileMenu kind="import" active={active&&visible} disabled={busy||!entries.length} options={GAME_TEXT_IMPORT_CHOICES} onSelect={mode=>void pickImport(mode)}/><GameTextFilterMenu active={active && visible} value={textFilters} matched={matched.length} shown={filtered.length}
           onLimitChange={limit => { setTextFilters(previous => ({ ...previous, limit })); setPage(0); }}
           onChange={value => { void changeView(() => { setTextFilters(value); setFilter("all"); }); }} /></div><div className="unity-result-tools"><input type="search" placeholder="搜索" aria-label="搜索原文和译文" value={search} onChange={event => { const value = event.target.value; void changeView(() => setSearch(value)); }} /><button className="unity-btn unity-text-discard" disabled={!dirty || busy} onClick={async () => { if (await confirm("取消尚未保存的文本修改？", { title: "取消修改", kind: "warning", okLabel: "取消修改", cancelLabel: "返回" })) discard(); }}>取消修改</button><button className={"unity-btn" + (!busy && dirty && project?.sourcePath ? " is-primary" : "")} disabled={busy || !dirty || !project?.sourcePath} onClick={() => void save()}>保存</button></div></div>
+    {importReport && <div className="game-import-report" role="status">
+      <div><span>本次导入：已应用 {importReport.changed} 条</span><span>文件未使用 {importReport.fileUnused} / {importReport.fileTotal} 条</span><span>工程缺译 {importReport.missingEntries.length} / {importReport.projectTotal} 条</span><button className="unity-btn" onClick={() => void downloadImportReport()}>导出导入明细</button></div>
+      <small>明细包含每条文件译文的应用状态、对应条目、未应用原因和工程缺译清单。</small>
+      {!!importIssues.length && <p className="game-import-errors">{importIssues.length} 条未通过：{importIssues.slice(0, 3).map(issue => `#${issue.id} ${issue.reason}`).join("；")}。完整失败项见「批量结果」。</p>}
+    </div>}
     {loading ? <div className="unity-offline-empty">正在读取文本工程…</div> : !entries.length ? <div className="unity-offline-empty">请先在步骤 1 扫描资源</div> : <><div className="unity-offline-table-scroll"><table ref={tableRef} className="unity-offline-table"><colgroup><col style={{ width: 32 }} /><col style={{ width: 125 }} /><col /><col /></colgroup><thead><tr><th><input type="checkbox" aria-label="勾选当前筛选结果"
         data-tooltip="仅勾选或取消当前筛选结果，包含其他分页。" disabled={busy || !filtered.length}
         checked={filtered.length > 0 && checkedCount === filtered.length}
