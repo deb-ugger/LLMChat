@@ -565,15 +565,4 @@
   cursor: pointer;
 }
 .dpl-launch-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); color: var(--text-muted); }
-.embed-deploy-path {
-  margin: 0 0 var(--panel-gap);
-  padding: 7px 10px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  font: var(--fs-caption) var(--mono);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .embed-deploy-maintenance { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-3); }

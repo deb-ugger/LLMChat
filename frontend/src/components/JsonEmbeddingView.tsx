@@ -917,7 +917,6 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
           </div>
         </section>}
       </div>} /></div>
-    <div className="embed-deploy-path" title={game.path}>{game.path || "尚未选择游戏目录"}</div>
     <div className="embed-deploy-maintenance">{(canUseTextResources || imageProject) && backupPanel}{restorePanel}</div>
   </div>;
 
