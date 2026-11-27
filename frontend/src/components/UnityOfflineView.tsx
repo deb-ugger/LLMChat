@@ -809,6 +809,8 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     };
   }
   async function scan(onProgress?: (value: UnityProgress) => void, signal?: AbortSignal, run?: RunCheckpoint, deploymentBatch?: string) {
+    signal?.throwIfAborted();
+    logAction(`游戏目录：${root}`, "info", "扫描资源");
     const p = await measureDeploymentStage(root, "scan",
       () => unityRun<UnityProject>("scan", { root, outputRoot: output, includeCode: run?.includeCode ?? includeCode, textMode: run?.textMode || textMode, codeAssemblies: run?.codeAssemblies ?? codeAssemblies, typeDirectory: run?.typeDirectory ?? typeDirectory, path: run?.scanFolder || "", reusePath: run?.previousProjectFolder || "", deploymentBatch }, onProgress, signal),
       scanned => scanned.scanMetrics ? scanned.scanMetrics.parsed + scanned.scanMetrics.reused : undefined);

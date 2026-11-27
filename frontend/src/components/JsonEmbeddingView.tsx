@@ -415,6 +415,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
       if (imageProject && !await imageHandle.current?.prepare()) return;
     }
     if (isBenchmarkRunning()) return;
+    if (action === "extract") appendLog(`游戏目录：${game.path}`, "info", "扫描资源");
     if (action === "extract" && !canUseTextResources && imageProject) {
       setPart("images"); setTextStep(2); setImageScanRequest(value=>value+1);
       return;
@@ -458,6 +459,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   const runTextAction = async (action: "extract" | "inspect" | "embed" | "apply", signal: AbortSignal, jsonPath = "") => {
     signal.throwIfAborted();
+    if (action === "extract") appendLog(`游戏目录：${game.path}`, "info", "扫描资源");
     try {
       let value = await call<Status>("start", { action, gamePath: game.path, jsonPath, fontPath, backupMode, backupScopes });
       setStatus(value);
