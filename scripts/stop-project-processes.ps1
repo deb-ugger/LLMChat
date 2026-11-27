@@ -27,6 +27,13 @@ public static class LlmChatBuildWindow {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetEvent(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     public static string RequestClose(IntPtr window, uint expectedProcessId) {
+        uint owner;
+        bool ownedWindow = window != IntPtr.Zero && GetWindowThreadProcessId(window, out owner) != 0 && owner == expectedProcessId;
+        if (ownedWindow) {
+            if (IsIconic(window)) ShowWindowAsync(window, 9);
+            var popup = GetLastActivePopup(window);
+            SetForegroundWindow(popup != IntPtr.Zero && IsWindowVisible(popup) ? popup : window);
+        }
         const uint EVENT_MODIFY_STATE = 0x0002;
         var signal = OpenEventW(EVENT_MODIFY_STATE, false, "Local\\LLMChat.Close." + expectedProcessId);
         if (signal != IntPtr.Zero) {
@@ -36,13 +43,7 @@ public static class LlmChatBuildWindow {
             } finally { CloseHandle(signal); }
         }
         if (window == IntPtr.Zero) return "application close channel unavailable; no main window";
-        uint owner;
-        if (GetWindowThreadProcessId(window, out owner) == 0 || owner != expectedProcessId)
-            return "window unavailable";
-
-        if (IsIconic(window)) ShowWindowAsync(window, 9);
-        var popup = GetLastActivePopup(window);
-        SetForegroundWindow(popup != IntPtr.Zero && IsWindowVisible(popup) ? popup : window);
+        if (!ownedWindow) return "window unavailable";
         // Existing binaries without the application channel use the standard
         // title-bar command. Queueing it is not proof the app started shutdown.
         const uint WM_SYSCOMMAND = 0x0112;

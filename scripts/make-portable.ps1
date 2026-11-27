@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$BackendOnly, [switch]$Distribution)
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +21,7 @@ function Stop-PortableProcesses {
     . (Join-Path $PSScriptRoot 'stop-project-processes.ps1')
     $paths = @('llmchat.exe','llmchat-backend.exe','llmchat-backend-x86_64-pc-windows-msvc.exe') |
         ForEach-Object { Join-Path $out $_ }
-    Stop-ProjectProcesses -ExecutablePaths $paths -CloseTimeoutSeconds 20
+    Stop-ProjectProcesses -ExecutablePaths $paths -CloseTimeoutSeconds 60
 }
 
 function Publish-PortableBackend([string]$Source) {
