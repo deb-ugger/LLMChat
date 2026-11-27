@@ -41,7 +41,7 @@ function openTermMemory(scope: string | undefined, target: string) {
 export async function prepareGameTerms(selected: UnityEntry[], references: UnityEntry[], target: string, glossary: string | Term[] | undefined,
   translate: (name: string, context: string) => Promise<string>, signal: AbortSignal, progress?: (detail: string, completed: number, total: number) => void, memoryScope?: string) {
   signal.throwIfAborted();
-  progress?.("正在从插件姓名框和游戏数据库收集术语", 0, selected.length);
+  progress?.("正在从插件姓名框和游戏数据库收集术语", 0, 0);
   const terms = new Map<string, string>();
   const issues = new Map<string, string>();
   const configured: Term[] = typeof glossary === "string" ? JSON.parse(glossary || "[]") : glossary || [];
@@ -111,13 +111,13 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   }
   const pending = [...requested].filter(([name]) => !terms.has(name) && !issues.has(name));
   const reusedNames = [...requested.keys()].filter(name => terms.has(name)).length;
-  progress?.(`术语去重完成：复用 ${reusedNames} 个已有译名，待确定 ${pending.length} 个新译名`, 0, pending.length);
-  let completedNames = 0;
+  const totalNames = requested.size;
+  let completedNames = reusedNames + issues.size;
+  progress?.(`术语共 ${totalNames} 个：复用 ${reusedNames} 个，待确定 ${pending.length} 个${issues.size ? `，冲突 ${issues.size} 个` : ""}`, completedNames, totalNames);
   for (let offset = 0; offset < pending.length; offset += 4) {
-    const settled = await Promise.allSettled(pending.slice(offset, offset + 4).map(async ([name, context], localIndex) => {
-      const index = offset + localIndex;
+    const settled = await Promise.allSettled(pending.slice(offset, offset + 4).map(async ([name, context]) => {
       signal.throwIfAborted();
-      progress?.(`正在确定术语 ${index + 1}/${pending.length}：${name}`, completedNames, pending.length);
+      progress?.(`正在确定术语：${name}`, completedNames, totalNames);
       let value: string;
       try {
         value = (await translate(name, context)).trim();
@@ -125,13 +125,13 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
       } catch (error) {
         signal.throwIfAborted();
         issues.set(name, `确定译名「${name}」失败：${error instanceof Error ? error.message : String(error)}`);
-        progress?.(`术语待处理：${name}`, ++completedNames, pending.length);
+        progress?.(`术语待处理：${name}`, ++completedNames, totalNames);
         return;
       }
       terms.set(name, value);
       memory.save(name, value);
       signal.throwIfAborted();
-      progress?.(`术语已确定：${name} → ${value}`, ++completedNames, pending.length);
+      progress?.(`术语已确定：${name} → ${value}`, ++completedNames, totalNames);
     }));
     signal.throwIfAborted();
     const failedWrite = settled.find(result => result.status === "rejected");

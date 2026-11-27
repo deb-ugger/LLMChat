@@ -575,7 +575,7 @@ export function GameTextWorkspace({ gamePath, settings, sourcePath, controls, re
           }, options.target, options.screeningModel === undefined ? sourceFilter : "auto", terminology, options.screeningModel === undefined && options.skipTargetLanguage !== false, preserveDialogueLines);
         };
         if (options.kind === "engine") pool = createUnityEnginePool(engines.filter(row => engineReady(parseEngineKeys(general.translateEngineKeys), row.id)), abort.signal, request, { timingScope: promptState.scope + ":text", onStats: value => { engineStats = value; if (currentProgress) setProgress({ ...currentProgress, engineStats }); } });
-        const preparedTerms = await prepareGameTerms(taskEntries.filter(entry => !entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || gameTextProblem(entry.source, entry.translation)), next.entries, options.target, general.textGlossary,
+        const preparedTerms = await prepareGameTerms(taskEntries, next.entries, options.target, general.textGlossary,
           (name, context) => options.kind !== "engine" ? request("llm", name, context) : pool!.translate(name), abort.signal,
           (detail, completed, total) => setProgress({ detail, completed, total, textStage: "names", model: options.kind !== "engine" ? options.nameModel || options.model : undefined }), gamePath);
         terminology = preparedTerms.terms;

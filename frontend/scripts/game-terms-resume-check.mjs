@@ -40,24 +40,61 @@ const references = [
 const scope = "E:/games/terms-resume";
 const aborted = new AbortController();
 const firstCalls = [];
+const firstProgress = [];
 await assert.rejects(terms.prepareGameTerms([row], references, "zh-CN", [], async name => {
   firstCalls.push(name);
   if (name === names[0]) return canonical.get(name);
   return new Promise((_, reject) => aborted.signal.addEventListener("abort", () => reject(aborted.signal.reason), { once: true }));
-}, aborted.signal, detail => { if (detail.startsWith("术语已确定：" + names[0])) aborted.abort(); }, scope), error => error.name === "AbortError");
+}, aborted.signal, (detail, completed, total) => {
+  firstProgress.push({ detail, completed, total });
+  if (detail.startsWith("术语已确定：" + names[0])) aborted.abort();
+}, scope), error => error.name === "AbortError");
 assert.equal(firstCalls.length, 3);
+assert.deepEqual([...new Set(firstProgress.filter(point => point.total).map(point => point.total))], [3]);
 assert.ok([...storage.values()].some(raw => JSON.parse(raw)[names[0]] === canonical.get(names[0])), "successful term is saved before aborting the stage");
 
 const resumedCalls = [];
-const resumed = await terms.prepareGameTerms([row], structuredClone(references), "zh-CN", [], async name => { resumedCalls.push(name); return canonical.get(name); }, new AbortController().signal, undefined, "e:\\games\\terms-resume\\");
+const resumedProgress = [];
+const resumed = await terms.prepareGameTerms([row], structuredClone(references), "zh-CN", [], async name => { resumedCalls.push(name); return canonical.get(name); }, new AbortController().signal,
+  (detail, completed, total) => resumedProgress.push({ detail, completed, total }), "e:\\games\\terms-resume\\");
 assert.deepEqual(new Set(resumedCalls), new Set(names.slice(1)));
 assert.equal(resumed.terms.get(names[0]), canonical.get(names[0]));
 assert.equal(resumed.issues.size, 0);
+assert.deepEqual([...new Set(resumedProgress.filter(point => point.total).map(point => point.total))], [3], "cached terms remain in the resumed total");
+assert.equal(resumedProgress.find(point => point.detail.startsWith("术语共")).completed, 1);
+assert.equal(resumedProgress.at(-1).completed, 3);
 const savedWrites = writes;
 let reopenedCalls = 0;
-await terms.prepareGameTerms([row], structuredClone(references), "zh-CN", [], async () => { reopenedCalls++; throw new Error("must reuse saved term"); }, new AbortController().signal, undefined, scope);
+const reopenedProgress = [];
+await terms.prepareGameTerms([{ ...row, translation: "\\nc<爱丽丝>使用炎之剑和冰之盾", translationTarget: "zh-CN" }], structuredClone(references), "zh-CN", [], async () => { reopenedCalls++; throw new Error("must reuse saved term"); }, new AbortController().signal,
+  (detail, completed, total) => reopenedProgress.push({ detail, completed, total }), scope);
 assert.equal(reopenedCalls, 0);
+assert.equal(reopenedProgress.at(-1).completed, 3);
+assert.equal(reopenedProgress.at(-1).total, 3, "fully reused and translated input still reports the complete term scope");
 assert.equal(writes, savedWrites, "unchanged cached terms do not rewrite storage");
+
+const repeatedScope = "E:/games/repeated-pauses";
+for (let index = 0; index < 2; index++) {
+  const controller = new AbortController();
+  const points = [];
+  await assert.rejects(terms.prepareGameTerms([row], references, "zh-CN", [], async name => {
+    if (name === names[index]) return canonical.get(name);
+    return new Promise((_, reject) => controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true }));
+  }, controller.signal, (detail, completed, total) => {
+    points.push({ detail, completed, total });
+    if (detail.startsWith("术语已确定：" + names[index])) controller.abort();
+  }, repeatedScope), error => error.name === "AbortError");
+  assert.deepEqual([...new Set(points.filter(point => point.total).map(point => point.total))], [3]);
+  assert.equal(points.find(point => point.detail.startsWith("术语共")).completed, index);
+}
+const finalCalls = [], finalPoints = [];
+await terms.prepareGameTerms([row], references, "zh-CN", [], async name => {
+  finalCalls.push(name); return canonical.get(name);
+}, new AbortController().signal, (detail, completed, total) => finalPoints.push({ detail, completed, total }), repeatedScope);
+assert.deepEqual(finalCalls, [names[2]], "two resumes request only the final unprocessed term");
+assert.equal(finalPoints.find(point => point.detail.startsWith("术语共")).completed, 2);
+assert.equal(finalPoints.at(-1).completed, 3);
+assert.equal(finalPoints.at(-1).total, 3);
 
 let otherGameCalls = 0;
 await terms.prepareGameTerms([row], references, "zh-CN", [], async name => { otherGameCalls++; return canonical.get(name); }, new AbortController().signal, undefined, "E:/games/another-game");
@@ -88,4 +125,4 @@ const originalSet = localStorage.setItem;
 localStorage.setItem = () => { throw new Error("quota exceeded"); };
 await assert.rejects(terms.prepareGameTerms([row], references, "zh-CN", [], async name => canonical.get(name), new AbortController().signal, undefined, "E:/games/cannot-save"), /保存工程术语缓存失败/);
 localStorage.setItem = originalSet;
-console.log("PASS partial Japanese residue classification, writable partial output, term abort/resume, reopen reuse, game/target isolation, glossary priority, manual references, failed-only retries and visible persistence errors");
+console.log("PASS stable totals across repeated term pauses, cached progress, completed input reuse, game/target isolation, failed-only retries, visible persistence errors and partial output warnings");

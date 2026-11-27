@@ -14,7 +14,7 @@ import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslat
 import { formatUnityStructure, planUnityStructuredLines, canReuseUnityStructuredDraft } from "../../unityTextStructure";
 import { unityTranslationError, type UnityEntry, type UnityProgress, type UnityProject } from "../../unityOffline";
 import { unityLanguageScope } from "../../unityWorkflow";
-import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, textTranslationMatchesTarget, yieldUnityPreparation, type UnityTranslationQueue } from "../../unityTranslationSession";
+import { translateUnitySession, unityTranslationStats, unityTranslationCharacters, unityTranslationContextKey, yieldUnityPreparation, type UnityTranslationQueue } from "../../unityTranslationSession";
 import { smartUnityLines, planUnityLines, flattenUnityLines, applyUnityLineBreaks, parseUnityLineModel, unityLineModelInput, UNITY_LINE_MODEL_PROMPT, type UnityLineMode } from "../../unityLineLayout";
 import { UnitySegmentation } from "../../unitySegmentation";
 import { createUnityEnginePool } from "../../unityEnginePool";
@@ -233,9 +233,9 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
         await prepareGameOllamaModels(connections.flatMap(connection => connection?.llmConcurrency && connection.llmConcurrency > 1
           ? [{ connection, lanes: connection.llmConcurrency }] : []), controller.signal, textLog);
       }
-      const prepared = await prepareGameTerms(selectedEntries.filter(entry => !entry.translation || !textTranslationMatchesTarget(entry, options.target) || entry.error || unityTranslationError(entry.source, entry.translation)), next.entries, options.target || "zh-CN", glossary,
+      const prepared = await prepareGameTerms(selectedEntries, next.entries, options.target || "zh-CN", glossary,
       (name, context) => pool ? pool.translate(name) : requestTranslation(name, options.provider, undefined, context), controller.signal,
-      (detail, completed, total) => onProgress?.({ detail, completed, total, textStage: "names", model: options.nameOptions?.model || options.model }));
+      (detail, completed, total) => onProgress?.({ detail, completed, total, textStage: "names", model: options.nameOptions?.model || options.model }), p.root);
       terminology = prepared.terms;
       termIssues = prepared.issues;
     }

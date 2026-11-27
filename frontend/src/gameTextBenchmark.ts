@@ -168,7 +168,7 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
     }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue" && config.wrap !== "natural");
   };
   try {
-    const preparedTerms = await prepareGameTerms(rows.filter(entry => !entry.translation), references, config.target, settings.textGlossary,
+    const preparedTerms = await prepareGameTerms(rows, references, config.target, settings.textGlossary,
       (name, dialogue) => request(name, undefined, dialogue), signal,
       (detail, completed, total) => progress({ detail, completed, total, textStage: "names", model: models.names.model }));
     terms = preparedTerms.terms;
