@@ -89,29 +89,25 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             resize = graph["5"]["inputs"]
             self.assertEqual((resize["width"], resize["height"]), expected_size)
             sampler = graph["13"]["inputs"]
-            for key, expected in {"steps": 22, "cfg": 5, "denoise": 1.0, "sampler_name": "euler",
-                                  "scheduler": "karras", "model": ["46", 0]}.items():
+            for key, expected in {"steps": 22, "cfg": 5, "denoise": .67, "sampler_name": "euler",
+                                  "scheduler": "karras", "model": ["30", 0]}.items():
                 self.assertEqual(sampler[key], expected)
             self.assertEqual(graph["30"]["inputs"]["ckpt_name"], "Illustrious-XL-v2.0.safetensors")
-            self.assertEqual(graph["46"], {"class_type": "DifferentialDiffusion", "inputs": {"model": ["30", 0]}})
             self.assertEqual(graph["32"]["inputs"]["control_type"], "tile")
-            self.assertEqual(graph["32"]["inputs"]["image"], ["5", 0])
-            self.assertEqual(graph["34"]["inputs"]["pixels"], ["5", 0])
-            self.assertEqual(resize["image"], ["41", 0])
-            self.assertEqual(graph["41"], {"class_type": "INPAINT_MaskedFill", "inputs": {
-                "image": ["4", 0], "mask": ["47", 0], "fill": "neutral", "falloff": 0}})
-            self.assertEqual(graph["47"]["inputs"]["image"], ["43", 0])
-            self.assertEqual(graph["48"], {"class_type": "InvertMask", "inputs": {"mask": ["45", 0]}})
-            self.assertEqual(graph["35"]["inputs"]["mask_optional"], ["48", 0])
-            self.assertNotIn("INPAINT_MaskedBlur", {node["class_type"] for node in graph.values()})
+            self.assertEqual(graph["32"]["inputs"]["image"], ["41", 0])
+            self.assertEqual(graph["34"]["inputs"]["pixels"], ["41", 0])
+            self.assertEqual(resize["image"], ["4", 0])
+            self.assertEqual(graph["41"], {"class_type": "INPAINT_MaskedBlur", "inputs": {
+                "image": ["5", 0], "mask": ["45", 0], "blur": 47, "falloff": 9}})
+            self.assertNotIn("mask_optional", graph["35"]["inputs"])
             self.assertNotIn("31", graph)
             self.assertEqual(graph["33"]["inputs"]["name"], "controlnet-union-sdxl-1.0.safetensors")
-            self.assertEqual(graph["35"]["inputs"]["strength"], .45)
-            self.assertEqual(graph["35"]["inputs"]["end_percent"], .65)
+            self.assertEqual(graph["35"]["inputs"]["strength"], .65)
+            self.assertEqual(graph["35"]["inputs"]["end_percent"], .52)
             self.assertTrue(graph["34"]["inputs"]["noise_mask"])
             self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
-        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v3")
+        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v4")
 
     async def test_illustrious_passes_reference_to_masked_style_adapter(self):
         source = texture()
@@ -129,8 +125,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         ref = uploads[graph["region_0_16"]["inputs"]["image"]]
         self.assertEqual(ref.size, (640, 480))
         self.assertEqual(ref.getpixel((0, 0)), (88, 34, 143))
-        self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
-        self.assertEqual(graph["region_0_46"]["inputs"]["model"], ["region_0_40", 0])
+        self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_40", 0])
         adapter = graph["region_0_40"]["inputs"]
         self.assertEqual(adapter["model"], ["region_0_30", 0])
         self.assertEqual(adapter["attn_mask"], ["region_0_5", 1])
@@ -150,8 +145,9 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                                         {**settings, "targetParts": ["fixture-target"]}, size, "core.png")
         prompt = graph["6"]["inputs"]["text"]
         self.assertIn("crisp ink outlines", prompt)
-        self.assertIn("clean cel shading", prompt)
+        self.assertIn("same hues and materials", prompt)
         self.assertIn("preserve occlusion", prompt)
+        self.assertNotIn("mask", prompt)
         self.assertEqual(tagged["6"], graph["6"])
 
     async def test_missing_illustrious_weights_fail_before_comfy_start(self):
@@ -194,7 +190,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("region_0_7", graph)
             if kind == "illustrious":
                 self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 22)
-                self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
+                self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_30", 0])
             if kind == "diffusion-cream":
                 self.assertEqual(graph["region_0_41"]["class_type"], "INPAINT_MaskedBlur")
                 self.assertNotIn("mask_optional", graph["region_0_35"]["inputs"])
@@ -234,10 +230,10 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph["15"]["inputs"]["images"], [composites[-1][0], 0])
         self.assertTrue(all(key.isdecimal() for key in graph))
         self.assertEqual([key for key, node in graph.items() if node["class_type"] == "PreviewImage"], ["15"])
-        for node in graph.values():
-            if node["class_type"] == "ACN_AdvancedControlNetApply_v2":
-                mask_node, _ = node["inputs"]["mask_optional"]
-                self.assertEqual(graph[mask_node]["class_type"], "InvertMask")
+        tile_inputs = [node["inputs"]["image"][0] for node in graph.values()
+                       if node["class_type"] == "ACN_ControlNet++InputNode"]
+        self.assertEqual(len(tile_inputs), len(composites))
+        self.assertTrue(all(graph[key]["class_type"] == "INPAINT_MaskedBlur" for key in tile_inputs))
 
     async def test_runtime_recovery_composition_and_missing_patch(self):
         source = texture((220, 160))

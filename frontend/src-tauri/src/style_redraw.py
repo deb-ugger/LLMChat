@@ -580,7 +580,7 @@ def edit_mosaic_size(crop_size):
 
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
-                        "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v3"}
+                        "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v4"}
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
                        "controlnet/controlnet-union-sdxl-1.0.safetensors")
@@ -611,7 +611,7 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
         "4": node("LoadImage", image=source_name),
         "17": node("LoadImage", image=mask_name),
         "18": node("ImageToMask", image=["17", 0], channel="red"),
-        "5": node("ImageAndMaskResizeNode", image=["41" if illustrious else "4", 0], mask=["18", 0], width=width, height=height,
+        "5": node("ImageAndMaskResizeNode", image=["4", 0], mask=["18", 0], width=width, height=height,
                   resize_method="lanczos", crop="disabled", mask_blur_radius=0),
         "30": node("CheckpointLoaderSimple", ckpt_name="animagine-xl-4.0-opt.safetensors"),
         "6": node("CLIPTextEncode", clip=["30", 1],
@@ -621,10 +621,10 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
         "43": node("LoadImage", image=guide_mask_name),
         "44": node("ImageScale", image=["43", 0], width=width, height=height, upscale_method="nearest-exact", crop="disabled"),
         "45": node("ImageToMask", image=["44", 0], channel="red"),
-        "32": node("ACN_ControlNet++InputNode", image=["5" if illustrious else "31", 0], control_type="tile"),
+        "32": node("ACN_ControlNet++InputNode", image=["41" if illustrious else "31", 0], control_type="tile"),
         "33": node("ACN_ControlNet++LoaderAdvanced", plus_input=["32", 0], name="controlnet-union-sdxl-1.0.safetensors"),
         "34": node("InpaintModelConditioning", positive=["6", 0], negative=["7", 0], vae=["30", 2],
-                   pixels=["5" if illustrious else "41", 0], mask=["5", 1], noise_mask=True),
+                   pixels=["41", 0], mask=["5", 1], noise_mask=True),
         "35": node("ACN_AdvancedControlNetApply_v2", positive=["34", 0], negative=["34", 1], control_net=["33", 0],
                    image=["33", 1], strength=0.74, start_percent=0.0, end_percent=0.8),
         "13": node("KSampler", model=["30", 0], seed=seed, steps=steps, cfg=7, sampler_name="euler", scheduler="beta",
@@ -636,16 +636,14 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
     if illustrious:
         graph["30"]["inputs"]["ckpt_name"] = "Illustrious-XL-v2.0.safetensors"
         graph["6"]["inputs"]["text"] = (
-            "anime game illustration, crisp ink outlines, clean cel shading, defined shadow edges, "
-            "hard-edged highlights, line weight matching the surrounding art, continuous contours, preserve occlusion")
+            "anime illustration, crisp ink outlines, coherent silhouettes, continuous linework, consistent line weight and "
+            "shading, same hues and materials, highlights following the original lighting, smooth surface, preserve occlusion")
         graph["7"]["inputs"]["text"] = (
-            "pixelation, soft focus, blurred outlines, airbrushed shading, smeared colors, broken contours, duplicated forms")
-        # Clear covered RGB at the original size so resampling cannot carry it into the visible guide.
-        graph["47"] = node("ImageToMask", image=["43", 0], channel="red")
-        graph["41"] = node("INPAINT_MaskedFill", image=["4", 0], mask=["47", 0], fill="neutral", falloff=0)
-        graph["48"] = node("InvertMask", mask=["45", 0])
-        graph["35"]["inputs"].update(strength=0.45, end_percent=0.65, mask_optional=["48", 0])
-        graph["13"]["inputs"].update(steps=22, cfg=5, scheduler="karras", denoise=1.0)
+            "pixelation, checkerboard, grid lines, broken outlines, unrelated objects, smeared colors, blocky edges")
+        # Carry the coarse silhouette and palette into sampling, with Tile limited to earlier timesteps.
+        graph["41"] = node("INPAINT_MaskedBlur", image=["5", 0], mask=["45", 0], blur=47, falloff=9)
+        graph["35"]["inputs"].update(strength=0.65, end_percent=0.52)
+        graph["13"]["inputs"].update(steps=22, cfg=5, scheduler="karras", denoise=0.67)
         graph["14"]["inputs"]["exclude_mask"] = ["45", 0]
     else:
         guide_blur = max(31, min(97, round(min(width, height) * .073)))
@@ -660,9 +658,6 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                            neg_embed=["39", 1], attn_mask=["5", 1], weight=0.35, weight_type="style transfer",
                            start_at=0.4, end_at=0.85, embeds_scaling="V only")
         graph["13"]["inputs"]["model"] = ["40", 0]
-    if illustrious:
-        graph["46"] = node("DifferentialDiffusion", model=graph["13"]["inputs"]["model"])
-        graph["13"]["inputs"]["model"] = ["46", 0]
     return graph
 
 
@@ -671,7 +666,7 @@ def mosaic_target_prompt(profile):
 
 
 def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None):
-    target = mosaic_target_prompt(profile) if mask_name is not None else ""
+    target = mosaic_target_prompt(profile) if mask_name is not None and profile["kind"] != "illustrious" else ""
     target_negative = "mosaic artifacts, flat color fills, broken outlines, distorted proportions, duplicated forms"
     if profile["kind"] in ("diffusion-cream", "illustrious"):
         graph = diffusion_cream_workflow(source_name, reference_name, mask_name, steps,
@@ -779,7 +774,7 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
     reference = profile.get("referenceImage")
     for index, (bounds, crop, generation, blend, _) in enumerate(areas):
         if illustrious:
-            # Keep the core at full denoise, taper through the blend, and lightly resample the overscan.
+            # Apply the full sampling mask in the core and taper through the blend and overscan.
             noise_mask = np.where(generation, np.rint(51 + np.asarray(blend) * .8), 0).astype(np.uint8)
         else:
             noise_mask = generation.astype(np.uint8) * 255
