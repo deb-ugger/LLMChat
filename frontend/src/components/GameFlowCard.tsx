@@ -438,14 +438,16 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   const foldedProgress = showFoldedCompact && <div className="game-flow-folded-compact" role="group" aria-label={title + "进度"}>
     <div className="game-flow-fold-primary">
       <div className="game-flow-fold-bar">{progressBar}</div>
-      {progressPercentLabel}
-      {progressCounts}
+      {(progressPercentLabel || progressCounts) && <div className="game-flow-fold-stats">
+        {progressPercentLabel}
+        {progressCounts}
+      </div>}
     </div>
-    <div className="game-flow-fold-secondary">
+    {(progressPosition || foldedLanes.length > 0) && <div className="game-flow-fold-secondary">
       {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
       {foldedLanes.length > 0 && <>
         {progressPosition && <span className="game-flow-fold-sep" aria-hidden="true">·</span>}
-        <div className="game-flow-fold-model-slot" aria-live="polite">
+        <div className={"game-flow-fold-model-slot" + (foldedLanes.length === 1 ? " is-single" : "")} aria-live="polite">
           {foldedLanes.map((lane, index) => <div key={lane.model}
             className={"game-flow-fold-lane" + (index === (activeLaneIndex >= 0 ? activeLaneIndex : 0) ? " is-active" : "")}>
             <span className="game-flow-fold-model">{shortModelName(lane.model)}</span>
@@ -453,7 +455,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
           </div>)}
         </div>
       </>}
-    </div>
+    </div>}
   </div>;
   const expandedProgress = activeProgress && <div className="game-flow-progress">
     <div className="game-flow-progress-top">
