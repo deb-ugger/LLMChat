@@ -853,7 +853,11 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   const resetRedraw = (ids: ReadonlySet<string>) => {
     if (resetDerivedRedraw(ids)) clearStepProgress("redraw");
   };
-  const clearReviews = (ids: string[]) => clearMosaicReviews(gamePath, ids);
+  const clearReviews = (ids?: string[]) => {
+    clearMosaicReviews(gamePath, ids);
+    lastReview.current = null;
+    setStepRuns(previous => previous.refine ? { ...previous, refine: undefined } : previous);
+  };
 
   const detectorKey = mosaicDetectorKey(detectorKind, detectorFile, preferences.screening);
   const reviewKey = mosaicReviewKey(preferences, detectorFile);
@@ -917,7 +921,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     void run("复筛打码图片", (signal, report, usage) => runMosaicRefine({
       targets, rows, restart, initial, previousReview, checkedReviewScope, reviewSessionKey,
     }, signal, report, usage, {
-      replaceRows, clearReviews, resetRedraw, performReviews, setProgress: text => setProgress(text, "refine"), setError,
+      // Restart already has a fresh running card; discard the old cache without clearing that new run.
+      replaceRows, clearReviews: ids => clearMosaicReviews(gamePath, ids), resetRedraw, performReviews, setProgress: text => setProgress(text, "refine"), setError,
       trackReview: session => { lastReview.current = session; },
     }), {id:"refine",targets,total:restart ? targets.length : reviewTotal,completed:initial,summary:preferences.refineModel || "qwen3.5:latest",
       parameters: formatMosaicParameters("mosaicRefine", {
@@ -1296,9 +1301,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }
     try { replaceRows(next); }
     catch { showAppNotice("无法保存图片去码筛选记录", "error"); return; }
-    clearMosaicReviews(gamePath);
+    clearReviews();
     const resetRedraw = changedMasks.size > 0 && resetDerivedRedraw(changedMasks);
-    lastReview.current = null;
     clearStepProgress("refine", resetRedraw);
     showAppNotice("已清理复筛");
   }
@@ -1415,9 +1419,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       await enqueueArchiveWrite(() => clearMosaicRedrawArchive(gamePath));
       replaceRows(next);
     } catch (error) { reportArchiveError(error); return; }
-    clearMosaicReviews(gamePath);
+    clearReviews();
     lastScreen.current = null;
-    lastReview.current = null;
     pendingRedraw.current = null;
     masks.clearUndo();
     for (const step of ["screen","refine","redraw"] as const)
