@@ -8,6 +8,21 @@ import { LocalMangaOcr } from "./ocr/mangaOcr";
 import { isTranslationRefusal, TRANSLATION_REFUSAL } from "./unityTokens";
 import { unityImageWorkDone } from "./unityWorkflow";
 import { gameImageJapaneseTextIssue } from "./gameDisplayText";
+import { needsImageSemanticReview } from "./gameImageSemanticReview";
+
+type ImageSemanticReview = { reviewModel?: string; review?: (image: UnityImage, region: UnityImageRegion) => Promise<string> };
+async function reviewImageRegion(image: UnityImage, region: UnityImageRegion, signal: AbortSignal, target: string | undefined,
+  validate: (source: string, translation: string) => string, services: ImageSemanticReview) {
+  if (!services.review || !needsImageSemanticReview(region, services.reviewModel, target)) return;
+  region.beforeReview ??= { translation: region.translation, translationTarget: region.translationTarget, error: region.error };
+  const translation = await services.review(image, region);
+  signal.throwIfAborted();
+  const problem = validate(region.text, translation) || gameImageJapaneseTextIssue(region.text, translation, target);
+  if (problem || !translation.trim()) throw new Error(problem || "语义复核译文为空");
+  region.translation = translation;
+  region.beforeReview = { ...region.beforeReview, reviewedSource: region.text, reviewedTranslation: translation,
+    reviewedTarget: target, reviewedModel: services.reviewModel };
+}
 
 async function png(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
@@ -184,20 +199,22 @@ export async function renderUnityImage(source: Blob, regions: UnityImageRegion[]
 }
 
 /** Explicit single-image translation always replaces selected translations. */
-export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSignal,translate:(text:string)=>Promise<string>,validate:(source:string,translation:string)=>string,threshold=50,concurrency=1,includeRegion?:(text:string)=>boolean,targetLanguage?:string):Promise<UnityImage>{
+export async function translateCurrentUnityImage(image:UnityImage,signal:AbortSignal,translate:(text:string)=>Promise<string>,validate:(source:string,translation:string)=>string,threshold=50,concurrency=1,includeRegion?:(text:string)=>boolean,targetLanguage?:string,review:ImageSemanticReview={}):Promise<UnityImage>{
   const next={...image,regions:unityImageTranslationRegions(image.regions,threshold,image).map(region=>({...region})),completed:false,renderedFile:"",renderedHash:"",error:""};
   const cache=new Map<string,Promise<string>>();let failures=0;
   const selected=next.regions.filter(region=>region.selected&&(includeRegion?.(region.text)??true));let cursor=0;
   const worker=async()=>{while(cursor<selected.length){const region=selected[cursor++];
     signal.throwIfAborted();region.translation="";region.error="";
     try{if(!region.text.trim())throw new Error("原文为空，请填写该区域原文");let request=cache.get(region.text);if(!request){request=translate(region.text);cache.set(region.text,request);}const value=await request;signal.throwIfAborted();if(!value.trim())throw new Error("翻译结果为空");const error=validate(region.text,value)||gameImageJapaneseTextIssue(region.text,value,targetLanguage);if(error)throw new Error(error);region.translation=value;region.translationTarget=targetLanguage;}
+    catch(error){if(signal.aborted)throw error;region.error=error instanceof Error?error.message:String(error);failures++;continue;}
+    try { await reviewImageRegion(next,region,signal,targetLanguage,validate,review); }
     catch(error){if(signal.aborted)throw error;region.error=error instanceof Error?error.message:String(error);failures++;}
   }};
   const results=await Promise.allSettled(Array.from({length:Math.min(selected.length,Math.max(1,concurrency))},worker));const failure=results.find((value):value is PromiseRejectedResult=>value.status==="rejected");if(failure)throw failure.reason;
   next.error=failures?`${failures} 个勾选区域翻译失败，请检查区域提示`:"";
   return next;
 }
-export type UnityImageServices = {
+export type UnityImageServices = ImageSemanticReview & {
   trackReview?: boolean;
   cachedRecognition?: (image: UnityImage) => PaddleOcrLine[] | undefined;
   recognitionGroup?: (image: UnityImage) => string;
@@ -366,15 +383,20 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       const regionWorker=async()=>{while(regionCursor<selectedRegions.length){const region=selectedRegions[regionCursor++];
         signal.throwIfAborted(); regionNumber++;
         const existingProblem = region.translation ? matchesTarget(region.translationTarget) ? validate(region.text, region.translation) : "译文属于旧目标语言，请重新翻译" : "";
-        if (region.translation && !existingProblem) { region.error = ""; continue; }
+        const semanticReview = needsImageSemanticReview(region, services.reviewModel, target);
+        if (region.translation && !existingProblem && !semanticReview) { region.error = ""; continue; }
         if (mode === "render") { region.error ||= existingProblem || "请先完成此区域的翻译"; continue; }
         if (services.trackReview) region.beforeReview ??= {
           translation: region.translation, translationTarget: region.translationTarget, error: region.error,
         };
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
-          const translation = await translateText(region.text, image); signal.throwIfAborted();
-          region.translation = translation; region.translationTarget = target; region.error = "";
+          if (!region.translation || existingProblem) {
+            const translation = await translateText(region.text, image); signal.throwIfAborted();
+            region.translation = translation; region.translationTarget = target;
+          }
+          await reviewImageRegion(image, region, signal, target, validate, services);
+          region.error = needsImageSemanticReview(region, services.reviewModel, target) ? "待语义复核：请运行复核与重译" : "";
         } catch (error) {
           if (signal.aborted) throw error;
           region.error = error instanceof Error ? error.message : String(error);

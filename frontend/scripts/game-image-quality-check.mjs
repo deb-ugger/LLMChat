@@ -5,12 +5,12 @@ import { fileURLToPath } from "node:url";
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.window = { addEventListener() {}, removeEventListener() {}, location: { hostname: "localhost" } };
 const bundle = await build({
-  stdin: { contents: "export * as screening from './gameImageScreening'; export { processUnityImages } from './unityImages';",
+  stdin: { contents: "export * as screening from './gameImageScreening'; export * as semantic from './gameImageSemanticReview'; export { processUnityImages } from './unityImages';",
     resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""', "import.meta.env.DEV": "false" },
 });
-const { screening, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
+const { screening, semantic, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
 const signal = new AbortController().signal;
 const screened = { id: "missed", sourceFile: "source", sourceHash: "hash", selected: false,
   ocrCompleted: false, completed: false, regions: [], screening: { version: 1, sourceHash: "hash",
@@ -33,14 +33,14 @@ const image = (id, hash, translation = "") => ({ id, sourceFile: "source", sourc
     { text: "Open", translation, translationTarget: "zh-CN", selected: true, confidence: 99,
       x0: 0, y0: 0, x1: 80, y1: 20, error: "", ocrConfirmed: true },
   ] });
-async function translate(images) {
+async function translate(images, extra = {}) {
   let calls = 0;
   const outcomes = [];
   const result = processUnityImages({ entries: [], images }, signal, {
     targetLanguage: "zh-CN", concurrency: 2, translationConcurrency: 2, regionConcurrency: 2,
     read: async () => new Blob(), recognize: async () => [], translate: async () => { calls++; return "打开"; },
     render: async () => new Blob(), write: async () => ({ path: "", hash: "" }),
-    persist: async (_, value) => outcomes.push(structuredClone(value)), validate: () => "",
+    persist: async (_, value) => outcomes.push(structuredClone(value)), validate: () => "", ...extra,
   }, () => {}, 50, "translate-only");
   return { result: await result.catch(error => error), calls, outcomes };
 }
@@ -51,4 +51,28 @@ assert.equal((await translate([image("copy-a", "same"), image("copy-b", "same")]
 const conflict = await translate([image("first", "same", "打开"), image("second", "same", "开门"), image("pending", "same")]);
 assert.ok(conflict.result instanceof Error);
 assert.ok(conflict.outcomes.some(row => row.regions.some(region => /多个有效译名/.test(region.error))));
-console.log("PASS missed-image rescue, manual exclusion, low-confidence review, scoped translation reuse and visible conflicts");
+
+const semanticInput = image("attack", "attack");
+semanticInput.regions[0].text = "攻撃力が上がる";
+const firstPass = await translate([semanticInput], { reviewModel: "reviewer", translate: async () => "防御力下降", onTranslationFailures() {} });
+assert.ok(!(firstPass.result instanceof Error));
+assert.equal(firstPass.result.images[0].regions[0].translation, "防御力下降");
+assert.match(firstPass.result.images[0].regions[0].error, /待语义复核/);
+let reviewCalls = 0;
+const secondPass = await translate(firstPass.result.images, { reviewModel: "reviewer", review: async (_, region) => {
+  reviewCalls++; assert.equal(region.translation, "防御力下降"); return "攻击力提高";
+} });
+assert.equal(secondPass.calls, 0, "semantic review receives the existing draft before any retranslation");
+assert.equal(reviewCalls, 1);
+const accepted = secondPass.result.images[0].regions[0];
+assert.equal(accepted.translation, "攻击力提高");
+assert.equal(accepted.beforeReview.translation, "防御力下降");
+assert.equal(semantic.needsImageSemanticReview(accepted, "reviewer", "zh-CN"), false);
+assert.equal(semantic.needsImageSemanticReview({ ...accepted, text: "防御力が下がる" }, "reviewer", "zh-CN"), true);
+assert.equal(semantic.needsImageSemanticReview(accepted, "another-model", "zh-CN"), true);
+const resumed = await translate(secondPass.result.images, { reviewModel: "reviewer", review: async () => { throw new Error("already reviewed"); } });
+assert.ok(!(resumed.result instanceof Error));
+assert.equal(semantic.parseImageSemanticReview({ verdict: "accept" }, "攻击力提高"), "攻击力提高");
+assert.equal(semantic.parseImageSemanticReview({ verdict: "correct", translation: "攻击力提高" }, "防御力下降"), "攻击力提高");
+assert.throws(() => semantic.parseImageSemanticReview({ verdict: "uncertain", reason: "文字不清晰" }, "候选译文"), /待确认/);
+console.log("PASS missed-image rescue, scoped reuse, conflicts, staged semantic correction, preserved drafts and resumable review");

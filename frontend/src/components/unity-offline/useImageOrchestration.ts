@@ -4,6 +4,7 @@ import type { OutputLevel } from "../../appOutput";
 import type { GameTestImageOptions } from "../../gameModelPreset";
 import type { prepareGameOllamaModels, translateGameWithOllama } from "../../gameOllama";
 import { gameImageTranslationProblem, type recognizeGameImage, type renderGameImage } from "../../gameImageModel";
+import { reviewGameImageTranslation } from "../../gameImageSemanticReview";
 import { createGameImageOcrReuse, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageVisionForAsset, type redrawGameImages, type StyleRedrawProfileId } from "../../gameImagePlacement";
 import { translateNamedImageText, type collectGameImageNames } from "../../gameImageNames";
 import { gameImageRegionLanguageFilter, localGameImageScreeningLanes } from "../../gameImageScreening";
@@ -264,6 +265,10 @@ export async function runImageTranslation<T extends ImageRun>(p: UnityProject, c
       recognitionGroup,
       translationConcurrency: Math.max(translationLanes, layoutLanes), regionConcurrency: translationLanes,
       targetLanguage: options.target,
+      reviewModel: options.imageReviewOptions?.model,
+      review: phase === "review" && options.imageReviewOptions?.model ? (image, region) =>
+        reviewGameImageTranslation(settings, options.imageReviewOptions!.model!, image, region, options.target || run.target,
+          controller.signal, promptState.selection, imageLog) : undefined,
       includeRegion: phase !== "recognize" ? gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN",
         !!options.onlySourceLanguage, !!options.skipTargetLanguage) : undefined,
       cachedRecognition: phase === "recognize" && !visionModel && localMode === "fast" ?

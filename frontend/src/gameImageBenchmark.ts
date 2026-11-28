@@ -4,6 +4,7 @@ import { API_BASE, type OcrMode, type Settings, type TranslateProvider } from ".
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "./gameDisplayText";
 import { classifyGameImagePresence, gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "./gameImageModel";
 import { recognizeLocalGameImage } from "./gameImageRecognitionInput";
+import { needsImageSemanticReview, reviewGameImageTranslation } from "./gameImageSemanticReview";
 import { classifyImageText, clearGameImageRefinement, needsGameImageRefinement, refineGameImages, screenGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, localGameImageScreeningLanes, type LocalRefineMode } from "./gameImageScreening";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu, type OllamaOutput } from "./gameOllama";
@@ -37,7 +38,7 @@ export type ImageBenchmarkSetup = {
 export type ImageBenchmarkWorkload = { project: UnityProject | null; selected: UnityImage[]; embedded: boolean };
 
 const failedRegion = (region: UnityImage["regions"][number]) => region.selected &&
-  (!!region.error || !region.translation || !!gameImageTranslationProblem(region.text, region.translation, region.translationTarget));
+  (!!region.error || !region.translation || !!gameImageTranslationProblem(region.text, region.translation, region.translationTarget) || needsImageSemanticReview(region, "benchmark", region.translationTarget));
 
 export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImage[]) {
   return selected.filter(image => !!image.sourceFile && unityImageParticipates(image) && (
@@ -195,6 +196,8 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
     await processUnityImages(project, signal, {
       timingScope: scope, concurrency: model ? lanes : localLanes, translationConcurrency: pool?.concurrency || lanes,
       regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read, targetLanguage: target,
+      reviewModel: step === "review" ? model : undefined,
+      review: step === "review" && model ? (image, region) => reviewGameImageTranslation(settings, model, image, region, target, signal, prompts, report) : undefined,
       includeRegion: labeledInputs ? undefined : text => gameTextMatchesSource(text,source) && (!skipTarget || !gameTextNeedsNoTranslation(text,target)),
       recognize: (blob, stage, index = 0) => {
         if (!model) return measureGameAsync(scope, "ocrMs", () => recognizeLocalGameImage(blob,

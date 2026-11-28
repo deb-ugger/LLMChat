@@ -6,6 +6,7 @@ import { automaticMosaicRedrawStyle } from "./game-mosaic/mosaicBatchRunner";
 import { createMosaicTargetResolver, mosaicRegionTargeting } from "../mosaicRegionTargets";
 import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
+import { needsImageSemanticReview, reviewGameImageTranslation } from "../gameImageSemanticReview";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
 import { writeDownloadedFile } from "../outputFiles";
 import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
@@ -927,7 +928,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       input => requestImageTranslation(options, engine, input, controller.signal), options.target || "", imageNames);
     const pool=provider!=="llm"&&options.engineIds?.length?createUnityEnginePool(options.engineIds.map(id=>({id,enabled:true})),controller.signal,request):null;
     try{const next=await translateCurrentUnityImage(image,controller.signal,text=>pool?pool.translate(text):request(provider,text),unityTranslationError,imageConfidenceThreshold,!options.localModel&&!options.imageReviewOptions?.localModel&&provider==="llm"?16:1,
-      gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN", !!options.onlySourceLanguage, !!options.skipTargetLanguage), options.target);editImage(next,false);await save();if(next.error)throw new Error(next.error);setMessage("当前图片译文已更新");}
+      gameImageRegionLanguageFilter(options.source || "auto", options.target || "zh-CN", !!options.onlySourceLanguage, !!options.skipTargetLanguage), options.target,
+      { reviewModel: options.imageReviewOptions?.model, review: options.imageReviewOptions?.model ? (current, region) =>
+        reviewGameImageTranslation(settings, options.imageReviewOptions!.model!, current, region, options.target || target,
+          controller.signal, promptState.selection, imageLog) : undefined });editImage(next,false);await save();if(next.error)throw new Error(next.error);setMessage("当前图片译文已更新");}
     finally{pool?.dispose();imageEditorAbort.current=null;}
   });
   const recognizeImage = (image: UnityImage, mode: OcrMode) => imageOperation("重新识别图片", async () => {
@@ -1534,10 +1538,10 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const pendingImageRegions = (project?.images || []).flatMap(image => image.selected && image.ocrCompleted ?
     image.regions.filter(region => region.selected && includeImageRegion(region.text) &&
       (!region.translation || region.translationTarget && region.translationTarget !== picture.target ||
-        !!region.error || !!gameImageTranslationProblem(region.text,region.translation,picture.target))) : []);
+        !!region.error || !!gameImageTranslationProblem(region.text,region.translation,picture.target) || needsImageSemanticReview(region, imageReviewModel, picture.target))) : []);
   const recognitionReady = !imagesNeedScreen && !imagesNeedRefine && !imagesNeedRecognition;
   const { textDone: imageTextDone, reviewReady: imageReviewReady } = gameImageTranslationReadiness(recognitionReady,
-    pendingImageRegions.some(region => !region.error || !imageReviewModel), pendingImageRegions.length > 0, !!imageReviewModel);
+    pendingImageRegions.some(region => !imageReviewModel || !region.error && !needsImageSemanticReview(region, imageReviewModel, picture.target)), pendingImageRegions.length > 0, !!imageReviewModel);
   const screenComplete = textScreened || textReady;
   const partHasWork = imagePart ? imagesNeedScreen || imagesNeedRefine || imageRedrawCount > 0 || (project?.images || []).some(image => image.selected && (!image.ocrCompleted || !unityImageWorkDone(image, target))) : selected.length > 0 && !textReady;
   const partActionDisabled = restoring || saving || !scanReady || (!partRunning && !textScreening && (!!busy && !translationJobs.current || !partHasWork || (!imagePart && textScreened || imagePart && !imagesNeedRecognition && !imageRenderReady) && !connectionReady));
@@ -2352,7 +2356,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
             <GameFlowParameterGroup kind="help">{translationConfigurationHelp}</GameFlowParameterGroup>
           </>}
           {imagePart && flowConfig === "review" && <div className="unity-offline-fields">
-            <GameModelSelect optional label="校验失败重译模型" promptKey="review" models={gameModels} value={imageReviewModel}
+            <GameModelSelect optional label="译文复核模型" promptKey="review" models={gameModels} value={imageReviewModel}
               disabled={flowConfigLocked} onChange={setImageReviewModel} />
           </div>}
           {imagePart && flowConfig === "filter" && <GameProcessingTabs label="筛选方式" localLabel="本地筛选"

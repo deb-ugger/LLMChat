@@ -10,6 +10,7 @@ import { translateGameWithOllama, prepareGameOllamaModels, prepareGameOllamaPara
 import { GamePromptContext, useGamePromptSelection, gameTaskPrompt } from "../gamePrompts";
 import { classifyGameImagePresence, gameImageTranslationProblem, mergeGameImageFieldLines, recognizeGameImage, renderGameImage } from "../gameImageModel";
 import { recognizeLocalGameImage } from "../gameImageRecognitionInput";
+import { needsImageSemanticReview, reviewGameImageTranslation } from "../gameImageSemanticReview";
 import { createGameImageOcrReuse, savedGameImageRedraw, defaultGameImageReview, defaultGameImageTranslation, defaultGameImageVision, gameImageCleanBase, gameImageRedrawSelected, gameImageRedrawSummary, gameImageVisionForAsset, redrawGameImages, styleRedrawLabels, type StyleRedrawProfileId } from "../gameImagePlacement";
 import { readRpgGameImageNames, translateNamedImageText, type ImageNameMemory } from "../gameImageNames";
 import { applyGameTestRoles, captureGameTestRoles, loadGameWorkflowEngines, saveGameWorkflowEngines, type GameTestConfiguration, type GameTestConfigurationAccess } from "../gameModelPreset";
@@ -425,7 +426,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       return translate(buildUnityTranslateOptions(settings, "llm", source, target, reviewModel, false, !!loadLocalModelProfiles()[reviewModel],gameTaskPrompt("review",promptState.selection,{source,target}), "keep", {selection:promptState.selection,role:"review"}));
     };
     const pool=translationKind==="engine"&&stage!=="review"?createUnityEnginePool(engines.filter(row=>engineReady(parseEngineKeys(settings.translateEngineKeys),row.id)),signal,request,{timingScope:promptState.scope + ":images"}):null;
-    return {translate:(text:string)=>pool?pool.translate(text):request("llm",text),concurrency:pool?Math.max(1,pool.concurrency):modelConcurrency(promptState.scope,"image",translationModel || settings.model),regions:pool?1:Math.max(modelConcurrency(promptState.scope,"image",translationModel || settings.model),modelConcurrency(promptState.scope,"review",reviewModel)),dispose:()=>pool?.dispose()};
+    return {translate:(text:string)=>pool?pool.translate(text):request("llm",text),
+      reviewModel: reviewModel || undefined,
+      review: reviewModel ? (image: UnityImage, region: UnityImageRegion) => reviewGameImageTranslation(settings, reviewModel, image, region, target, signal, promptState.selection, onMessage) : undefined,
+      concurrency:pool?Math.max(1,pool.concurrency):modelConcurrency(promptState.scope,"image",translationModel || settings.model),regions:pool?1:Math.max(modelConcurrency(promptState.scope,"image",translationModel || settings.model),modelConcurrency(promptState.scope,"review",reviewModel)),dispose:()=>pool?.dispose()};
   };
   const process=(phase:"recognize"|"translate",only?:UnityImage,ocrMode=mode, outputMode: "translate" | "translate-only" | "review" | "render" = "translate", signal?: AbortSignal)=>execute(phase==="recognize"?"识别图片":outputMode==="render"?"生成译图":outputMode==="review"?"复核与重译":"翻译图片",async()=>{
     if(phase==="recognize"&&stageModels.recognize!==undefined&&!stageModels.recognize)throw new Error("请选择识字视觉模型");
@@ -517,7 +521,10 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       }
       return measureGameAsync(promptState.scope + ":images", "ocrMs", () => recognizeLocalGameImage(blob,
         input => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(input, stage), controller.signal));
-    },translate:translator.translate,render: async (blob, regions, image) => {
+    },translate:translator.translate,
+      reviewModel: phase === "translate" && outputMode !== "render" ? translator.reviewModel : undefined,
+      review: outputMode === "review" ? translator.review : undefined,
+      render: async (blob, regions, image) => {
       const rendered = await renderGameImage(settings, stageModels.render || "", blob, regions, controller.signal,
         promptState.selection, { source, target }, (text, level) => onMessage(`${image.name} · ${text}`, level),
         { assetName: image.name, cleanBase: gameImageCleanBase(image, base.images || [], candidate => readImage(candidate, false, false, controller.signal)) });
@@ -541,7 +548,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
       const merged = mergeRecognizedRegions(image);
       const filtered = groupByLanguage(merged);
       if (filtered !== merged) { await persist(filtered); onMessage(`${image.name} 已移入「无需翻译」`, "info"); return; }
-      const next=await translateCurrentUnityImage(merged,controller.signal,translator.translate,validateImageTranslation,confidence,translator.regions,includesRegion,target);
+      const next=await translateCurrentUnityImage(merged,controller.signal,translator.translate,validateImageTranslation,confidence,translator.regions,includesRegion,target,translator);
       await persist(next);if(next.error)throw new Error(next.error);onMessage("当前图片译文已更新","success");
     } finally { translator.dispose(); }
   });
@@ -613,7 +620,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         if (clearScreening) Object.assign(next, { screening: undefined, selected: false, selectionManual: false });
         if (clearRecognition) Object.assign(next, { ocrCompleted: false, regions: [] });
         if (phase === "translate") next.regions = image.regions.map((region:ReviewedRegion) => {const {beforeReview:_,...rest}=region;return {...rest,translation:"",translationTarget:undefined,error:""};});
-        if (phase === "review") next.regions = image.regions.map((region:ReviewedRegion)=>{const {beforeReview,...rest}=region;return beforeReview?{...rest,...beforeReview}:region;});
+        if (phase === "review") next.regions = image.regions.map((region:ReviewedRegion)=>{const {beforeReview,...rest}=region;return beforeReview?{...rest,translation:beforeReview.translation,translationTarget:beforeReview.translationTarget,error:beforeReview.error}:region;});
         return next;
       });
       for (let offset = 0; offset < rows.length; offset += 64) {
@@ -784,8 +791,8 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         validateImageTranslation(region.text, region.translation))));
   const translated = (image: UnityImage) => image.ocrCompleted && (image.renderedKind === "imported" ||
     (groupByLanguage(mergeRecognizedRegions(image)).selected === image.selected &&
-      translationRegions(image).every(region => !!region.translation.trim() && (!region.translationTarget || region.translationTarget === target) &&
-        !validateImageTranslation(region.text, region.translation))));
+      translationRegions(image).every(region => !!region.translation.trim() && !region.error && (!region.translationTarget || region.translationTarget === target) &&
+        !validateImageTranslation(region.text, region.translation) && !needsImageSemanticReview(region, reviewModel, target))));
   const recognitionReady = complete.filter && complete.refine && complete.recognize;
   const { textDone, reviewReady } = gameImageTranslationReadiness(recognitionReady,
     initialInterrupted || selected.some(requiresInitial), selected.some(image => !translated(image)), !!reviewModel);
