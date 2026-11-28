@@ -4347,9 +4347,26 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   font-size: 11px;
 }
 .has-grouped-parameters .game-flow-timing-sep { padding: 0 5px; opacity: 0.45; }
+.has-grouped-parameters.has-folded-progress .game-flow-head.is-folded {
+  min-block-size: 0;
+  padding-block: 4px 5px;
+  gap: 5px 6px;
+  flex-wrap: nowrap;
+}
+.has-grouped-parameters.has-folded-progress .game-flow-head > .game-flow-state { flex: none; white-space: nowrap; }
+.has-grouped-parameters.has-folded-progress .game-flow-head::before { inset-block: 5px; }
+.has-grouped-parameters.has-folded-progress .game-flow-header-operations { flex-wrap: nowrap; gap: 5px; }
+.has-grouped-parameters.has-folded-progress .game-flow-header-operations .unity-btn {
+  min-block-size: 20px;
+  block-size: 20px;
+  padding: 0 8px;
+  line-height: 1;
+}
+.has-grouped-parameters.has-folded-progress .game-flow-timing { padding: 0 6px; line-height: 15px; }
+.has-grouped-parameters.has-folded-progress .game-flow-timing b { font-size: 10px; }
 .has-grouped-parameters .game-flow-step.is-folded-compact { padding-block-end: 8px; }
 .has-grouped-parameters.has-folded-progress .game-flow-folded-compact {
-  margin-block-start: 6px;
+  margin-block-start: 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -4386,6 +4403,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+.has-grouped-parameters.has-folded-progress .game-flow-fold-prep-label { color: var(--text-muted); font-size: 10px; }
 .has-grouped-parameters.has-folded-progress .game-flow-fold-stats .game-flow-progress-pct {
   flex: none;
   margin: 0;
@@ -4414,13 +4432,31 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+.has-grouped-parameters.has-folded-progress .game-flow-fold-status {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.has-grouped-parameters.has-folded-progress .game-flow-fold-model-row {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+  font-size: 10.5px;
+  line-height: 18px;
+  color: var(--text-muted);
+  margin-block: 2px 1px;
+  padding-block: 1px 2px;
+  border-block-end: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+}
 .has-grouped-parameters.has-folded-progress .game-flow-fold-sep {
   flex: none;
   padding: 0 5px;
   opacity: 0.55;
   line-height: 18px;
 }
-.has-grouped-parameters.has-folded-progress .game-flow-fold-model-slot {
+.has-grouped-parameters.has-folded-progress .game-flow-fold-model-row .game-flow-fold-model-slot {
   flex: 1 1 4em;
   position: relative;
   min-inline-size: 0;

@@ -122,6 +122,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     const benchmark = !running && benchmarkProgress?.step === benchmarkSteps[id] ? benchmarkProgress : undefined;
     const statusLine = !benchmark && statusLineStep === id ? progress : undefined;
     const sample = running && id === "refine" ? statusLine?.match(/^.+? · (.+) · (?:候选区域 \d+\/\d+|整图) · 等待模型返回$/)?.[1] : undefined;
+    const preparing = id === "refine" && running && status?.prepared != null && status.prepared < status.total;
     const batchElapsed = status?.batchElapsed ?? (status?.batchStarted == null ? undefined : now - status.batchStarted);
     const remainingMs = running && status?.processed && batchElapsed != null && batchElapsed > 0 && processed != null
       ? batchElapsed / status.processed * Math.max(0, status.total - processed) : undefined;
@@ -138,17 +139,18 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         ? device.kind === "gpu" ? "GPU（WebGPU）" : "CPU"
         : screen.summary}</span>
     ) : id === "refine" ? (
-      !benchmark && status?.prepared != null
-        ? "候选已准备 " + status.prepared.toLocaleString() + " / " + status.total.toLocaleString()
-        : refineSelection
+      !running && !benchmark ? refineSelection : undefined
     ) : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
       groupedParameters headerSummary={headerSummary} stepMeasurement={benchmark ? benchmark.performance : measured}
       disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
-      progress={{ sample, current: processed, total: status?.total || undefined,
-        completed: status?.completed, unit: "张", percent, remainingMs, successRate,
+      progress={{ sample, phase: id === "refine" && running ? preparing ? "prepare" : "run" : undefined,
+        prepared: id === "refine" && running ? status?.prepared : undefined,
+        current: preparing ? status?.prepared : processed, total: status?.total || undefined,
+        completed: status?.completed, unit: "张", percent: preparing ? 100 * status.prepared! / status.total : percent,
+        remainingMs: preparing ? undefined : remainingMs, successRate,
         configuration: running && status?.parameters?.length ? { current: 1, total: 1 } : undefined }}
       statusLine={statusLine}
       resultLine={unresolved > 0 ? unresolved.toLocaleString() + " 张失败待处理" : undefined}
