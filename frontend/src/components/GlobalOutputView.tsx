@@ -107,7 +107,7 @@ export function GlobalOutputView({ onClose }: { onClose: () => void }) {
       const text = await exportAppOutput();
       if (!text) { showAppNotice("暂无可下载的全局日志"); return; }
       const stamp = formatOutputTime(new Date().toISOString()).slice(0, 10);
-      const path = await save({ defaultPath: `LLMChat-output-${stamp}.jsonl`, filters: [{ name: "全局输出日志", extensions: ["jsonl"] }] });
+      const path = await save({ defaultPath: `LLMChat-output-${stamp}.txt`, filters: [{ name: "文本日志", extensions: ["txt"] }] });
       if (!path) return;
       await writeDownloadedFile(path, new TextEncoder().encode(text), "输出日志");
       showAppNotice("全局日志已下载");

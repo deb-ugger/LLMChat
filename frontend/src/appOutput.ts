@@ -129,7 +129,10 @@ export async function exportAppOutput() {
   await initializeAppOutput();
   await flush();
   const result = await api.readOutputLog(limit, false, true);
-  return result.text || "";
+  const { records, incomplete } = readRecords(result.text || "");
+  if (incomplete) { historyWarning = "部分输出历史不完整，已导出可读取的记录。"; publish(); }
+  return records.map(row => `${formatOutputTime(row.time)} ${formatOutputMessage(row)}`)
+    .join("\n").replace(/\r\n|\r|\n/g, "\r\n");
 }
 
 export async function loadAppOutputHistory() {
