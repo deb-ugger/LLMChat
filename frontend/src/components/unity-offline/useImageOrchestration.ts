@@ -266,6 +266,7 @@ export async function runImageTranslation<T extends ImageRun>(p: UnityProject, c
       translationConcurrency: Math.max(translationLanes, layoutLanes), regionConcurrency: translationLanes,
       targetLanguage: options.target,
       reviewModel: options.imageReviewOptions?.model,
+      reviewPrompt: promptState.selection.review || "builtin:review",
       review: phase === "review" && options.imageReviewOptions?.model ? (image, region) =>
         reviewGameImageTranslation(settings, options.imageReviewOptions!.model!, image, region, options.target || run.target,
           controller.signal, promptState.selection, imageLog) : undefined,

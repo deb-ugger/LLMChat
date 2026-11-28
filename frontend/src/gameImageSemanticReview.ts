@@ -4,13 +4,13 @@ import { gameTaskPrompt, type GamePromptSelection } from "./gamePrompts";
 import type { OllamaOutput } from "./gameOllama";
 import { requestGameModelJson } from "./gameModelRequest";
 
-export function needsImageSemanticReview(region: UnityImageRegion, model: string | undefined, target?: string) {
+export function needsImageSemanticReview(region: UnityImageRegion, model: string | undefined, target?: string, prompt?: string) {
   if (!model || !region.translation.trim()) return false;
   const previous = region.beforeReview;
   if (previous?.reviewedSource === region.text && previous.reviewedTranslation === region.translation &&
-      previous.reviewedTarget === target && previous.reviewedModel === model) return false;
+      previous.reviewedTarget === target && previous.reviewedModel === model && previous.reviewedPrompt === prompt) return false;
   return region.confidence < 85 || [...region.text.trim()].length >= 8 ||
-    /\d|攻撃|防御|回復|増|減|上昇|下降|禁止|無効|有効|不可|必須|消費|獲得|attack|defen[cs]e|increase|decrease|not\b|damage/i.test(region.text);
+    /\d|攻撃|防御|回復|増|減|上昇|下降|禁止|無効|有効|不可|必須|消費|獲得|attack|guard|defen[cs]e|increase|decrease|not\b|damage|\b(?:save|load|cancel|equip|sell|buy|enable|disable|heal|yes|no|on|off)\b/i.test(region.text);
 }
 
 export function parseImageSemanticReview(value: unknown, original: string) {

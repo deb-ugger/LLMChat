@@ -428,6 +428,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
     const pool=translationKind==="engine"&&stage!=="review"?createUnityEnginePool(engines.filter(row=>engineReady(parseEngineKeys(settings.translateEngineKeys),row.id)),signal,request,{timingScope:promptState.scope + ":images"}):null;
     return {translate:(text:string)=>pool?pool.translate(text):request("llm",text),
       reviewModel: reviewModel || undefined,
+      reviewPrompt: promptState.selection.review || "builtin:review",
       review: reviewModel ? (image: UnityImage, region: UnityImageRegion) => reviewGameImageTranslation(settings, reviewModel, image, region, target, signal, promptState.selection, onMessage) : undefined,
       concurrency:pool?Math.max(1,pool.concurrency):modelConcurrency(promptState.scope,"image",translationModel || settings.model),regions:pool?1:Math.max(modelConcurrency(promptState.scope,"image",translationModel || settings.model),modelConcurrency(promptState.scope,"review",reviewModel)),dispose:()=>pool?.dispose()};
   };
@@ -523,6 +524,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
         input => ocr[ocr[0].isGpu ? worker % Math.min(2, ocr.length) : worker].recognize(input, stage), controller.signal));
     },translate:translator.translate,
       reviewModel: phase === "translate" && outputMode !== "render" ? translator.reviewModel : undefined,
+      reviewPrompt: translator.reviewPrompt,
       review: outputMode === "review" ? translator.review : undefined,
       render: async (blob, regions, image) => {
       const rendered = await renderGameImage(settings, stageModels.render || "", blob, regions, controller.signal,
@@ -792,7 +794,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const translated = (image: UnityImage) => image.ocrCompleted && (image.renderedKind === "imported" ||
     (groupByLanguage(mergeRecognizedRegions(image)).selected === image.selected &&
       translationRegions(image).every(region => !!region.translation.trim() && !region.error && (!region.translationTarget || region.translationTarget === target) &&
-        !validateImageTranslation(region.text, region.translation) && !needsImageSemanticReview(region, reviewModel, target))));
+        !validateImageTranslation(region.text, region.translation) && !needsImageSemanticReview(region, reviewModel, target, promptState.selection.review || "builtin:review"))));
   const recognitionReady = complete.filter && complete.refine && complete.recognize;
   const { textDone, reviewReady } = gameImageTranslationReadiness(recognitionReady,
     initialInterrupted || selected.some(requiresInitial), selected.some(image => !translated(image)), !!reviewModel);

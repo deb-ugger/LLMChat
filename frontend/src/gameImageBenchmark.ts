@@ -198,6 +198,7 @@ export async function runGameImageSample(step: ImageBenchmarkStep, sample: Unity
       timingScope: scope, concurrency: model ? lanes : localLanes, translationConcurrency: pool?.concurrency || lanes,
       regionConcurrency: pool ? 1 : lanes, reuseTranslations: false, read, targetLanguage: target,
       reviewModel: step === "review" ? model : undefined,
+      reviewPrompt: prompts.review || "builtin:review",
       review: step === "review" && model ? (image, region) => reviewGameImageTranslation(settings, model, image, region, target, signal, prompts, report) : undefined,
       includeRegion: labeledInputs ? undefined : text => gameTextMatchesSource(text,source) && (!skipTarget || !gameTextNeedsNoTranslation(text,target)),
       recognize: (blob, stage, index = 0) => {

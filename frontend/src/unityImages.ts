@@ -10,10 +10,10 @@ import { unityImageWorkDone } from "./unityWorkflow";
 import { gameImageJapaneseTextIssue } from "./gameDisplayText";
 import { needsImageSemanticReview } from "./gameImageSemanticReview";
 
-type ImageSemanticReview = { reviewModel?: string; review?: (image: UnityImage, region: UnityImageRegion) => Promise<string> };
+type ImageSemanticReview = { reviewModel?: string; reviewPrompt?: string; review?: (image: UnityImage, region: UnityImageRegion) => Promise<string> };
 async function reviewImageRegion(image: UnityImage, region: UnityImageRegion, signal: AbortSignal, target: string | undefined,
   validate: (source: string, translation: string) => string, services: ImageSemanticReview) {
-  if (!services.review || !needsImageSemanticReview(region, services.reviewModel, target)) return;
+  if (!services.review || !needsImageSemanticReview(region, services.reviewModel, target, services.reviewPrompt)) return;
   region.beforeReview ??= { translation: region.translation, translationTarget: region.translationTarget, error: region.error };
   const translation = await services.review(image, region);
   signal.throwIfAborted();
@@ -21,7 +21,7 @@ async function reviewImageRegion(image: UnityImage, region: UnityImageRegion, si
   if (problem || !translation.trim()) throw new Error(problem || "语义复核译文为空");
   region.translation = translation;
   region.beforeReview = { ...region.beforeReview, reviewedSource: region.text, reviewedTranslation: translation,
-    reviewedTarget: target, reviewedModel: services.reviewModel };
+    reviewedTarget: target, reviewedModel: services.reviewModel, reviewedPrompt: services.reviewPrompt };
 }
 
 async function png(canvas: HTMLCanvasElement) {
@@ -383,7 +383,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       const regionWorker=async()=>{while(regionCursor<selectedRegions.length){const region=selectedRegions[regionCursor++];
         signal.throwIfAborted(); regionNumber++;
         const existingProblem = region.translation ? matchesTarget(region.translationTarget) ? validate(region.text, region.translation) : "译文属于旧目标语言，请重新翻译" : "";
-        const semanticReview = needsImageSemanticReview(region, services.reviewModel, target);
+        const semanticReview = needsImageSemanticReview(region, services.reviewModel, target, services.reviewPrompt);
         if (region.translation && !existingProblem && !semanticReview) { region.error = ""; continue; }
         if (mode === "render") { region.error ||= existingProblem || "请先完成此区域的翻译"; continue; }
         if (services.trackReview) region.beforeReview ??= {
@@ -396,7 +396,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
             region.translation = translation; region.translationTarget = target;
           }
           await reviewImageRegion(image, region, signal, target, validate, services);
-          region.error = needsImageSemanticReview(region, services.reviewModel, target) ? "待语义复核：请运行复核与重译" : "";
+          region.error = needsImageSemanticReview(region, services.reviewModel, target, services.reviewPrompt) ? "待语义复核：请运行复核与重译" : "";
         } catch (error) {
           if (signal.aborted) throw error;
           region.error = error instanceof Error ? error.message : String(error);

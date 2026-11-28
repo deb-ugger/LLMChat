@@ -71,6 +71,8 @@ assert.equal(accepted.beforeReview.translation, "防御力下降");
 assert.equal(semantic.needsImageSemanticReview(accepted, "reviewer", "zh-CN"), false);
 assert.equal(semantic.needsImageSemanticReview({ ...accepted, text: "防御力が下がる" }, "reviewer", "zh-CN"), true);
 assert.equal(semantic.needsImageSemanticReview(accepted, "another-model", "zh-CN"), true);
+assert.equal(semantic.needsImageSemanticReview(accepted, "reviewer", "zh-CN", "new-prompt"), true);
+assert.equal(semantic.needsImageSemanticReview({ ...accepted, text: "GUARD" }, "reviewer", "zh-CN"), true);
 const resumed = await translate(secondPass.result.images, { reviewModel: "reviewer", review: async () => { throw new Error("already reviewed"); } });
 assert.ok(!(resumed.result instanceof Error));
 assert.equal(semantic.parseImageSemanticReview({ verdict: "accept" }, "攻击力提高"), "攻击力提高");
