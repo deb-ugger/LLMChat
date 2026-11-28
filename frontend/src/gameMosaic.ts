@@ -17,7 +17,7 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
   turbo: "Qwen Image 2.1 Turbo", "diffusion-cream": "DiffusionCreamPy · 动漫局部修复",
 };
 export const mosaicModelChoices = (["illustrious", "turbo", "2511-lightning", "2511", "diffusion-cream"] as const).map(value => ({ value, label: mosaicModelLabels[value] }));
-export const mosaicDefaultSteps: Record<MosaicModel, number> = { illustrious: 8, turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28 };
+export const mosaicDefaultSteps: Record<MosaicModel, number> = { illustrious: 22, turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28 };
 export const isMosaicModel = (value: unknown): value is MosaicModel =>
   mosaicModelChoices.some(choice => choice.value === value);
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };
@@ -60,7 +60,7 @@ export type MosaicSettings = {
   concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean; regionTargeting?: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, scope: "scenes", model: "illustrious", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, scope: "scenes", model: "illustrious", steps: mosaicDefaultSteps.illustrious, protect: true };
 export const mosaicRefineConcurrencyChoices = [1, 2, 4];
 
 export function mosaicRefineConcurrency(value?: number) {
@@ -76,7 +76,8 @@ export function gameDetectorFile(root: string, file?: File) {
 export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
   const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
   const model = isMosaicModel(value?.model) ? value.model : defaultMosaicSettings.model;
-  return { ...defaultMosaicSettings, ...value, model, steps: model === "illustrious" ? 8 : model === "2511-lightning" ? 4 : value?.steps ?? mosaicDefaultSteps[model],
+  const steps = model === "illustrious" || model === "2511-lightning" ? mosaicDefaultSteps[model] : value?.steps ?? mosaicDefaultSteps[model];
+  return { ...defaultMosaicSettings, ...value, model, steps,
     detector: value?.detector === "grid" ? "grid" : "anime",
     screening: normalizeMosaicScreening(value?.screening),
     concurrency: legacy ? 2 : value?.concurrency ?? 2,
@@ -258,7 +259,7 @@ export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) 
   // Match the job identifier in repair_mosaic.
   const namespace = new Uint8Array([0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]);
   const workflow = model === "2511-lightning" ? "aligned-edit-lightning-regions-v2" : model === "2511" ? "aligned-edit-regions-v2"
-    : model === "diffusion-cream" ? "diffusion-cream-regions-v2" : model === "illustrious" ? "illustrious-regions-v1" : "expanded-regions-v2";
+    : model === "diffusion-cream" ? "diffusion-cream-regions-v2" : model === "illustrious" ? "illustrious-regions-v2" : "expanded-regions-v2";
   const name = new TextEncoder().encode("urn:llmchat:mosaic:" + workflow + ":" + promptId);
   const input = new Uint8Array(namespace.length + name.length);
   input.set(namespace);

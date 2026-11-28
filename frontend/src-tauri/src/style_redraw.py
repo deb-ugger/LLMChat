@@ -359,16 +359,20 @@ def mosaic_region_boxes(original, regions):
     return boxes
 
 
-def mosaic_mask_margin(boxes):
+def mosaic_mask_margin(boxes, *, illustrious=False):
     span = max(min(right - left, bottom - top) for left, top, right, bottom in boxes)
     grow = max(2, min(6, round(span * .05)))
+    if illustrious:
+        feather = max(8, min(32, round(span * .16)))
+        # Finish compositing before the latent mask boundary can affect the patch.
+        return grow, feather, grow + feather + max(12, feather)
     feather = max(3, min(10, round(span * .08)))
     return grow, feather, grow + feather + 2
 
 
-def mosaic_region_groups(original, regions):
+def mosaic_region_groups(original, regions, *, illustrious=False):
     boxes = mosaic_region_boxes(original, regions)
-    _, _, margin = mosaic_mask_margin(boxes)
+    _, _, margin = mosaic_mask_margin(boxes, illustrious=illustrious)
     parents = list(range(len(boxes)))
 
     def root(index):
@@ -392,7 +396,7 @@ def mosaic_region_groups(original, regions):
     return list(grouped.values())
 
 
-def mosaic_redraw_area(original, regions, protected, preserve_edges=False, allow_empty=False):
+def mosaic_redraw_area(original, regions, protected, preserve_edges=False, allow_empty=False, *, illustrious=False):
     from scipy import ndimage
 
     boxes = mosaic_region_boxes(original, regions)
@@ -401,7 +405,7 @@ def mosaic_redraw_area(original, regions, protected, preserve_edges=False, allow
     top = min(box[1] for box in boxes)
     right = max(box[2] for box in boxes)
     bottom = max(box[3] for box in boxes)
-    grow, feather, expansion = mosaic_mask_margin(boxes)
+    grow, feather, expansion = mosaic_mask_margin(boxes, illustrious=illustrious)
     padding = expansion + max(48, round(max(right - left, bottom - top) * .25))
     bounds = (max(0, left - padding), max(0, top - padding),
               min(original.width, right + padding), min(original.height, bottom + padding))
@@ -533,17 +537,19 @@ def edit_mosaic_size(crop_size):
 
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
-                        "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v1"}
+                        "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v2"}
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
-                       "controlnet/controlnet-union-sdxl-1.0.safetensors",
-                       "loras/sdxl_lightning_8step_lora.safetensors")
+                       "controlnet/controlnet-union-sdxl-1.0.safetensors")
+SDXL_REFERENCE_WEIGHTS = ("clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+                          "ipadapter/ip-adapter-plus_sdxl_vit-h.safetensors")
 
 
 def validate_mosaic_weights(directory, profile):
     if profile["kind"] == "illustrious":
         models = Path(directory) / "ComfyUI/models"
-        missing = [name for name in ILLUSTRIOUS_WEIGHTS if not (models / name).is_file()]
+        weights = ILLUSTRIOUS_WEIGHTS + SDXL_REFERENCE_WEIGHTS if profile.get("referenceImage") else ILLUSTRIOUS_WEIGHTS
+        missing = [name for name in weights if not (models / name).is_file()]
         if missing:
             raise ValueError("缺少本地权重：" + "、".join(missing))
 
@@ -551,9 +557,10 @@ def validate_mosaic_weights(directory, profile):
 def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name, kind="diffusion-cream"):
     # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
     illustrious = kind == "illustrious"
-    scale = (768 if illustrious else 1152) / max(crop_size)
+    longest = max(crop_size)
+    scale = (min(1024, max(768, longest)) if illustrious else 1152) / longest
     width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
-    guide_blur = max(31, min(97, round(min(width, height) * .073)))
+    guide_blur = 25 if illustrious else max(31, min(97, round(min(width, height) * .073)))
 
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
@@ -573,9 +580,9 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
         "43": node("LoadImage", image=guide_mask_name),
         "44": node("ImageScale", image=["43", 0], width=width, height=height, upscale_method="nearest-exact", crop="disabled"),
         "45": node("ImageToMask", image=["44", 0], channel="red"),
-        "41": node("INPAINT_MaskedBlur", image=["5", 0], mask=["45", 0], blur=guide_blur, falloff=0),
-        "31": node("TilePreprocessor", image=["41", 0], pyrUp_iters=3, resolution=512),
-        "32": node("ACN_ControlNet++InputNode", image=["31", 0], control_type="tile"),
+        "41": node("INPAINT_MaskedBlur", image=["5", 0], mask=["45", 0], blur=guide_blur,
+                   falloff=9 if illustrious else 0),
+        "32": node("ACN_ControlNet++InputNode", image=["41" if illustrious else "31", 0], control_type="tile"),
         "33": node("ACN_ControlNet++LoaderAdvanced", plus_input=["32", 0], name="controlnet-union-sdxl-1.0.safetensors"),
         "34": node("InpaintModelConditioning", positive=["6", 0], negative=["7", 0], vae=["30", 2],
                    pixels=["41", 0], mask=["5", 1], noise_mask=True),
@@ -589,11 +596,12 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
     }
     if illustrious:
         graph["30"]["inputs"]["ckpt_name"] = "Illustrious-XL-v2.0.safetensors"
-        graph["46"] = node("LoraLoaderModelOnly", model=["30", 0],
-                           lora_name="sdxl_lightning_8step_lora.safetensors", strength_model=1.0)
-        graph["35"]["inputs"]["strength"] = 0.65
-        graph["13"]["inputs"].update(model=["46", 0], steps=8, cfg=1.5, scheduler="sgm_uniform", denoise=0.75)
-    elif reference_name:
+        graph["35"]["inputs"].update(strength=0.45, end_percent=0.65)
+        graph["13"]["inputs"].update(steps=22, cfg=5, scheduler="karras", denoise=0.93)
+        graph["14"]["inputs"]["exclude_mask"] = ["45", 0]
+    else:
+        graph["31"] = node("TilePreprocessor", image=["41", 0], pyrUp_iters=3, resolution=512)
+    if reference_name:
         graph["16"] = node("LoadImage", image=reference_name)
         graph["37"] = node("CLIPVisionLoader", clip_name="CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors")
         graph["38"] = node("IPAdapterModelLoader", ipadapter_file="ip-adapter-plus_sdxl_vit-h.safetensors")
@@ -602,6 +610,9 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                            neg_embed=["39", 1], attn_mask=["5", 1], weight=0.35, weight_type="style transfer",
                            start_at=0.4, end_at=0.85, embeds_scaling="V only")
         graph["13"]["inputs"]["model"] = ["40", 0]
+    if illustrious:
+        graph["46"] = node("DifferentialDiffusion", model=graph["13"]["inputs"]["model"])
+        graph["13"]["inputs"]["model"] = ["46", 0]
     return graph
 
 
@@ -670,7 +681,7 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
 
 def mosaic_reference_input(reference, original, bounds, kind):
     with Image.open(io.BytesIO(base64.b64decode(reference, validate=True))) as image:
-        if kind == "diffusion-cream":
+        if kind in ("diffusion-cream", "illustrious"):
             reference_image = image.convert("RGB")
             reference_image.thumbnail((640, 640), Image.Resampling.LANCZOS)
             # Reuse the ComfyUI image and vision-encoder cache for later images in the group.
@@ -681,15 +692,17 @@ def mosaic_reference_input(reference, original, bounds, kind):
         return image.crop(ref_bounds).convert("RGB"), None
 
 
-def mosaic_core_mask(blend):
-    return blend.point([0] * 255 + [255])
+def mosaic_core_mask(blend, threshold=255):
+    return blend.point([0] * threshold + [255] * (256 - threshold))
 
 
 def mosaic_redraw_areas(original, regions, profile):
     areas = []
-    for group in mosaic_region_groups(original, regions):
+    illustrious = profile["kind"] == "illustrious"
+    for group in mosaic_region_groups(original, regions, illustrious=illustrious):
         area = mosaic_redraw_area(original, group, profile.get("keep", []),
-                                  preserve_edges=profile["kind"] in ("diffusion-cream", "illustrious"), allow_empty=True)
+                                  preserve_edges=illustrious or profile["kind"] == "diffusion-cream",
+                                  allow_empty=True, illustrious=illustrious)
         if area is not None:
             areas.append(area)
     if not areas:
@@ -712,12 +725,27 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
     graph = {"original": {"class_type": "LoadImage", "inputs": {"image": source_name},
                            "_meta": {"title": "目标原图"}}}
     outputs = []
+    illustrious = profile["kind"] == "illustrious"
+    reference = profile.get("referenceImage")
     for index, (bounds, crop, generation, blend, _) in enumerate(areas):
-        mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB"))
-        guide_name = await upload(mosaic_core_mask(blend)) if profile["kind"] in ("diffusion-cream", "illustrious") else None
-        reference = profile.get("referenceImage") if profile["kind"] != "illustrious" else None
+        if illustrious:
+            # Keep the core at full denoise, taper through the blend, and lightly resample the overscan.
+            noise_mask = np.where(generation, np.rint(51 + np.asarray(blend) * .8), 0).astype(np.uint8)
+        else:
+            noise_mask = generation.astype(np.uint8) * 255
+        mask_name = await upload(Image.fromarray(noise_mask).convert("RGB"))
+        guide_name = None
+        guide = None
+        if illustrious or profile["kind"] == "diffusion-cream":
+            # Give the Illustrious guide room to fade outside the fully replaced core.
+            guide = mosaic_core_mask(blend, 128 if illustrious else 255)
+            guide_name = await upload(guide)
         reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
         local = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_name)
+        if illustrious and guide.getextrema() == (255, 255):
+            # There are no original pixels for color matching when the guide covers the entire crop.
+            del local["14"]
+            local["15"]["inputs"]["images"] = ["36", 0]
         left, top, _, _ = bounds
         local["4"] = {"class_type": "ImageCrop", "inputs": {
             "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}

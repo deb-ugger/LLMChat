@@ -1,4 +1,5 @@
 """Synthetic geometry and orchestration checks. No image model is executed."""
+import base64
 import importlib.util
 from pathlib import Path
 import sys
@@ -50,6 +51,23 @@ class RegionGeometry(unittest.TestCase):
             self.assertTrue(samples.any())
             self.assertTrue(np.all(alpha[samples] == 0))
 
+    def test_illustrious_feathers_before_the_generation_boundary(self):
+        source = Image.new("RGBA", (480, 320), (100, 125, 160, 255))
+        box = [160, 80, 260, 180]
+        keep = [190, 110, 195, 116]
+        (bounds, _, generation, blend, _) = worker.mosaic_redraw_areas(
+            source, [{"box": box}], {**profile("illustrious"), "keep": [keep]})[0]
+        x, y, _, _ = bounds
+        alpha = np.asarray(blend)
+        row = 100 - y
+        left = box[0] - x
+        self.assertEqual(alpha[row, left], 255)
+        self.assertTrue(np.all(np.diff(alpha[row, :left].astype(int)) >= 0))
+        self.assertGreater(np.count_nonzero((alpha[row, :left] > 0) & (alpha[row, :left] < 255)), 10)
+        self.assertGreaterEqual(np.count_nonzero(generation[row, :left] & (alpha[row, :left] == 0)), 12)
+        np.testing.assert_array_equal(alpha[110-y:116-y, 190-x:195-x], 0)
+        np.testing.assert_array_equal(generation[110-y:116-y, 190-x:195-x], False)
+
     def test_protected_or_transparent_group_is_skipped(self):
         source = texture()
         regions = [{"box": [20, 20, 40, 40]}, {"box": [400, 100, 430, 130]}]
@@ -62,29 +80,60 @@ class RegionGeometry(unittest.TestCase):
 
 
 class RegionGraphs(unittest.IsolatedAsyncioTestCase):
-    def test_illustrious_recipe_and_reference_does_not_load_vision(self):
+    def test_illustrious_recipe_without_reference(self):
         settings = profile("illustrious")
-        for size in ((2048, 1152), (320, 480), (4096, 64)):
-            graph = worker.mosaic_workflow("source.png", "style.png", "mask.png", 28,
+        for size, expected_size in (((2048, 1152), (1024, 576)), ((320, 480), (512, 768)),
+                                    ((960, 800), (960, 800)), ((4096, 64), (1024, 64))):
+            graph = worker.mosaic_workflow("source.png", None, "mask.png", 28,
                                            settings, size, "core.png")
             resize = graph["5"]["inputs"]
-            self.assertEqual(max(resize["width"], resize["height"]), 768)
-            self.assertEqual(resize["width"] % 8, 0)
-            self.assertEqual(resize["height"] % 8, 0)
+            self.assertEqual((resize["width"], resize["height"]), expected_size)
             sampler = graph["13"]["inputs"]
-            for key, expected in {"steps": 8, "cfg": 1.5, "denoise": .75, "sampler_name": "euler",
-                                  "scheduler": "sgm_uniform", "model": ["46", 0]}.items():
+            for key, expected in {"steps": 22, "cfg": 5, "denoise": .93, "sampler_name": "euler",
+                                  "scheduler": "karras", "model": ["46", 0]}.items():
                 self.assertEqual(sampler[key], expected)
             self.assertEqual(graph["30"]["inputs"]["ckpt_name"], "Illustrious-XL-v2.0.safetensors")
-            self.assertEqual(graph["46"]["inputs"], {"model": ["30", 0],
-                "lora_name": "sdxl_lightning_8step_lora.safetensors", "strength_model": 1.0})
+            self.assertEqual(graph["46"], {"class_type": "DifferentialDiffusion", "inputs": {"model": ["30", 0]}})
             self.assertEqual(graph["32"]["inputs"]["control_type"], "tile")
+            self.assertEqual(graph["32"]["inputs"]["image"], ["41", 0])
+            self.assertGreater(graph["41"]["inputs"]["falloff"], 0)
+            self.assertNotIn("31", graph)
             self.assertEqual(graph["33"]["inputs"]["name"], "controlnet-union-sdxl-1.0.safetensors")
-            self.assertEqual(graph["35"]["inputs"]["strength"], .65)
+            self.assertEqual(graph["35"]["inputs"]["strength"], .45)
+            self.assertEqual(graph["35"]["inputs"]["end_percent"], .65)
             self.assertTrue(graph["34"]["inputs"]["noise_mask"])
             self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
-        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v1")
+        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v2")
+
+    async def test_illustrious_passes_reference_to_masked_style_adapter(self):
+        source = texture()
+        reference = Image.new("RGB", (1024, 768), (88, 34, 143))
+        settings = {**profile("illustrious"), "referenceImage": base64.b64encode(worker.png(reference)).decode("ascii")}
+        areas = worker.mosaic_redraw_areas(source, [{"box": [25, 30, 45, 50]}], settings)
+        uploads = {}
+
+        async def upload(image, filename=None):
+            name = filename or f"fixture-{len(uploads)}.png"
+            uploads[name] = image
+            return name
+
+        graph, _ = await worker.mosaic_region_graphs(source, areas, settings, 8, upload)
+        ref = uploads[graph["region_0_16"]["inputs"]["image"]]
+        self.assertEqual(ref.size, (640, 480))
+        self.assertEqual(ref.getpixel((0, 0)), (88, 34, 143))
+        self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
+        self.assertEqual(graph["region_0_46"]["inputs"]["model"], ["region_0_40", 0])
+        adapter = graph["region_0_40"]["inputs"]
+        self.assertEqual(adapter["model"], ["region_0_30", 0])
+        self.assertEqual(adapter["attn_mask"], ["region_0_5", 1])
+        self.assertEqual(adapter["weight_type"], "style transfer")
+        noise = np.asarray(uploads[graph["region_0_17"]["inputs"]["image"]])[:, :, 0]
+        _, _, generation, blend, _ = areas[0]
+        alpha = np.asarray(blend)
+        np.testing.assert_array_equal(noise[alpha == 255], 255)
+        np.testing.assert_array_equal(noise[~generation], 0)
+        self.assertTrue(np.any((noise > 51) & (noise < 255)))
 
     def test_illustrious_passes_target_parts_to_existing_prompt(self):
         parts = ["male_external"]
@@ -111,6 +160,12 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(missing, str(caught.exception))
         with patch.object(Path, "is_file", return_value=True):
             worker.validate_mosaic_weights("fixture", settings)
+        for missing in worker.SDXL_REFERENCE_WEIGHTS:
+            with patch.object(Path, "is_file", lambda path: path != models / missing):
+                worker.validate_mosaic_weights("fixture", settings)
+                with self.assertRaisesRegex(ValueError, "缺少本地权重") as caught:
+                    worker.validate_mosaic_weights("fixture", {**settings, "referenceImage": "fixture"})
+                self.assertIn(missing, str(caught.exception))
 
     async def test_every_model_graph_has_independent_crops(self):
         source = texture()
@@ -121,8 +176,6 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
 
         for kind in worker.MOSAIC_WORKFLOW_KEYS:
             settings = profile(kind)
-            if kind == "illustrious":
-                settings["referenceImage"] = "unused-reference-must-not-be-uploaded"
             areas = worker.mosaic_redraw_areas(source, regions, settings)
             graph, outputs = await worker.mosaic_region_graphs(source, areas, settings, 8, upload)
             self.assertEqual(len(outputs), 2)
@@ -133,7 +186,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(graph["region_0_13"]["inputs"]["positive"], graph["region_0_13"]["inputs"]["negative"])
                 self.assertNotIn("region_0_7", graph)
             if kind == "illustrious":
-                self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 8)
+                self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 22)
                 self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
             self.assertEqual(graph["region_0_4"]["class_type"], "ImageCrop")
             self.assertEqual(graph["region_1_4"]["inputs"]["x"], areas[1][0][0])

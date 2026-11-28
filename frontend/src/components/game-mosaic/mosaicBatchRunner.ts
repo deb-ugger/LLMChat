@@ -396,17 +396,6 @@ function createMosaicReferenceReader(readSaved: (image: UnityImage, signal: Abor
   };
 }
 
-function automaticMosaicRedrawStyle(usable: readonly UnityImage[], rows: Results,
-  readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal) {
-  const references = mosaicRedrawReferences(usable, rows);
-  const readReference = createMosaicReferenceReader(readSaved, signal);
-  return async (image: UnityImage): Promise<{ seed: number; reference?: Blob }> => {
-    const style = mosaicRedrawStyle(image, rows, references);
-    if (!style.reference || style.reference.id === image.id) return { seed: 1 };
-    return { seed: style.seed, reference: await readReference(style.reference) };
-  };
-}
-
 export function existingMosaicRedrawReferences(images: readonly UnityImage[], rows: Results,
   candidates: Readonly<Record<string, MosaicCandidate>>, model: RedrawPlan["models"][number]) {
   const ready = new Set<string>();
@@ -458,8 +447,7 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
 }
 
 export function mosaicRedrawStepCount(plan: Pick<RedrawPlan, "models" | "steps">, engine: RedrawPlan["models"][number]) {
-  if (engine === "illustrious") return 8;
-  if (engine === "2511-lightning") return 4;
+  if (engine === "illustrious" || engine === "2511-lightning") return mosaicDefaultSteps[engine];
   return plan.models.length === 1 ? plan.steps : mosaicDefaultSteps[engine];
 }
 
@@ -603,7 +591,15 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
     throw new Error(reviews.failed + " 张图片复筛失败");
   }
 
-  const redrawStyle = automaticMosaicRedrawStyle(usable, rows, readSaved, signal);
+  const references = mosaicRedrawReferences(usable, rows);
+  const readReference = createMosaicReferenceReader(readSaved, signal);
+  const useCompletedReferences = model === "illustrious";
+  if (useCompletedReferences) {
+    for (const image of selected) {
+      const group = resultFor(rows, image).group || image.id;
+      if (ids.has(image.id) && !references.has(group)) references.set(group, image);
+    }
+  }
   for (const [index, image] of checked.entries()) {
     signal.throwIfAborted();
     reportGameStepItems(timingScope, "mosaic", index);
@@ -613,13 +609,16 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
     const boxes = removeContainedMosaicBoxes(scan.boxes);
     if (!boxes.length) continue;
     try {
-      const style = await redrawStyle(image);
+      const style = mosaicRedrawStyle(image, rows, references);
+      const reference = style.reference && style.reference.id !== image.id ? await readReference(style.reference) : undefined;
+      const seed = useCompletedReferences || reference ? style.seed : 1;
       const original = await readSource(image);
       if (ports.resolveTargets) setProgress("识别蒙版部位 · " + image.name, index, checked.length);
       const targetParts = await ports.resolveTargets?.(image, original, boxes, signal);
       const rendered = await redrawMosaic({ source: original, boxes, keep: ports.keep(image), model, steps,
-        ...style, signal, timingScope, progress: detail => setProgress(detail, index, checked.length), targetParts });
+        seed, reference, signal, timingScope, progress: detail => setProgress(detail, index, checked.length), targetParts });
       await measureGameAsync(timingScope, "saveMs", () => ports.writeCandidate(image, rendered, signal));
+      if (useCompletedReferences && !style.reference) references.set(style.group, image);
     } catch (error) {
       if (!signal.aborted) update(image, { redrawError: error instanceof Error ? error.message : String(error) });
       throw error;
