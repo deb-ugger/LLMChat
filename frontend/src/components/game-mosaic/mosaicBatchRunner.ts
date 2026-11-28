@@ -9,7 +9,7 @@ import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicCandidate, Mosaic
 
 export function sameReview(row: Result, scan: MosaicScan, key: string) {
   const boxes = removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes);
-  return matchesMosaicReviewKey(row.refined, key) && !row.refineError && row.review === scan.review &&
+  return matchesMosaicReviewKey(row.refined, key, row.review) && !row.refineError && row.review === scan.review &&
     !!row.refineQuickExcluded === !!scan.quickExcluded && JSON.stringify(row.boxes) === JSON.stringify(boxes);
 }
 

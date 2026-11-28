@@ -845,14 +845,14 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   },[gamePath,usable,reviewKey]);
   const reviewSessionKey = JSON.stringify([reviewKey, detectorKey, scope, needle]);
   const previousReview = lastReview.current?.key === reviewSessionKey ? lastReview.current : undefined;
-  const isReviewed = (row: Result) => matchesMosaicReviewKey(row.refined, reviewKey) && !row.refineQuickExcluded && !row.refineError;
+  const isReviewed = (row: Result) => matchesMosaicReviewKey(row.refined, reviewKey, row.review) && !row.refineQuickExcluded && !row.refineError;
   const checkedReviewScope: UnityImage[] = [];
   const pendingReview: UnityImage[] = [];
   let reviewedCount = 0, hasOlderReviews = false;
   for (const image of currentScope) {
     const row = resultFor(rows,image);
     if ((!row.scanned && !row.refined && !row.refineError) || row.saved || row.manualBoxes) continue;
-    const olderReview = !!row.refined && !matchesMosaicReviewKey(row.refined, reviewKey);
+    const olderReview = !!row.refined && !matchesMosaicReviewKey(row.refined, reviewKey, row.review);
     const selectedForReview = row.checked;
     if (selectedForReview) checkedReviewScope.push(image);
     if (isReviewed(row)) {

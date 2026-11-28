@@ -6,10 +6,10 @@ export const mosaicStatusLabels = {
   confirmed: "已采用去码图",
   redrawn: "已重绘图片",
   refinedCandidate: "复筛确认有码",
+  refinedClear: "复筛确认无码",
   review: "待复核",
   candidate: "疑似有码",
   clear: "初筛确认无码",
-  refinedClear: "复筛确认无码",
   pending: "待筛选",
 } as const;
 
