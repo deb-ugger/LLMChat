@@ -13,8 +13,9 @@ function shortModelName(model: string) {
 }
 
 function meterGenerationTokS(meter: { generationTokens?: number; generationMs?: number; tokens?: number; requestMs?: number }) {
+  if (!(meter.generationTokens && meter.generationTokens > 0 && meter.generationMs && meter.generationMs > 0)) return;
   const rate = deriveFlowMetrics({
-    tokens: meter.generationTokens ?? meter.tokens,
+    tokens: meter.generationTokens,
     generationTokens: meter.generationTokens,
     generationMs: meter.generationMs,
     requestMs: meter.requestMs,
@@ -24,24 +25,22 @@ function meterGenerationTokS(meter: { generationTokens?: number; generationMs?: 
 
 function foldModelLanes(measurement: StepPerformance | undefined, fallbackModels?: readonly string[]): FoldModelLane[] {
   const meters = Object.values(measurement?.models ?? {});
-  const names = meters.length
-    ? [...new Set(meters.map(item => item.model))]
-    : [...new Set((fallbackModels ?? []).filter(Boolean))];
+  const names = [...new Set([...meters.map(item => item.model), ...(fallbackModels ?? [])].filter(Boolean))];
   return names.map(model => {
     const meter = measurement?.models[model] ?? meters.find(item => item.model === model);
     return { model, rate: meter ? meterGenerationTokS(meter) : undefined };
   });
 }
 
-function sampleModelHead(sample?: string) {
-  const head = sample?.split(" · ")[0]?.trim();
+function statusModelHead(status?: string) {
+  const head = status?.split(" · ")[0]?.trim();
   return head || undefined;
 }
 
-function modelMatchesSample(sampleHead: string | undefined, model: string) {
-  if (!sampleHead) return false;
+function modelMatchesStatus(head: string | undefined, model: string) {
+  if (!head) return false;
   const short = shortModelName(model);
-  return sampleHead === model || sampleHead === short || model.endsWith(sampleHead);
+  return head === model || head === short;
 }
 
 export type GameFlowProgress = {
@@ -414,15 +413,13 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
     {remaining && <><span className="game-flow-timing-sep" aria-hidden="true">·</span>剩 <b>{remaining}</b></>}
   </span>;
   const actionDisplay = actions && <div className="game-flow-actions">{actions}</div>;
-  const showFoldedCompact = groupedParameters && !expanded && !!activeProgress;
-  const activeSampleModel = sampleModelHead(progressSample);
-  let foldedLanes = showFoldedCompact
+  const showFoldedCompact = groupedParameters && !expanded && active && !!activeProgress;
+  const foldedLanes = showFoldedCompact
     ? foldModelLanes(stepMeasurement, foldedSummary?.models) : [];
-  if (showFoldedCompact && activeSampleModel &&
-    !foldedLanes.some(lane => modelMatchesSample(activeSampleModel, lane.model))) {
-    foldedLanes = [{ model: activeSampleModel, rate: undefined }, ...foldedLanes];
-  }
-  const activeLaneIndex = foldedLanes.findIndex(lane => modelMatchesSample(activeSampleModel, lane.model));
+  // Samples may be filenames. Only known models can select a lane; the live status takes precedence.
+  const activeModel = [statusLine, benchmark?.detail, progressSample].map(statusModelHead)
+    .find(head => foldedLanes.some(lane => modelMatchesStatus(head, lane.model)));
+  const activeLaneIndex = Math.max(0, foldedLanes.findIndex(lane => modelMatchesStatus(activeModel, lane.model)));
   const progressBar = percent === undefined
     ? <GameProgressBar label={title + "进度"} />
     : <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
@@ -449,7 +446,8 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {progressPosition && <span className="game-flow-fold-sep" aria-hidden="true">·</span>}
         <div className={"game-flow-fold-model-slot" + (foldedLanes.length === 1 ? " is-single" : "")} aria-live="polite">
           {foldedLanes.map((lane, index) => <div key={lane.model}
-            className={"game-flow-fold-lane" + (index === (activeLaneIndex >= 0 ? activeLaneIndex : 0) ? " is-active" : "")}>
+            className={"game-flow-fold-lane" + (index === activeLaneIndex ? " is-active" : "")}
+            aria-hidden={index !== activeLaneIndex}>
             <span className="game-flow-fold-model">{shortModelName(lane.model)}</span>
             {lane.rate && <span className="game-flow-fold-speed">纯生成 <b>{lane.rate}</b> tok/s</span>}
           </div>)}
@@ -485,7 +483,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
         {groupedParameters ? <>
           {headerSummary && <span className="game-flow-header-summary">{headerSummary}</span>}
-          <div className="game-flow-header-operations">{headerTiming ?? elapsedDisplay}{actionDisplay}</div>
+          <div className="game-flow-header-operations">{showHeaderTiming ? headerTiming : elapsedDisplay}{actionDisplay}</div>
         </> : <>{elapsedDisplay}{actionDisplay}</>}
       </header>
       {foldedProgress}

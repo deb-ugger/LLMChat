@@ -3917,9 +3917,9 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
   background:var(--bg-panel);display:flex;flex-direction:column;gap:6px}
 .game-flow-progress-row{display:flex;align-items:center;gap:9px;min-inline-size:0}
 .game-flow-progress-row > .unity-progress-track{flex:1 1 auto;block-size:8px;margin:0}
-.game-flow-progress .game-flow-progress-bar{flex:1 1 auto;min-inline-size:60px;block-size:8px;border-radius:4px;overflow:hidden;
+:is(.game-flow-progress, .game-flow-fold-bar) .game-flow-progress-bar{flex:1 1 auto;min-inline-size:60px;block-size:8px;border-radius:4px;overflow:hidden;
   background:color-mix(in srgb,var(--border-strong) 55%,transparent)}
-.game-flow-progress .game-flow-progress-bar>i{display:block;block-size:100%;border-radius:4px;
+:is(.game-flow-progress, .game-flow-fold-bar) .game-flow-progress-bar>i{display:block;block-size:100%;border-radius:4px;
   background:linear-gradient(90deg,color-mix(in srgb,var(--flow-color,#8f7cf0) 65%,#8f7cf0),var(--flow-color,#8f7cf0));transition:width .4s}
 .game-flow-progress-pct{flex:none;font:600 12.5px var(--mono);color:var(--text);font-variant-numeric:tabular-nums;min-inline-size:34px;text-align:right}
 .game-flow-progress-count{flex:none;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -4370,6 +4370,7 @@ details[open] > .game-benchmark-run-summary .game-benchmark-run-model small::bef
 .has-grouped-parameters.has-folded-progress .game-flow-fold-bar .unity-progress-track {
   inline-size: 100%;
   block-size: 7px;
+  min-inline-size: 0;
   margin: 0;
 }
 .has-grouped-parameters.has-folded-progress .game-flow-fold-bar .game-flow-progress-bar > i,
