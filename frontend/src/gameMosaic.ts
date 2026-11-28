@@ -194,7 +194,7 @@ export function mapMosaicBoxes(boxes: MosaicBox[], from: { width: number; height
 export async function mosaicInputKey(blob: Blob, boxes: MosaicBox[]) {
   const { data, width, height } = await bitmapPixels(blob);
   const hash = await crypto.subtle.digest("SHA-256", data);
-  return JSON.stringify([width, height, Array.from(new Uint8Array(hash)), boxes]);
+  return JSON.stringify(["mosaic-regions-v2", width, height, Array.from(new Uint8Array(hash)), boxes]);
 }
 
 async function encoded(blob: Blob) {
@@ -255,7 +255,8 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
   // Match the job identifier in repair_mosaic.
   const namespace = new Uint8Array([0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]);
-  const workflow = model === "2511" ? "aligned-edit" : model === "diffusion-cream" ? "diffusion-cream" : "expanded";
+  const workflow = model === "2511" ? "aligned-edit-regions-v2"
+    : model === "diffusion-cream" ? "diffusion-cream-regions-v2" : "expanded-regions-v2";
   const name = new TextEncoder().encode("urn:llmchat:mosaic:" + workflow + ":" + promptId);
   const input = new Uint8Array(namespace.length + name.length);
   input.set(namespace);

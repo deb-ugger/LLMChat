@@ -343,23 +343,59 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
         raise TimeoutError("等待 ComfyUI 结果超时")
 
 
-def mosaic_redraw_area(original, regions, protected, preserve_edges=False):
-    from scipy import ndimage
-
+def mosaic_region_boxes(original, regions):
     boxes = [region["box"] for region in regions]
     if not boxes:
         raise ValueError("去码蒙版没有覆盖可编辑像素")
     for left, top, right, bottom in boxes:
         if not (0 <= left < right <= original.width and 0 <= top < bottom <= original.height):
             raise ValueError("请检查去码蒙版坐标")
+    return boxes
+
+
+def mosaic_mask_margin(boxes):
+    span = max(min(right - left, bottom - top) for left, top, right, bottom in boxes)
+    grow = max(2, min(6, round(span * .05)))
+    feather = max(3, min(10, round(span * .08)))
+    return grow, feather, grow + feather + 2
+
+
+def mosaic_region_groups(original, regions):
+    boxes = mosaic_region_boxes(original, regions)
+    _, _, margin = mosaic_mask_margin(boxes)
+    parents = list(range(len(boxes)))
+
+    def root(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    ordered = sorted(range(len(boxes)), key=lambda index: tuple(boxes[index]))
+    for position, index in enumerate(ordered):
+        left, top, right, bottom = boxes[index]
+        for other in ordered[position + 1:]:
+            x, y, r, b = boxes[other]
+            if x > right + 2 * margin:
+                break
+            if y <= bottom + 2 * margin and b >= top - 2 * margin:
+                parents[root(other)] = root(index)
+    grouped = {}
+    for index in ordered:
+        grouped.setdefault(root(index), []).append(regions[index])
+    return list(grouped.values())
+
+
+def mosaic_redraw_area(original, regions, protected, preserve_edges=False, allow_empty=False):
+    from scipy import ndimage
+
+    boxes = mosaic_region_boxes(original, regions)
 
     left = min(box[0] for box in boxes)
     top = min(box[1] for box in boxes)
     right = max(box[2] for box in boxes)
     bottom = max(box[3] for box in boxes)
-    mask_span = max(min(right - left, bottom - top) for left, top, right, bottom in boxes)
-    expansion = max(4, min(24, round(mask_span * .15)))
-    feather = round(expansion * 2 / 3)
+    grow, feather, expansion = mosaic_mask_margin(boxes)
     padding = expansion + max(48, round(max(right - left, bottom - top) * .25))
     bounds = (max(0, left - padding), max(0, top - padding),
               min(original.width, right + padding), min(original.height, bottom + padding))
@@ -378,23 +414,24 @@ def mosaic_redraw_area(original, regions, protected, preserve_edges=False):
 
     core = user_mask & editable
     if not core.any():
+        if allow_empty:
+            return None
         raise ValueError("去码蒙版没有覆盖可编辑像素")
     distance = ndimage.distance_transform_edt(~core)
     generation = editable & (distance <= expansion)
-    blend = np.clip(1 - distance / feather, 0, 1)
+    blend = np.clip(1 - (distance - grow) / feather, 0, 1)
     blend = blend * blend * (3 - 2 * blend)
-    if preserve_edges and ((distance > 0) & (distance < feather) & editable).any():
+    if preserve_edges and ((distance > grow) & (distance < grow + feather) & editable).any():
         rgb = ndimage.gaussian_filter(np.asarray(crop.convert("RGB"), dtype=np.float32), (.8, .8, 0))
         strength = np.hypot(ndimage.sobel(rgb, axis=0), ndimage.sobel(rgb, axis=1)).max(axis=2) / 8
         edges = np.clip((strength - 4) / 14, 0, 1)
         edges = ndimage.gaussian_filter(ndimage.maximum_filter(edges, size=3), .8)
-        ramp = np.minimum(distance / feather, 1)
+        ramp = np.clip((distance - grow) / feather, 0, 1)
         # Keep clean contours in the transition band, with a smooth return to the original blend.
         blend *= 1 - .7 * edges * (4 * ramp * (1 - ramp)) ** 2
     blend[~editable] = 0
     # Sample intact, nearly opaque pixels within the generated border.
-    sample_limit = expansion - max(1, expansion // 6)
-    samples = generation & ~user_mask & (alpha >= 224) & (distance >= feather / 2) & (distance <= sample_limit)
+    samples = generation & (alpha >= 224) & (distance >= grow + feather) & (distance <= expansion)
     return bounds, crop, generation, Image.fromarray(np.rint(blend * 255).astype(np.uint8)), samples
 
 
@@ -488,7 +525,8 @@ def edit_mosaic_size(crop_size):
     return tuple(max(16, round(side * scale / 16) * 16) for side in crop_size)
 
 
-MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit", "turbo": "expanded", "diffusion-cream": "diffusion-cream"}
+MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "turbo": "expanded-regions-v2",
+                        "diffusion-cream": "diffusion-cream-regions-v2"}
 
 
 def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name):
@@ -625,6 +663,45 @@ def mosaic_core_mask(blend):
     return blend.point([0] * 255 + [255])
 
 
+def mosaic_redraw_areas(original, regions, profile):
+    areas = []
+    for group in mosaic_region_groups(original, regions):
+        area = mosaic_redraw_area(original, group, profile.get("keep", []),
+                                  preserve_edges=profile["kind"] == "diffusion-cream", allow_empty=True)
+        if area is not None:
+            areas.append(area)
+    if not areas:
+        raise ValueError("去码蒙版没有覆盖可编辑像素")
+    return areas
+
+
+async def mosaic_region_graphs(original, areas, profile, steps, upload):
+    source_name = await upload(original, workflow_input_name(profile.get("name", "")))
+    graph = {"original": {"class_type": "LoadImage", "inputs": {"image": source_name},
+                           "_meta": {"title": "目标原图"}}}
+    outputs = []
+    for index, (bounds, crop, generation, blend, _) in enumerate(areas):
+        mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB"))
+        guide_name = await upload(mosaic_core_mask(blend)) if profile["kind"] == "diffusion-cream" else None
+        reference = profile.get("referenceImage")
+        reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
+        local = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_name)
+        left, top, _, _ = bounds
+        local["4"] = {"class_type": "ImageCrop", "inputs": {
+            "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
+        prefix = f"region_{index}_"
+        for key, node in local.items():
+            inputs = {name: [prefix + value[0], value[1]]
+                      if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and value[0] in local
+                      else value for name, value in node["inputs"].items()}
+            graph[prefix + key] = {**node, "inputs": inputs}
+        outputs.append(prefix + "15")
+    # One ComfyUI job keeps cancellation and recovery atomic across all local regions.
+    graph["15"] = {"class_type": "PreviewImage", "inputs": {
+        "images": graph[outputs[0]]["inputs"]["images"]}}
+    return graph, outputs
+
+
 async def prepare_mosaic_workflow(original, data, steps):
     profile = data["profile"]
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
@@ -632,44 +709,44 @@ async def prepare_mosaic_workflow(original, data, steps):
     masked = bool(data["regions"])
     if not masked and profile["kind"] == "diffusion-cream":
         raise ValueError("使用 DiffusionCreamPy 前，请先为当前图片添加蒙版")
-    if masked:
-        bounds, crop, generation, blend, _ = mosaic_redraw_area(
-            original, data["regions"], profile.get("keep", []), preserve_edges=profile["kind"] == "diffusion-cream")
-    else:
-        bounds = (0, 0, original.width, original.height)
+    areas = mosaic_redraw_areas(original, data["regions"], profile) if masked else []
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         await ready(session, Path(data["directory"]))
         async def upload(image, filename=None):
             return await upload_image(session, image, "input", filename, "llmchat-mosaic")
 
-        source_name = await upload(original, workflow_input_name(profile.get("name", "")))
-        mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255)) if masked else None
-        guide_mask_name = await upload(mosaic_core_mask(blend)) if profile["kind"] == "diffusion-cream" else None
-        reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
-        graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size if masked else None, guide_mask_name)
-        graph["4"]["_meta"] = {"title": "目标原图"}
-        if guide_mask_name:
-            graph["43"]["_meta"] = {"title": "结构预处理蒙版"}
-        if reference_name:
-            graph["16"]["_meta"] = {"title": "画风参考图"}
-        if masked:
-            graph["17"]["_meta"] = {"title": "重绘蒙版"}
+        if not masked:
+            source_name = await upload(original, workflow_input_name(profile.get("name", "")))
+            reference_name = await upload(*mosaic_reference_input(reference, original,
+                (0, 0, original.width, original.height), profile["kind"])) if reference else None
+            graph = mosaic_workflow(source_name, reference_name, None, steps, profile)
+            graph["4"]["_meta"] = {"title": "目标原图"}
+            if original.getchannel("A").getextrema() != (255, 255):
+                graph["25"] = {"class_type": "JoinImageWithAlpha", "inputs": {
+                    "image": graph["15"]["inputs"]["images"], "alpha": ["4", 1]}}
+                graph["15"]["inputs"]["images"] = ["25", 0]
+            return graph
+
+        graph, outputs = await mosaic_region_graphs(original, areas, profile, steps, upload)
+        destination = ["original", 0]
+        for index, ((bounds, crop, _, blend, _), output) in enumerate(zip(areas, outputs)):
             left, top, _, _ = bounds
-            graph["20"] = {"class_type": "ImageCrop", "inputs": {
-                "image": ["4", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
-            image_input = "images.image_1" if profile["kind"] == "turbo" else "image"
-            graph["5"]["inputs"][image_input] = ["20", 0]
-            graph["21"] = {"class_type": "ImageScale", "inputs": {"image": ["14", 0], "upscale_method": "lanczos",
+            prefix = f"merge_{index}_"
+            graph[prefix + "image"] = {"class_type": "ImageScale", "inputs": {
+                "image": graph[output]["inputs"]["images"], "upscale_method": "lanczos",
                 "width": crop.width, "height": crop.height, "crop": "disabled"}}
-            graph["22"] = {"class_type": "LoadImage", "inputs": {"image": await upload(blend)}}
-            graph["23"] = {"class_type": "ImageToMask", "inputs": {"image": ["22", 0], "channel": "red"}}
-            graph["24"] = {"class_type": "ImageCompositeMasked", "inputs": {
-                "destination": ["4", 0], "source": ["21", 0], "mask": ["23", 0], "x": left, "y": top, "resize_source": False}}
-            graph["15"]["inputs"]["images"] = ["24", 0]
+            graph[prefix + "mask"] = {"class_type": "LoadImage", "inputs": {"image": await upload(blend)}}
+            graph[prefix + "alpha"] = {"class_type": "ImageToMask", "inputs": {"image": [prefix + "mask", 0], "channel": "red"}}
+            graph[prefix + "composite"] = {"class_type": "ImageCompositeMasked", "inputs": {
+                "destination": destination, "source": [prefix + "image", 0], "mask": [prefix + "alpha", 0],
+                "x": left, "y": top, "resize_source": False}}
+            destination = [prefix + "composite", 0]
+            del graph[output]
+        graph["15"]["inputs"]["images"] = destination
         if original.getchannel("A").getextrema() != (255, 255):
             graph["25"] = {"class_type": "JoinImageWithAlpha", "inputs": {
-                "image": graph["15"]["inputs"]["images"], "alpha": ["4", 1]}}
+                "image": graph["15"]["inputs"]["images"], "alpha": ["original", 1]}}
             graph["15"]["inputs"]["images"] = ["25", 0]
         return graph
 
@@ -679,45 +756,52 @@ async def repair_mosaic(original, data, steps, workflow_times):
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
     preserve_edges = profile["kind"] == "diffusion-cream"
-    bounds, crop, generation, blend, samples = mosaic_redraw_area(
-        original, data["regions"], profile.get("keep", []), preserve_edges=preserve_edges)
-    reference = profile.get("referenceImage")
+    areas = mosaic_redraw_areas(original, data["regions"], profile)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])
         cancel_path = data.get("cancelPath")
         argv = await ready(session, root, cancel_path)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
-            # Recover only outputs produced with matching crop geometry.
+            # The versioned job ID excludes outputs from the previous union-crop workflow.
             workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
-            raw, old_history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
-            if raw is not None and preserve_edges:
-                if "43" not in old_history["prompt"][2]:
-                    raw = None
-                    workflow_times.clear()
-            if raw is None:
-                source_name = await upload_image(session, crop.convert("RGB"), subfolder=subfolder)
-                noise_mask = Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB")
-                mask_name = await upload_image(session, noise_mask, subfolder=subfolder)
-                guide_mask_name = await upload_image(session, mosaic_core_mask(blend), subfolder=subfolder) if preserve_edges else None
-                reference_name = None
-                if reference:
-                    reference_image, filename = mosaic_reference_input(reference, original, bounds, profile["kind"])
-                    reference_name = await upload_image(session, reference_image, filename=filename, subfolder=subfolder)
-                graph = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_mask_name)
+            raw, history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
+            patches = [raw] if raw is not None else []
+            if raw is not None:
+                for index in range(1, len(areas)):
+                    extra = await graph_history_image(session, history, f"region_{index}_15", [], allow_missing=True)
+                    if extra is None:
+                        patches = []
+                        workflow_times.clear()
+                        break
+                    patches.append(extra)
+            if not patches:
+                async def upload(image, filename=None):
+                    return await upload_image(session, image, filename=filename, subfolder=subfolder)
+
+                graph, outputs = await mosaic_region_graphs(original, areas, profile, steps, upload)
                 if subfolder:
-                    graph["15"] = {"class_type": "SaveImage", "inputs": {
-                        "images": graph["15"]["inputs"]["images"], "filename_prefix": subfolder + "/preview"}}
-                raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, prompt_ids,
-                                            resume_id=resume_id, old_history=old_history, cancel_path=cancel_path)
-    with Image.open(io.BytesIO(raw)) as output:
-        restored = output.convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
-    if profile["kind"] != "diffusion-cream":
-        restored = match_mosaic_colors(crop, restored, generation, samples)
-    restored.putalpha(crop.getchannel("A"))
+                    for output in ["15", *outputs]:
+                        graph[output] = {"class_type": "SaveImage", "inputs": {
+                            "images": graph[output]["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
+                submitted = prompt_ids if prompt_ids is not None else []
+                raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, submitted,
+                                            resume_id=resume_id, old_history=history, cancel_path=cancel_path)
+                patches = [raw]
+                if len(areas) > 1:
+                    history = await read_graph_history(session, submitted[-1])
+                    for output in outputs[1:]:
+                        await check_mosaic_cancel(session, cancel_path)
+                        patches.append(await graph_history_image(session, history, output, []))
     result = original.copy()
-    result.paste(Image.composite(restored, crop, blend), bounds)
+    for raw, (bounds, crop, generation, blend, samples) in zip(patches, areas):
+        with Image.open(io.BytesIO(raw)) as output:
+            restored = output.convert("RGB").resize(crop.size, Image.Resampling.LANCZOS)
+        if not preserve_edges:
+            restored = match_mosaic_colors(crop, restored, generation, samples)
+        restored.putalpha(crop.getchannel("A"))
+        result.paste(Image.composite(restored, result.crop(bounds), blend), bounds)
     return result
 
 
