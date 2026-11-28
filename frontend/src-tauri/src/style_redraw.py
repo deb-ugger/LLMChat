@@ -143,7 +143,7 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
             graph["16"] = node("LoadImage", image=reference)
             graph["5"]["inputs"]["images.image_2"] = ["16",0]
         return graph
-    return {
+    graph = {
         **({"16": node("LoadImage", image=reference)} if reference is not None else {}),
         "1": node("UnetLoaderGGUF", unet_name=profile["model"]),
         "2": node("CLIPLoader", clip_name=profile["clip"], type="qwen_image", device="default"),
@@ -160,6 +160,12 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
         "14": node("VAEDecode", samples=["13", 0], vae=["3", 0]),
         "15": node("PreviewImage", images=["14", 0]),
     }
+    if kind == "2511-lightning":
+        graph["29"] = node("LoraLoaderModelOnly", model=["1", 0],
+                           lora_name="Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", strength_model=1.0)
+        graph["10"]["inputs"]["model"] = ["29", 0]
+        graph["13"]["inputs"].update(steps=4, cfg=1.0)
+    return graph
 
 
 def prepare(crop):
@@ -525,7 +531,8 @@ def edit_mosaic_size(crop_size):
     return tuple(max(16, round(side * scale / 16) * 16) for side in crop_size)
 
 
-MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "turbo": "expanded-regions-v2",
+MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
+                        "turbo": "expanded-regions-v2",
                         "diffusion-cream": "diffusion-cream-regions-v2"}
 
 
@@ -601,7 +608,7 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
             graph["6"]["inputs"]["text"] += target
             graph["7"]["inputs"]["text"] += ", " + target_negative
         return graph
-    local_edit = profile["kind"] == "2511" and mask_name is not None
+    local_edit = profile["kind"] in ("2511", "2511-lightning") and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
               "Preserve the pose, composition, outline, palette and the existing illustration style. "
               "Match the colors, shading and brightness immediately around the repaired area in image 1. "
@@ -643,6 +650,11 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
             graph[ref] = {"class_type": "ReferenceLatent", "inputs": {
                 "conditioning": [encoder, 0], "latent": ["12", 0]}}
             graph[conditioner]["inputs"]["conditioning"] = [ref, 0]
+    if profile["kind"] == "2511-lightning":
+        # CFG=1 uses only the positive prediction. Avoid a second image/text encoding.
+        graph["13"]["inputs"]["negative"] = graph["13"]["inputs"]["positive"]
+        for key in ("7", "9", "28"):
+            graph.pop(key, None)
     return graph
 
 
@@ -675,6 +687,16 @@ def mosaic_redraw_areas(original, regions, profile):
     return areas
 
 
+def remap_mosaic_nodes(graph, ids):
+    result = {}
+    for key, node in graph.items():
+        inputs = {name: [ids[value[0]], value[1]]
+                  if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and value[0] in ids
+                  else value for name, value in node["inputs"].items()}
+        result[ids[key]] = {**node, "inputs": inputs}
+    return result
+
+
 async def mosaic_region_graphs(original, areas, profile, steps, upload):
     source_name = await upload(original, workflow_input_name(profile.get("name", "")))
     graph = {"original": {"class_type": "LoadImage", "inputs": {"image": source_name},
@@ -690,11 +712,9 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
         local["4"] = {"class_type": "ImageCrop", "inputs": {
             "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
         prefix = f"region_{index}_"
-        for key, node in local.items():
-            inputs = {name: [prefix + value[0], value[1]]
-                      if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and value[0] in local
-                      else value for name, value in node["inputs"].items()}
-            graph[prefix + key] = {**node, "inputs": inputs}
+        local["4"]["_meta"] = {"title": f"区域 {index + 1} · 原图裁剪"}
+        local["17"]["_meta"] = {"title": f"区域 {index + 1} · 生成蒙版"}
+        graph.update(remap_mosaic_nodes(local, {key: prefix + key for key in local}))
         outputs.append(prefix + "15")
     # One ComfyUI job keeps cancellation and recovery atomic across all local regions.
     graph["15"] = {"class_type": "PreviewImage", "inputs": {
@@ -748,7 +768,8 @@ async def prepare_mosaic_workflow(original, data, steps):
             graph["25"] = {"class_type": "JoinImageWithAlpha", "inputs": {
                 "image": graph["15"]["inputs"]["images"], "alpha": ["original", 1]}}
             graph["15"]["inputs"]["images"] = ["25", 0]
-        return graph
+        ids = {key: key if key.isdecimal() else str(index + 100) for index, key in enumerate(graph)}
+        return remap_mosaic_nodes(graph, ids)
 
 
 async def repair_mosaic(original, data, steps, workflow_times):
@@ -770,6 +791,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
             patches = [raw] if raw is not None else []
             if raw is not None:
                 for index in range(1, len(areas)):
+                    await check_mosaic_cancel(session, cancel_path)
                     extra = await graph_history_image(session, history, f"region_{index}_15", [], allow_missing=True)
                     if extra is None:
                         patches = []

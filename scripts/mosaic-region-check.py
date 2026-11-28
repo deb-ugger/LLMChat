@@ -74,6 +74,12 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             areas = worker.mosaic_redraw_areas(source, regions, settings)
             graph, outputs = await worker.mosaic_region_graphs(source, areas, settings, 8, upload)
             self.assertEqual(len(outputs), 2)
+            if kind == "2511-lightning":
+                self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 4)
+                self.assertEqual(graph["region_0_13"]["inputs"]["cfg"], 1)
+                self.assertEqual(graph["region_0_10"]["inputs"]["model"], ["region_0_29", 0])
+                self.assertEqual(graph["region_0_13"]["inputs"]["positive"], graph["region_0_13"]["inputs"]["negative"])
+                self.assertNotIn("region_0_7", graph)
             self.assertEqual(graph["region_0_4"]["class_type"], "ImageCrop")
             self.assertEqual(graph["region_1_4"]["inputs"]["x"], areas[1][0][0])
             for node in graph.values():
@@ -104,9 +110,11 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             patch.object(worker, "upload_image", upload),
         ):
             graph = await worker.prepare_mosaic_workflow(source, data, 8)
-        self.assertEqual(graph["merge_1_composite"]["inputs"]["destination"], ["merge_0_composite", 0])
-        self.assertEqual(graph["15"]["inputs"]["images"], ["merge_1_composite", 0])
-        self.assertFalse(any(key.startswith("region_") and key.endswith("_15") for key in graph))
+        composites = [(key, node) for key, node in graph.items() if node["class_type"] == "ImageCompositeMasked"]
+        self.assertEqual(composites[1][1]["inputs"]["destination"], [composites[0][0], 0])
+        self.assertEqual(graph["15"]["inputs"]["images"], [composites[-1][0], 0])
+        self.assertTrue(all(key.isdecimal() for key in graph))
+        self.assertEqual([key for key, node in graph.items() if node["class_type"] == "PreviewImage"], ["15"])
 
     async def test_runtime_recovery_composition_and_missing_patch(self):
         source = texture((220, 160))
@@ -183,6 +191,13 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             await worker.repair_mosaic(source, data, 8, restarted_times)
             self.assertEqual(len(submissions), 2)
             self.assertEqual(restarted_times, [123])
+            async def cancelled(*args):
+                raise RuntimeError("fixture cancellation")
+
+            with patch.object(worker, "check_mosaic_cancel", cancelled):
+                with self.assertRaisesRegex(RuntimeError, "fixture cancellation"):
+                    await worker.repair_mosaic(source, data, 8, [])
+            self.assertEqual(len(submissions), 2)
 
 
 if __name__ == "__main__":

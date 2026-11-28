@@ -278,7 +278,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
             {mosaicModelChoices.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
           </select></label>
           <div className="game-flow-chip-row">
-            {model !== "turbo" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
+            {model !== "turbo" && model !== "2511-lightning" && <GameFlowNumberChip label="步数" min={1} max={100} value={steps} disabled={busy}
               onChange={steps => changePreferences({ steps })} />}
           </div>
           <div className="game-flow-chip-row"><label><input type="checkbox" role="switch" checked={protect} disabled={busy}

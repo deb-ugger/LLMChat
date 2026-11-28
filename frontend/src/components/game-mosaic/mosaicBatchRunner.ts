@@ -442,6 +442,7 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
 }
 
 export function mosaicRedrawStepCount(plan: Pick<RedrawPlan, "models" | "steps">, engine: RedrawPlan["models"][number]) {
+  if (engine === "2511-lightning") return 4;
   return plan.models.length === 1 ? plan.steps : mosaicDefaultSteps[engine];
 }
 
