@@ -181,9 +181,9 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
       <div className="game-mosaic-detail-header">
         <div className="game-mosaic-detail-row">{header}</div>
         <div className="game-mosaic-detail-row">
-          <div key={active.id} className="game-mosaic-redraw-split" role="group" aria-label="重绘当前图">
+          <div key={active.id} className="game-mosaic-redraw-split" data-output-handled role="group" aria-label="重绘当前图">
             <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason}
-              data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 为当前图生成一版候选", redrawReason || testTitle].filter(Boolean).join("\n")}
+              data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 重绘并保存当前图片", redrawReason || testTitle].filter(Boolean).join("\n")}
               onClick={() => onRedraw([model])}>重绘</button>
             <button type="button" className="unity-btn unity-btn-primary" aria-label="选择重绘工作流"
               disabled={!!redrawReason} data-tooltip={redrawReason} popoverTarget={redrawMenuId}>▾</button>

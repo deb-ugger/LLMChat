@@ -4,6 +4,7 @@ export const mosaicStatusLabels = {
   failed: "处理失败",
   included: "已纳入补丁",
   confirmed: "已采用去码图",
+  manualRedrawn: "手动重绘",
   redrawn: "已重绘图片",
   refinedCandidate: "复筛确认有码",
   refinedClear: "复筛确认无码",
@@ -15,7 +16,7 @@ export const mosaicStatusLabels = {
 
 export type MosaicStatus = keyof typeof mosaicStatusLabels;
 export const mosaicStatusOrder = Object.keys(mosaicStatusLabels) as readonly MosaicStatus[];
-export const mosaicManualStatuses = mosaicStatusOrder.filter(status => status !== "confirmed" && status !== "included" && status !== "redrawn");
+export const mosaicManualStatuses = mosaicStatusOrder.filter(status => status !== "confirmed" && status !== "included" && status !== "redrawn" && status !== "manualRedrawn");
 
 export function isMosaicClearCategory(category?: string) {
   return category === mosaicStatusLabels.clear || category === mosaicStatusLabels.refinedClear || category === "未发现";
@@ -25,7 +26,8 @@ export function mosaicStatusChoices() {
   return mosaicStatusOrder.map(status => {
     const description = status === "confirmed" ? "采用去码图后自动归入此组" :
       status === "included" ? "纳入补丁后自动归入此组" :
-      status === "redrawn" ? "生成去码候选后自动归入此组" : undefined;
+      status === "redrawn" ? "生成去码候选后自动归入此组" :
+      status === "manualRedrawn" ? "单张手动重绘保存后自动归入此组" : undefined;
     return { value: status, label: mosaicStatusLabels[status], disabled: !!description, description };
   });
 }

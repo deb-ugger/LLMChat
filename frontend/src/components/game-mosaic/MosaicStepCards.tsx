@@ -199,7 +199,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     {screen.detectorFile && <button type="button" className="unity-btn is-secondary" disabled={busy}
       onClick={() => detectorInput.current?.click()}>更换模型文件</button>}
   </>;
-  return <div className="game-mosaic-controls game-flow" hidden={!paneVisible} style={hiddenStyle}>
+  return <div className="game-mosaic-controls game-flow" data-output-handled hidden={!paneVisible} style={hiddenStyle}>
     <div className="game-flow-list"><ol>
       {stepCard("screen", "筛选打码图片", <>
         <button type="button" className="unity-btn unity-btn-primary game-flow-start" disabled={testing || actionsDisabled || !screen.targetCount} title={testTitle}

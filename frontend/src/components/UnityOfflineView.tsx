@@ -14,6 +14,7 @@ import { clearImageGroupHistory, resetImageGroupHistory } from "../gameImageGrou
 import { useGameTestConfigurationSource } from "../gameAuxWindows";
 import { GameBatchResults, type BatchRow } from "./GameBatchResults";
 import type { MosaicCandidateIndex } from "./GameMosaicWorkbench";
+import { mosaicStepLabels, type MosaicOutput } from "./game-mosaic/mosaicWorkbenchTypes";
 import { canDisableOllamaNameThinking, prepareGameOllamaModels, translateGameWithOllama } from "../gameOllama";
 import { screenGameText } from "../gameTextScreening";
 import { GAME_CONTEXT_HINT } from "../gameTranslationContext";
@@ -217,9 +218,11 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const [localActivity, setLocalActivity] = useState<{ images: boolean; value: GenerationProgress } | null>(null);
   const lastOperationError = useRef("");
   const logAction = (text: string, level: OutputLevel = "info", stage = outputStage, task?: string) =>
-    writeOutput(["游戏翻译", "Unity", "嵌入翻译", stage], text, level, level === "error" || level === "warning", task);
+    writeOutput(stage ? ["游戏翻译", "Unity", "嵌入翻译", stage] : ["游戏翻译", "Unity", "嵌入翻译"],
+      text, level, level === "error" || level === "warning", task);
   const textLog = (text: string, level?: OutputLevel) => logAction(text, level, "文本翻译");
   const imageLog = (text: string, level?: OutputLevel) => logAction(text, level, "图片翻译");
+  const mosaicOutput: MosaicOutput = (text, level, step) => logAction(text, level, step ? mosaicStepLabels[step] : "");
   const showLocalActivity = (detail: string, state: GenerationProgress["state"] = "running", images = imagePart, completed = 0, total: number | null = null) => setLocalActivity({ images, value: { step: activeStep, detail, state, completed, total } });
   useEffect(() => { setLocalActivity(null); }, [root]);
   const [imageEditorBusy,setImageEditorBusy]=useState("");
@@ -1218,17 +1221,23 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     if (imageId === undefined ? !drafts.size : !drafts.has(imageId)) return;
     setSaving(true);
     try {
+      const addToPatch: string[] = [];
       const removeFromPatch: string[] = [];
       for (const [id, draft] of drafts) {
-        if (imageId !== undefined && id !== imageId) continue;
-        if (!draft.base.saved || draft.patch.saved !== false) continue;
+        if (imageId !== undefined && id !== imageId || !draft.base.saved) continue;
         const entry = mosaicIndex?.[id];
         if (!entry) continue;
-        if (entry.source !== draft.base.source || entry.hash !== draft.patch.discardedHash)
-          throw new Error("采用结果已更新，请取消撤回后重新操作");
-        if (entry.included) removeFromPatch.push(id);
+        if (draft.patch.saved === false) {
+          if (entry.source !== draft.base.source || entry.hash !== draft.patch.discardedHash)
+            throw new Error("采用结果已更新，请取消撤回后重新操作");
+          if (entry.included) removeFromPatch.push(id);
+        } else if (draft.base.manualRedraw && draft.patch.checked !== undefined && entry.included !== draft.patch.checked) {
+          if (entry.source !== draft.base.source) throw new Error("原图已更新，无法修改手动重绘选择");
+          (draft.patch.checked ? addToPatch : removeFromPatch).push(id);
+        }
       }
       if (removeFromPatch.length) await selectMosaicCandidates(removeFromPatch, false);
+      if (addToPatch.length) await selectMosaicCandidates(addToPatch, true);
       if (saveMosaicDrafts(root, imageId)) showAppNotice(imageId === undefined ? "已保存图片去码修改" : "已保存当前图片改动");
     } catch (cause) {
       showAppNotice(cause instanceof Error ? cause.message : "无法保存图片去码修改", "error");
@@ -1249,11 +1258,13 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     consumeSavedDrafts: () => setMosaicStatus(value => value?.root === root && value.savedDrafts === mosaicStatus?.savedDrafts
       ? { ...value, savedDrafts: undefined } : value),
     read: readSavedMosaicImage,
-    save: async (image: UnityImage, blob: Blob, signal: AbortSignal) => {
+    save: async (image: UnityImage, blob: Blob, signal: AbortSignal, include?: boolean) => {
       const result = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save",
         { ...mosaicRequest, imageId: image.id, imageSourceHash: image.sourceHash, imageData: await imageBase64(blob) }, undefined, signal);
       setMosaicStatus({ root, candidates: result.candidates });
-      if (result.candidates[image.id]?.included) invalidatePatch();
+      if (include !== undefined && result.candidates[image.id]?.included !== include)
+        await selectMosaicCandidates([image.id], include, signal);
+      else if (result.candidates[image.id]?.included) invalidatePatch();
     },
     select: (images: UnityImage[], include: boolean, signal: AbortSignal) =>
       selectMosaicCandidates(images.map(image => image.id), include, signal),
@@ -1799,7 +1810,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
           try {
             return await refineMosaicBatch(targets, {
               root, settings: preferences, signal, modelFile, read: readMosaicSource, prepare: prepareMosaicSources, timingScope,
-              prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal, (detail, level) => logAction(detail, level, "图片去码")),
+              prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal, (detail, level) => mosaicOutput(detail, level, "refine")),
               request: (model, prompt, image, signal, lanes) => requestGameModelJson(settings, model, prompt, signal,
                 image, "game-images", undefined, { role: "mosaic", selection: selections(lanes) }),
               onResult: (image, scan) => updates.push({ image, change: reviewedResult(resultFor(screened, image), scan, reviewKey) }),
@@ -1814,6 +1825,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
         update: (image, change) => persistMosaicRowUpdates(root, [{ image, change }]),
         clearReviews: ids => clearMosaicReviews(root, ids),
         setProgress: (detail, completed, total) => report({ completed, total, detail }),
+        onOutput: mosaicOutput,
         writeCandidate: async (image, blob, signal) => {
           const imageData = await imageBase64(blob);
           const saved = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {
@@ -2397,7 +2409,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
       mosaic={mosaicMounted ? { visible: mosaicPage, onCompletion: reportMosaicCompletion,
         workbench: active && scanReady && mosaicControls && mosaicStorage && project?.images?.some(image => image.sourceFile && image.width > 0 && image.height > 0)
           ? { settings, gamePath: root, images: project.images, read: readMosaicSource, prepareSources: prepareMosaicSources,
-            controls: mosaicControls, storage: mosaicStorage, visible: mosaicPage, disabled: mosaicDisabled, onBusy: reportMosaicBusy }
+            controls: mosaicControls, storage: mosaicStorage, visible: mosaicPage, disabled: mosaicDisabled, onBusy: reportMosaicBusy, onMosaicOutput: mosaicOutput }
           : undefined,
       } : undefined}
       image={{ visible: activeStep === 2 && imagePart && !mosaicPage, revision: imageResetRevision, workbench: {

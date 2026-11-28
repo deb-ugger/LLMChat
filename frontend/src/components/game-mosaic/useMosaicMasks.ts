@@ -92,7 +92,7 @@ export function useMosaicMasks({ gamePath, active, activeResult, members, usable
       const row = resultFor(current, image);
       if (boxes.length === row.boxes.length && boxes.every((box, index) => box.every((value, edge) => value === row.boxes[index][edge]))) continue;
       next[image.id] = { ...row, boxes, manualBoxes: true, review: undefined, redrawError: undefined,
-        reference: row.saved ? row.reference : false, checked: row.saved ? row.checked : boxes.length > 0 };
+        reference: row.saved ? row.reference : false, checked: row.saved || row.manualChecked ? row.checked : boxes.length > 0 };
       const previousCandidate = candidates[image.id];
       undo.push({ id: image.id, source: image.sourceHash,
         mask: { boxes: row.boxes, manualBoxes: row.manualBoxes, review: row.review, redrawError: row.redrawError,

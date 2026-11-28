@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 export function logGameButton(event: MouseEvent<HTMLElement>, output: (text: string) => void) {
   const button = (event.target as Element).closest<HTMLButtonElement>("button");
-  if (!button || button.disabled) return;
+  if (!button || button.disabled || button.closest("[data-output-handled]")) return;
   const label = button.getAttribute("aria-label") || button.textContent?.trim() || button.title;
   // Capture processing actions only. Tabs, resizing, preview, pagination,
   // filters and menus change the view, not the project or its progress.

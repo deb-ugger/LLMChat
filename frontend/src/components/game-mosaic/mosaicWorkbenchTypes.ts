@@ -2,6 +2,7 @@ import type { RecordImageBenchmarkOutcome } from "../../benchmark/imageBenchmark
 import type { BenchmarkParameter } from "../../benchmark/benchmarkParameters";
 import type { ReactNode } from "react";
 import type { Settings } from "../../api";
+import type { OutputLevel } from "../../appOutput";
 import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
   MosaicBox, MosaicDevice, MosaicModel, MosaicSettings } from "../../gameMosaic";
 import type { readMosaicReviews, refineMosaicBatch } from "../../gameMosaicRefine";
@@ -13,7 +14,7 @@ import type { useMosaicMasks } from "./useMosaicMasks";
 
 export type RefineMovement = { from: MosaicStatus; to: MosaicStatus; checkedBefore: boolean; checkedAfter: boolean };
 export type Result = { source: string; beforeRefine?: MosaicInitialScreeningSnapshot; refineMovement?: RefineMovement; boxes: MosaicBox[]; checked: boolean; group?: string; manualGroup?: boolean; manualStatus?: MosaicManualStatus;
-  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; reference?: boolean; discardedHash?: string };
+  scanned?: boolean; detector?: string; manualBoxes?: boolean; manualChecked?: boolean; reason?: string; review?: string; refineError?: string; redrawError?: string; refined?: string; refineQuickExcluded?: boolean; signature?: string | number[]; saved?: boolean; manualRedraw?: boolean; reference?: boolean; discardedHash?: string };
 export type Results = Record<string, Result>;
 export type MosaicCandidate = { revision: string; versions: ResultVersion[] };
 export type MaskEdit = { image: UnityImage; boxes: MosaicBox[] };
@@ -36,13 +37,16 @@ export type RedrawPlan = {
   models: MosaicModel[];
   steps: number;
   referenceGuide?: boolean;
+  manualRedraw?: boolean;
   regionTargeting?: import("../../mosaicRegionTargets").MosaicRegionTargeting;
   groupReferences?: ReadonlyMap<string, MosaicRedrawReference>;
 };
 export type ResultVersion = {
-  id: string; model: MosaicModel; blob: Blob; seconds: number; boxes: MosaicBox[]; keep: MosaicBox[]; referenceGroup?: string;
+  id: string; model: MosaicModel; blob: Blob; seconds: number; boxes: MosaicBox[]; keep: MosaicBox[]; referenceGroup?: string; manualRedraw?: boolean;
 };
-export type MosaicStep = "screen" | "refine" | "redraw";
+export const mosaicStepLabels = { screen: "筛选打码图片", refine: "复筛打码图片", redraw: "重绘打码区域" } as const;
+export type MosaicStep = keyof typeof mosaicStepLabels;
+export type MosaicOutput = (message: string, level?: OutputLevel, step?: MosaicStep) => void;
 export type StepRun = {
   state: GameProgressState; completed: number; total: number; started?: number; elapsed?: number;
   summary?: string; parameters?: readonly BenchmarkParameter[]; device?: MosaicDevice; prepared?: number; models?: StepPerformance["models"];
@@ -66,7 +70,7 @@ type MosaicStorage = {
   savedDrafts?: ReadonlySet<string>;
   consumeSavedDrafts?: () => void;
   read: (image: UnityImage, signal: AbortSignal) => Promise<Blob>;
-  save: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<void>;
+  save: (image: UnityImage, blob: Blob, signal: AbortSignal, include?: boolean) => Promise<void>;
   select: (images: UnityImage[], include: boolean, signal: AbortSignal) => Promise<void>;
   saveDraftChanges: (imageId: string) => Promise<void>;
 };
@@ -76,6 +80,7 @@ export type MosaicWorkbenchProps = {
   prepareSources?: (images: readonly UnityImage[], signal: AbortSignal) => Promise<Record<string, string>>;
   controls: HTMLElement; visible?: boolean; disabled?: boolean; onBusy?: (busy: boolean) => void;
   deploymentHandle?: { current: GameMosaicDeploymentHandle | null };
+  onMosaicOutput?: MosaicOutput;
 };
 
 export type MosaicStepUsage = {
@@ -101,7 +106,7 @@ export type MosaicBatchPorts = {
   beginUsage: (step: MosaicBatchStep, refresh: () => void) => MosaicStepUsage;
   setProgress: (message: string) => void;
   setError: (message: string) => void;
-  finish: () => void;
+  finish: (state: "done" | "error" | "stopped", detail?: string) => void;
 };
 
 type MosaicRead = MosaicWorkbenchProps["read"];
@@ -220,6 +225,7 @@ export type MosaicAutomaticPorts = {
   openDetector: (signal: AbortSignal, timingScope: string) => ReturnType<typeof openDeploymentDetector>;
   keep: (image: UnityImage) => MosaicBox[];
   saveScreening: (changes: Results) => void;
+  onOutput?: MosaicOutput;
   redrawMosaic: typeof redrawMosaic;
   reportGameStepItems: typeof reportGameStepItems;
   recordGameCacheHit: typeof recordGameCacheHit;

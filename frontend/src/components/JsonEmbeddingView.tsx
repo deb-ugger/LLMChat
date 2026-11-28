@@ -14,6 +14,7 @@ import { openGameTextBenchmark } from "./GameTextBenchmarkDialog";
 import { useProjectBenchmarkLauncher } from "../gameBenchmarkWindow";
 import { GameMosaicPatchButton } from "./GameMosaicPatchButton";
 import { GameMosaicCompletionContext, type GameMosaicDeploymentHandle } from "./GameMosaicWorkbench";
+import { mosaicStepLabels, type MosaicOutput } from "./game-mosaic/mosaicWorkbenchTypes";
 import { UnityIconButton } from "./UnityIconButton";
 import { UnityActionIcon } from "./UnityActionIcon";
 import { loadGameStage, rememberGameStage, rememberRecentGameFailures } from "../unityLastGame";
@@ -216,10 +217,11 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   const [status, setStatus] = useState<Status>({ state: "idle" }), [error, setError] = useState(""), [pending, setPending] = useState(false);
   const logKey = useRef("");
   const appendLog = useCallback((text: string, level: OutputLevel = "info", stage = "工程操作") =>
-    writeOutput(["游戏翻译", game.engine, stage], text, level, level === "warning" || level === "error",
+    writeOutput(stage ? ["游戏翻译", game.engine, stage] : ["游戏翻译", game.engine], text, level, level === "warning" || level === "error",
       level === "error" ? JSON.stringify([game.path, text]) : undefined), [game.engine, game.path]);
   const textLog = useCallback((text: string, level?: OutputLevel) => appendLog(text, level, "文本翻译"), [appendLog]);
   const imageLog = useCallback((text: string, level?: OutputLevel) => appendLog(text, level, "图片翻译"), [appendLog]);
+  const mosaicOutput = useCallback<MosaicOutput>((text, level, step) => appendLog(text, level, step ? mosaicStepLabels[step] : ""), [appendLog]);
   const confirmation = useGameActionConfirm(text => appendLog(text)); const confirm = confirmation.confirm;
   useEffect(() => {
     const text = error || status.detail;
@@ -1132,7 +1134,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
         {textStep===3&&imageProject&&patch.conflicts.some(path=>matchedImageConflicts.has(path))&&<button type="button" className="unity-btn" onClick={()=>selectWorkflow("2.2")}>查看图片补丁冲突</button>}
         </div></div>,controlsTarget)}
       <GameTextWorkspace testConfigurations={testConfigurations} testConfigurationDisabled={busy || !textInfo.sourcePath} gamePath={game.path} settings={settings} sourcePath={scanPath} controls={controlsTarget} results={resultsTarget} batchResults={textBatch} visible={part==="text"} step={textStep} active={active} disabled={projectSaving||mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} skipped={workflow.textSkipped} onSkip={()=>void skipPart(false)} handle={textHandle} onInfo={textInfoChanged} onBatchFailures={setTextFailures} onBatchCorrections={setTextRepairs} onMessage={textLog}/>
-      {imageProject&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench packageOnly={imageExport} onPackageMosaicSelection={imageExport ? updatePackageMosaicIds : undefined} mosaicDeployment={selfMosaic ? mosaicHandle : undefined} mosaicActive={active&&selfMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={projectSaving||mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
+      {imageProject&&<GameMosaicCompletionContext.Provider value={setMosaicComplete}><GameImageWorkbench packageOnly={imageExport} onPackageMosaicSelection={imageExport ? updatePackageMosaicIds : undefined} mosaicDeployment={selfMosaic ? mosaicHandle : undefined} mosaicActive={active&&selfMosaic&&part==="mosaic"} mosaicDisabled={workflowBusy} onMosaicBusy={setMosaicBusy} onMosaicOutput={mosaicOutput} testConfigurations={testConfigurations} testConfigurationDisabled={busy || !(textInfo.sourcePath || imageWorkflow.loaded)} patchConflictPaths={patch.conflicts} onMatchedPatchConflicts={setMatchedImageConflicts} handle={imageHandle} workspaceTargets={{controls:controlsTarget,results:resultsTarget}} scanRequest={imageScanRequest} skipped={workflow.imagesSkipped} onSkip={skipImages} onResetSkipped={()=>{if(workflowRef.current.imagesSkipped)void updateWorkflow({imagesSkipped:false});}} leaveGuard={imageLeaveGuard} onTaskStateChange={setImageWorkflow} workflowStage={textStep===3?"apply":"images"} backupScopes={backupScopes} gamePath={game.path} settings={settings} backupMode={backupMode} active={active&&part==="images"} disabled={projectSaving||mosaicBusy||deploymentRunning||pending||detecting||status.state==="running"} onBusy={setImageBusy} onMessage={imageLog}/></GameMosaicCompletionContext.Provider>}
 
     </main>
 

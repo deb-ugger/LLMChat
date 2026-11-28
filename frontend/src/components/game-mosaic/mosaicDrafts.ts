@@ -105,6 +105,7 @@ export function saveMosaicDrafts(root: string, imageId?: string) {
   const remaining = new Map(mosaicDraftsOf(root));
   for (const [id, saved] of drafts) if (remaining.get(id) === saved) remaining.delete(id);
   publishDrafts(root, remaining);
-  notifyMosaicAdoptionChanged(root, [...drafts].flatMap(([id, draft]) => draft.base.saved && changes[id].saved === false ? [id] : []));
+  notifyMosaicAdoptionChanged(root, [...drafts].flatMap(([id, draft]) =>
+    draft.base.saved && (changes[id].saved === false || draft.base.manualRedraw && draft.base.checked !== changes[id].checked) ? [id] : []));
   return true;
 }
