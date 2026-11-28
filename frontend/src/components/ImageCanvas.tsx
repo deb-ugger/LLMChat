@@ -30,20 +30,32 @@ function viewportBounds(element: HTMLDivElement): Bounds {
 }
 
 function canvasPicture(stage: HTMLDivElement) {
-  return stage.querySelector<HTMLImageElement | SVGImageElement>("img, image");
+  return stage.querySelector<HTMLImageElement | SVGImageElement | HTMLCanvasElement>("img, image, canvas");
 }
 
 function useImageCanvasOverview(viewport: RefObject<HTMLDivElement | null>, stage: RefObject<HTMLDivElement | null>) {
   const [minimap, setMinimap] = useState<ImageCanvasMap>();
+  const canvasSnapshots = useRef(new WeakMap<HTMLCanvasElement, string>());
   const refreshMap = useCallback(() => {
     const area = viewport.current, content = stage.current;
     if (!area || !content) return;
     const picture = canvasPicture(content);
-    const url = picture instanceof HTMLImageElement
-      ? picture.complete && picture.naturalWidth > 0 ? picture.currentSrc || picture.src : ""
-      : picture?.getAttribute("href") ?? "";
+    let url: string;
+    if (picture instanceof HTMLCanvasElement) {
+      url = canvasSnapshots.current.get(picture) ?? picture.toDataURL("image/png");
+      canvasSnapshots.current.set(picture, url);
+    } else {
+      url = picture instanceof HTMLImageElement
+        ? picture.complete && picture.naturalWidth > 0 ? picture.currentSrc || picture.src : ""
+        : picture?.getAttribute("href") ?? "";
+    }
     const next = picture ? imageCanvasMap(picture.getBoundingClientRect(), viewportBounds(area), url) : undefined;
-    setMinimap(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    setMinimap(current => {
+      if (!current || !next) return current === next ? current : next;
+      return current.url === next.url && current.mapW === next.mapW && current.mapH === next.mapH &&
+        current.view.left === next.view.left && current.view.top === next.view.top &&
+        current.view.width === next.view.width && current.view.height === next.view.height ? current : next;
+    });
   }, [viewport, stage]);
   useLayoutEffect(() => {
     const area = viewport.current, content = stage.current;
@@ -51,8 +63,11 @@ function useImageCanvasOverview(viewport: RefObject<HTMLDivElement | null>, stag
     refreshMap();
     const resize = new ResizeObserver(refreshMap);
     resize.observe(area); resize.observe(content);
-    const changes = new MutationObserver(refreshMap);
-    changes.observe(content, { subtree: true, childList: true, attributes: true, attributeFilter: ["src", "href"] });
+    const changes = new MutationObserver(records => {
+      for (const record of records) if (record.target instanceof HTMLCanvasElement) canvasSnapshots.current.delete(record.target);
+      refreshMap();
+    });
+    changes.observe(content, { subtree: true, childList: true, attributes: true, attributeFilter: ["src", "href", "width", "height"] });
     content.addEventListener("load", refreshMap, true);
     return () => { resize.disconnect(); changes.disconnect(); content.removeEventListener("load", refreshMap, true); };
   }, [viewport, stage, refreshMap]);
@@ -329,7 +344,7 @@ export function ImageCanvasMinimap({ map, onNavigate }: { map: ImageCanvasMap; o
     onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}
     onDoubleClick={event => event.stopPropagation()} onContextMenu={event => event.stopPropagation()}>
     {open ? <>
-      <div className="image-canvas-minimap-head">{mapIcon}<button type="button" aria-label="收起小地图" data-tooltip="收起小地图" onClick={toggle}>×</button></div>
+      <button type="button" className="image-canvas-minimap-close" aria-label="收起小地图" data-tooltip="收起小地图" onClick={toggle}>×</button>
       <button ref={image} type="button" className="image-canvas-minimap-image" style={{ width: map.mapW, height: map.mapH }}
         aria-label="定位图片可见区域" data-tooltip="拖动小地图定位图片" onClick={event => { if (event.detail === 0) onNavigate(.5, .5); }}
         onPointerDown={event => {

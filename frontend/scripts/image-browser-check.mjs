@@ -200,6 +200,11 @@ if (process.env.IMAGE_BROWSER_TEST_PLAYWRIGHT) {
     assert.ok(dragged.left > initial.left + 40 && dragged.top > initial.top + 20, "fitted dataset images pan immediately without selecting a drawing tool");
     const map = page.locator(".training-dataset-canvas-frame .image-canvas-minimap");
     await map.waitFor({ state: "visible" });
+    assert.equal(await map.locator(".image-canvas-minimap-head").count(), 0, "minimap has no separate header");
+    const closeBounds = await map.getByRole("button", { name: "收起小地图" }).boundingBox();
+    const thumbnailBounds = await map.locator(".image-canvas-minimap-image").boundingBox();
+    assert.ok(closeBounds.y >= thumbnailBounds.y && closeBounds.x+closeBounds.width <= thumbnailBounds.x+thumbnailBounds.width+1,
+      "minimap close button overlays the thumbnail's upper-right corner");
     const positions = await map.evaluate(element => {
       const m=element.getBoundingClientRect(),p=element.parentElement.getBoundingClientRect();
       return {right:p.right-m.right,bottom:p.bottom-m.bottom};

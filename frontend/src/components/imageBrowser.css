@@ -40,8 +40,7 @@
 }
 .image-canvas-minimap svg,
 .image-canvas-minimap-toggle svg { pointer-events: none; }
-.image-canvas-minimap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block-end: 3px; color: var(--text-muted); }
-.image-canvas-minimap-head > button,
+.image-canvas-minimap-close,
 .image-canvas-minimap-toggle > button {
   display: grid;
   place-items: center;
@@ -56,7 +55,14 @@
   color: inherit;
   cursor: pointer;
 }
-.image-canvas-minimap-head > button:hover,
+.image-canvas-minimap-close {
+  position: absolute;
+  inset-block-start: 5px;
+  inset-inline-end: 5px;
+  z-index: 2;
+  background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+}
+.image-canvas-minimap-close:hover,
 .image-canvas-minimap-toggle > button:hover { background: var(--bg-hover); }
 .image-canvas-minimap-image {
   position: relative;
