@@ -6,12 +6,12 @@ import Zip from "jszip";
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.window = { addEventListener() {}, removeEventListener() {}, location: { hostname: "localhost" } };
 const bundle = await build({
-  stdin: { contents: "export * as screening from './gameImageScreening'; export * as semantic from './gameImageSemanticReview'; export * as samples from './benchmark/imageSampleSet'; export {countMosaicResults} from './benchmark/mosaicScoreCounts'; export {scoreMosaicRun} from './benchmark/mosaicScore'; export {createMosaicTaskWorkbook} from './benchmark/benchmarkMosaicReport'; export {mosaicStatusLabels as categories} from './gameMosaicStatus'; export { processUnityImages } from './unityImages';",
+  stdin: { contents: "export * as screening from './gameImageScreening'; export * as semantic from './gameImageSemanticReview'; export * as samples from './benchmark/imageSampleSet'; export {renderGameImage} from './gameImageModel'; export {countMosaicResults} from './benchmark/mosaicScoreCounts'; export {scoreMosaicRun} from './benchmark/mosaicScore'; export {createMosaicTaskWorkbook} from './benchmark/benchmarkMosaicReport'; export {mosaicStatusLabels as categories} from './gameMosaicStatus'; export { processUnityImages } from './unityImages';",
     resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""', "import.meta.env.DEV": "false" },
 });
-const { screening, semantic, samples, countMosaicResults, scoreMosaicRun, createMosaicTaskWorkbook, categories, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
+const { screening, semantic, samples, renderGameImage, countMosaicResults, scoreMosaicRun, createMosaicTaskWorkbook, categories, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
 const signal = new AbortController().signal;
 const screened = { id: "missed", sourceFile: "source", sourceHash: "hash", selected: false,
   ocrCompleted: false, completed: false, regions: [], screening: { version: 1, sourceHash: "hash",
@@ -34,7 +34,7 @@ const image = (id, hash, translation = "") => ({ id, sourceFile: "source", sourc
     { text: "Open", translation, translationTarget: "zh-CN", selected: true, confidence: 99,
       x0: 0, y0: 0, x1: 80, y1: 20, error: "", ocrConfirmed: true },
   ] });
-async function translate(images, extra = {}) {
+async function translate(images, extra = {}, mode = "translate-only") {
   let calls = 0;
   const outcomes = [];
   const result = processUnityImages({ entries: [], images }, signal, {
@@ -42,14 +42,17 @@ async function translate(images, extra = {}) {
     read: async () => new Blob(), recognize: async () => [], translate: async () => { calls++; return "打开"; },
     render: async () => new Blob(), write: async () => ({ path: "", hash: "" }),
     persist: async (_, value) => outcomes.push(structuredClone(value)), validate: () => "", ...extra,
-  }, () => {}, 50, "translate-only");
+  }, () => {}, 50, mode);
   return { result: await result.catch(error => error), calls, outcomes };
 }
 assert.equal((await translate([image("menu", "a"), image("dialogue", "b")])).calls, 2,
   "different original images cannot share short-text translations");
-assert.equal((await translate([image("copy-a", "same"), image("copy-b", "same")])).calls, 1,
-  "byte-identical originals still share a pending translation");
-const conflict = await translate([image("first", "same", "打开"), image("second", "same", "开门"), image("pending", "same")]);
+assert.equal((await translate([image("copy-a", "same"), image("copy-b", "same")])).calls, 2,
+  "identical pixels under different resource paths can have different meanings");
+const sameResource = (id, translation = "") => ({ ...image(id, "same", translation), file: "menu.png", name: "menu.png" });
+assert.equal((await translate([sameResource("copy-a"), sameResource("copy-b")])).calls, 1,
+  "the same resource still shares a pending translation");
+const conflict = await translate([sameResource("first", "打开"), sameResource("second", "开门"), sameResource("pending")]);
 assert.ok(conflict.result instanceof Error);
 assert.ok(conflict.outcomes.some(row => row.regions.some(region => /多个有效译名/.test(region.error))));
 
@@ -59,6 +62,11 @@ const firstPass = await translate([semanticInput], { reviewModel: "reviewer", tr
 assert.ok(!(firstPass.result instanceof Error));
 assert.equal(firstPass.result.images[0].regions[0].translation, "防御力下降");
 assert.match(firstPass.result.images[0].regions[0].error, /待语义复核/);
+let rendered = 0;
+const blockedRender = await translate(firstPass.result.images, { render: async () => { rendered++; return new Blob(); } }, "render");
+assert.ok(blockedRender.result instanceof Error);
+assert.equal(rendered, 0, "batch layout cannot clear pending-review warnings and render the draft");
+await assert.rejects(renderGameImage({}, "", new Blob(), firstPass.result.images[0].regions, signal, undefined, { target: "zh-CN" }));
 let reviewCalls = 0;
 const secondPass = await translate(firstPass.result.images, { reviewModel: "reviewer", review: async (_, region) => {
   reviewCalls++; assert.equal(region.translation, "防御力下降"); return "攻击力提高";

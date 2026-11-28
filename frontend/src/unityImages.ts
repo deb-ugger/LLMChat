@@ -304,7 +304,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     recognitionGroups = [...groups.values()];
   }
   const cache = new Map<string, string>();
-  const translationKey = (image: UnityImage, text: string) => JSON.stringify([image.sourceHash || image.id, text]);
+  const translationKey = (image: UnityImage, text: string) => JSON.stringify([image.file, image.name, image.sourceHash || image.id, text]);
   let savedTranslations: Map<string, string[]> | undefined;
   const findSavedTranslation = (text: string, image: UnityImage) => {
     if (services.reuseTranslations === false) return;
@@ -387,6 +387,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
       let regionCursor=0;
       const regionWorker=async()=>{while(regionCursor<selectedRegions.length){const region=selectedRegions[regionCursor++];
         signal.throwIfAborted(); regionNumber++;
+        if (mode === "render" && region.error) continue;
         const existingProblem = region.translation ? matchesTarget(region.translationTarget) ? validate(region.text, region.translation) : "译文属于旧目标语言，请重新翻译" : "";
         const semanticReview = needsImageSemanticReview(region, services.reviewModel, target, services.reviewPrompt);
         if (region.translation && !existingProblem && !semanticReview) { region.error = ""; continue; }
