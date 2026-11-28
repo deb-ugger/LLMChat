@@ -222,22 +222,75 @@ export function mosaicBoxScore(rows: Iterable<readonly [SampleAnnotation, Mosaic
     (fullSamples ? " · 多余框 " + extra + "（仅完整标注）" : "");
 }
 
+const normalizeImageText = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
+function imageCharacterEdits(expected: string, actual: string) {
+  const left = [...normalizeImageText(expected)], right = [...normalizeImageText(actual)];
+  let previous = Uint32Array.from({ length: right.length + 1 }, (_, index) => index);
+  let current = new Uint32Array(right.length + 1);
+  for (let i = 1; i <= left.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= right.length; j++) current[j] = Math.min(current[j - 1] + 1, previous[j] + 1,
+      previous[j - 1] + Number(left[i - 1] !== right[j - 1]));
+    [previous, current] = [current, previous];
+  }
+  return previous[right.length];
+}
+
 export function textBoxScore(rows: Iterable<readonly [SampleAnnotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
-  let matched = 0, expectedCount = 0, correctText = 0, matchedWithText = 0;
-  const normalize = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
+  let matched = 0, expectedCount = 0, correctText = 0, matchedWithText = 0, extra = 0, edits = 0, characters = 0;
   for (const [annotation, observed] of rows) {
     const expected = annotation.text?.regions?.filter(region => regionInScope(region,source,target,skipTarget));
-    if (!expected?.length) continue;
+    if (!expected?.length) {
+      if (annotation.text?.state === "none") extra += observed.length;
+      continue;
+    }
     const pairs = compareBoxes(expected.map(region => region.box), observed.map(region => [region.x0,region.y0,region.x1,region.y1]));
     matched += pairs.length;
     expectedCount += expected.length;
+    const matchedPredictions = new Set(pairs.map(([, index]) => index));
+    const ignored = annotation.text?.regions?.filter(region => !regionInScope(region, source, target, skipTarget)) ?? [];
+    const extraRegions = observed.filter((region, index) => !matchedPredictions.has(index) &&
+      !compareBoxes(ignored.map(item => item.box), [[region.x0, region.y0, region.x1, region.y1]]).length);
+    extra += extraRegions.length;
+    edits += extraRegions.reduce((sum, region) => sum + [...normalizeImageText(region.text)].length, 0);
+    const paired = new Map(pairs);
+    for (let index = 0; index < expected.length; index++) {
+      const reference = expected[index].text;
+      if (!reference) continue;
+      const found = paired.get(index);
+      characters += [...normalizeImageText(reference)].length;
+      edits += imageCharacterEdits(reference, found === undefined ? "" : observed[found].text);
+    }
     for (const [left,right] of pairs) {
       const text = expected[left].text?.trim();
       if (!text) continue;
       matchedWithText++;
-      if (normalize(text) === normalize(observed[right].text)) correctText++;
+      if (normalizeImageText(text) === normalizeImageText(observed[right].text)) correctText++;
     }
   }
-  return expectedCount ? "文字框匹配 " + matched + "/" + expectedCount + "（IoU≥0.5）" +
-    (matchedWithText ? " · 已匹配框原文一致 " + correctText + "/" + matchedWithText : "") : "";
+  return expectedCount || extra ? "文字框匹配 " + matched + "/" + expectedCount + "（IoU≥0.5）" +
+    " · 漏文字框 " + (expectedCount - matched) + " · 多余文字框 " + extra +
+    (matchedWithText ? " · 已匹配框原文一致 " + correctText + "/" + matchedWithText : "") +
+    (characters ? " · 含漏框的字符错误率 " + (edits / characters * 100).toFixed(1) + "%" : "") : "";
+}
+
+export function imageTranslationScore(rows: Iterable<readonly [SampleAnnotation, UnityImageRegion[]]>, source: string, target: string, skipTarget: boolean) {
+  let total = 0, delivered = 0, identical = 0, edits = 0, characters = 0;
+  for (const [annotation, observed] of rows) {
+    const expected = annotation.text?.regions?.filter(region => regionInScope(region, source, target, skipTarget) && region.translations?.[target]?.trim()) ?? [];
+    const pairs = new Map(compareBoxes(expected.map(region => region.box), observed.map(region => [region.x0, region.y0, region.x1, region.y1])));
+    for (let index = 0; index < expected.length; index++) {
+      const reference = expected[index].translations![target];
+      const found = pairs.get(index);
+      const region = found === undefined ? undefined : observed[found];
+      const translation = region && !region.error ? region.translation : "";
+      total++;
+      if (translation.trim()) delivered++;
+      if (normalizeImageText(reference) === normalizeImageText(translation)) identical++;
+      characters += [...normalizeImageText(reference)].length;
+      edits += imageCharacterEdits(reference, translation);
+    }
+  }
+  return total ? `参考译文一致 ${identical}/${total} · 有效译文 ${delivered}/${total} · 缺失或失败 ${total - delivered}` +
+    (characters ? ` · 参考译文字符差异率 ${(edits / characters * 100).toFixed(1)}%` : "") : "";
 }

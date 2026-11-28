@@ -60,7 +60,7 @@ export function countMosaicResults(samples: readonly ImageBenchmarkInput[], resu
   const counts = {
     samples: samples.length, originals: 0, validRuns: 0, confirmedPositive: 0, confirmedNegative: 0,
     evaluatedPositive: 0, evaluatedNegative: 0, annotatedImages: 0, completePositiveImages: 0, completeEvaluatedImages: 0,
-    tp: 0, fp: 0, tn: 0, fn: 0, review: 0, reviewPositive: 0, reviewNegative: 0,
+    tp: 0, fp: 0, tn: 0, fn: 0, review: 0, reviewPositive: 0, reviewNegative: 0, fullyCoveredPositiveImages: 0,
     failed: 0, skipped: 0, pending: 0, missing: 0, invalid: 0, unlabelled: 0, unlabelledPositive: 0, unlabelledReview: 0,
     expectedBoxes: 0, evaluatedBoxes: 0, foundBoxes: 0, completeMatchedBoxes: 0, completePredictedBoxes: 0, extraBoxes: 0,
     reasons: Object.create(null) as Record<string, number>,
@@ -112,6 +112,7 @@ export function countMosaicResults(samples: readonly ImageBenchmarkInput[], resu
     const matched = countMosaicBoxMatches(expected, predicted);
     counts.evaluatedBoxes += expected.length;
     counts.foundBoxes += matched;
+    if (full && positive && verdict === "positive" && matched === expected.length) counts.fullyCoveredPositiveImages++;
     if (full) {
       counts.completeEvaluatedImages++;
       counts.completeMatchedBoxes += matched;

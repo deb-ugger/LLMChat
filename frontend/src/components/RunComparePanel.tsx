@@ -383,6 +383,7 @@ const RunComparePanel = memo(function RunComparePanel({
             ["待复核", String(row.review)],
             ["未确认判有码", String(row.unlabelledPositive)],
             ["交付覆盖 · 固定人工框分母", `${percent(row.score.delivery)}${row.expectedBoxes ? ` · ${row.foundBoxes}/${row.expectedBoxes} 框` : ""}`],
+            ["人工框全覆盖图片", `${row.fullyCoveredPositiveImages}/${row.completePositiveImages}`],
             ["多余框", String(row.extraBoxes)],
             ["判定率 · 有码 / 无码 / 框", `${percent(row.score.positiveCoverage)} · ${percent(row.score.negativeCoverage)} · ${percent(row.score.boxCoverage)}`],
             ["每百张秒数", row.score.speed?.toFixed(1) ?? "—", mosaicSpeedHint(row)],

@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "review": "逐张查看原图核对菜单、进度标签、Logo、装备说明与空白图。中文为参考译文，不是唯一合法译法。",
+  "menuRegions": [
+    { "box": [16, 4, 180, 42], "text": "ATTACK", "language": "en", "translations": {"zh-CN": "攻击"}, "drafts": {"zh-CN": "防御"} },
+    { "box": [47, 46, 179, 82], "text": "MAGIC", "language": "en", "translations": {"zh-CN": "魔法"} },
+    { "box": [60, 86, 198, 125], "text": "GUARD", "language": "en", "translations": {"zh-CN": "防御"}, "drafts": {"zh-CN": "攻击"} },
+    { "box": [95, 126, 195, 166], "text": "ITEM", "language": "en", "translations": {"zh-CN": "物品"} },
+    { "box": [106, 166, 217, 206], "text": "AUTO", "language": "en", "translations": {"zh-CN": "自动"} }
+  ],
+  "menus": [
+    {"path":"img/pictures/battle_command_0.png_","sha256":"295c6c58fe2ea2e38bba1339f42e3bd5a5ac1baba8cdb9e07cbd95df42ed7cf5","description":{"box":[194,13,351,35],"text":"武器を使って攻撃する","language":"ja","translations":{"zh-CN":"使用武器发动攻击"},"drafts":{"zh-CN":"使用武器进行防御"}}},
+    {"path":"img/pictures/battle_command_1.png_","sha256":"569c016af99e8495b9cb51674649c97ea842204750d6f2922dc095e48764e909","description":{"box":[210,55,422,76],"text":"MPを消費して魔法で攻撃する","language":"ja","translations":{"zh-CN":"消耗MP使用魔法攻击"},"drafts":{"zh-CN":"恢复MP并使用魔法攻击"}}},
+    {"path":"img/pictures/battle_command_2.png_","sha256":"1d1529be4e342395b08365b73866d35c68abe48e071abdfc7fd2d3be83ec9760","description":{"box":[225,96,337,116],"text":"防御に専念する","language":"ja","translations":{"zh-CN":"专心防御"}}},
+    {"path":"img/pictures/battle_command_3.png_","sha256":"32e75c82e971dee6ea48c262b8098a4ac43bc89ffd938b6797da542cc5b74699","description":{"box":[242,136,352,156],"text":"アイテムを使う","language":"ja","translations":{"zh-CN":"使用物品"}}},
+    {"path":"img/pictures/battle_command_4.png_","sha256":"7a98ed4eaea6c791af2a2ff89edff9c7034f6baf59c807ab95f22de9c1a3ca58","description":{"box":[255,176,592,197],"text":"オート戦闘を開始する（キャンセル長押しで終了）","language":"ja","translations":{"zh-CN":"开始自动战斗（长按取消结束）"}}},
+    {"path":"img/pictures/battle_commandRed_0.png_","sha256":"1bb807baab3e7566fa15522e824868d11b74750e38ecb646f0b29481e32d4204","description":{"box":[194,15,365,35],"text":"武器を装備していない！","language":"ja","translations":{"zh-CN":"没有装备武器！"},"drafts":{"zh-CN":"已经装备武器！"}}},
+    {"path":"img/pictures/battle_commandRed_1.png_","sha256":"31717eb38ca7cac7b5c34cd93661388370c140274969459fdbd654794b847d37","description":{"box":[210,55,328,76],"text":"MPが足りない！","language":"ja","translations":{"zh-CN":"MP不足！"},"drafts":{"zh-CN":"MP充足！"}}},
+    {"path":"img/pictures/battle_commandRed_2.png_","sha256":"83070c2af7bbf20c2b87e9978d584f2234ceb8ff0daa39dec5badeed62947bd1","description":{"box":[226,95,380,116],"text":"盾を装備していない！","language":"ja","translations":{"zh-CN":"没有装备盾牌！"}}},
+    {"path":"img/pictures/battle_commandRed_3.png_","sha256":"0474850a410a9690baaf7152f27810539ffe1252b8a472bf13c1038fe406e71f","description":{"box":[241,135,425,157],"text":"今はアイテムを使えない！","language":"ja","translations":{"zh-CN":"现在不能使用物品！"}}},
+    {"path":"img/pictures/battle_commandRed_4.png_","sha256":"65373bc3ce39efcac1ae6f3ab08b2ffc06f4fbcd7ddbe48264e18a00a4689233"}
+  ],
+  "samples": [
+    {"path":"img/pictures/black.png_","sha256":"c19c643bcbd5bf1e4b235ccc204862a4f6dd8899a02b5c76ae8cbe53ebdf18f8","regions":[]},
+    {"path":"img/pictures/circle_logo.png_","sha256":"4a89ec8e89ad083c5ac603294b86b53444f712c8cb66898b14d65a7eb9ef5dc1","regions":[
+      {"box":[89,91,382,226],"text":"Gray","language":"en","keep":true},
+      {"box":[263,174,426,309],"text":"&","language":"und","keep":true},
+      {"box":[383,140,641,287],"text":"Greed","language":"en","keep":true},
+      {"box":[386,278,558,309],"text":"グレイグリード","language":"ja"}
+    ]},
+    {"path":"img/pictures/event_decodingGauge.png_","sha256":"ecb72eb7309c81b7195876a4f48613082a67c3e94b348776b25d5bad152b0c72","regions":[
+      {"box":[79,6,143,29],"text":"解読率","language":"ja","translations":{"zh-CN":"解读进度"}}
+    ]},
+    {"path":"img/pictures/tips/dispel01.png_","sha256":"468cda2b9ac7df6934ce3081782f3f5d6e4e85a54bc39fb26513ad5614ba8671","regions":[
+      {"box":[45,8,191,33],"text":"解呪の騎士剣+1","language":"ja","translations":{"zh-CN":"解咒骑士剑+1"}},
+      {"box":[9,38,70,53],"text":"RARE 15","language":"en","translations":{"zh-CN":"稀有度15"}},
+      {"box":[9,53,124,73],"text":"売却額 2850","language":"ja","translations":{"zh-CN":"出售价格2850"},"drafts":{"zh-CN":"出售价格2580"}},
+      {"box":[9,79,197,116],"text":"装飾が施された上質の直剣\n解呪の力が宿っている","language":"ja","translations":{"zh-CN":"装饰精美的优质直剑\n蕴含解咒之力"}},
+      {"box":[13,126,92,147],"text":"攻撃力 26","language":"ja","translations":{"zh-CN":"攻击力26"},"drafts":{"zh-CN":"防御力26"}},
+      {"box":[13,148,81,168],"text":"理性 100","language":"ja","translations":{"zh-CN":"理智100"}},
+      {"box":[12,199,88,222],"text":"解呪合成","language":"ja","translations":{"zh-CN":"解咒合成"}}
+    ]},
+    {"path":"img/pictures/mainframe_base.png_","sha256":"d9b2434eeb24f14162e977fdf29e934c9356fb936dd10ca524fc766efbd3ef28","regions":[
+      {"box":[7,607,88,644],"text":"Stamina","language":"en","translations":{"zh-CN":"耐力"}},
+      {"box":[133,635,173,660],"text":"HP","language":"en","keep":true},
+      {"box":[140,657,184,683],"text":"MP","language":"en","keep":true},
+      {"box":[374,630,410,651],"text":"状態","language":"ja","translations":{"zh-CN":"状态"}},
+      {"box":[98,689,120,714],"text":"%","language":"und","keep":true}
+    ]},
+    {"path":"img/pictures/mainframe_base2.png_","sha256":"bddd99786b1d7056aa6f0dedb02b55484d2bf5f2be48a2f133d99b882ba448b6","regions":[
+      {"box":[7,607,88,644],"text":"Stamina","language":"en","translations":{"zh-CN":"耐力"}},
+      {"box":[133,635,173,660],"text":"HP","language":"en","keep":true},
+      {"box":[140,657,184,683],"text":"MP","language":"en","keep":true},
+      {"box":[374,630,410,651],"text":"状態","language":"ja","translations":{"zh-CN":"状态"}},
+      {"box":[98,689,120,714],"text":"%","language":"und","keep":true}
+    ]}
+  ]
+}

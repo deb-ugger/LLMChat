@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
+import Zip from "jszip";
 
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.window = { addEventListener() {}, removeEventListener() {}, location: { hostname: "localhost" } };
 const bundle = await build({
-  stdin: { contents: "export * as screening from './gameImageScreening'; export * as semantic from './gameImageSemanticReview'; export { processUnityImages } from './unityImages';",
+  stdin: { contents: "export * as screening from './gameImageScreening'; export * as semantic from './gameImageSemanticReview'; export * as samples from './benchmark/imageSampleSet'; export {countMosaicResults} from './benchmark/mosaicScoreCounts'; export {scoreMosaicRun} from './benchmark/mosaicScore'; export {createMosaicTaskWorkbook} from './benchmark/benchmarkMosaicReport'; export {mosaicStatusLabels as categories} from './gameMosaicStatus'; export { processUnityImages } from './unityImages';",
     resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""', "import.meta.env.DEV": "false" },
 });
-const { screening, semantic, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
+const { screening, semantic, samples, countMosaicResults, scoreMosaicRun, createMosaicTaskWorkbook, categories, processUnityImages } = await import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64"));
 const signal = new AbortController().signal;
 const screened = { id: "missed", sourceFile: "source", sourceHash: "hash", selected: false,
   ocrCompleted: false, completed: false, regions: [], screening: { version: 1, sourceHash: "hash",
@@ -75,4 +76,29 @@ assert.ok(!(resumed.result instanceof Error));
 assert.equal(semantic.parseImageSemanticReview({ verdict: "accept" }, "攻击力提高"), "攻击力提高");
 assert.equal(semantic.parseImageSemanticReview({ verdict: "correct", translation: "攻击力提高" }, "防御力下降"), "攻击力提高");
 assert.throws(() => semantic.parseImageSemanticReview({ verdict: "uncertain", reason: "文字不清晰" }, "候选译文"), /待确认/);
-console.log("PASS missed-image rescue, scoped reuse, conflicts, staged semantic correction, preserved drafts and resumable review");
+
+const annotation = { text: { state: "present", regions: [{ box: [0, 0, 80, 20], text: "攻撃力が上がる", language: "ja", translations: { "zh-CN": "攻击力提高" } }] } };
+const recognized = { ...semanticInput.regions[0], text: "攻撃力が下がる", translation: "防御力下降", error: "" };
+assert.match(samples.textBoxScore([[annotation, []]], "ja", "zh-CN", false), /漏文字框 1.*字符错误率 100.0%/);
+assert.match(samples.textBoxScore([[{ text: { state: "none", regions: [] } }, [recognized]]], "ja", "zh-CN", false), /多余文字框 1/);
+assert.match(samples.imageTranslationScore([[annotation, [recognized]]], "ja", "zh-CN", false), /参考译文一致 0\/1/);
+assert.match(samples.imageTranslationScore([[annotation, [{ ...recognized, translation: "攻击力提高" }]]], "ja", "zh-CN", false), /参考译文一致 1\/1.*缺失或失败 0/);
+assert.match(samples.imageTranslationScore([[annotation, []]], "ja", "zh-CN", false), /缺失或失败 1/);
+const box = [0, 0, 20, 20], second = [40, 0, 60, 20];
+const inputs = [box, box, box].map((_, index) => ({ id: String(index), sourceHash: String(index), width: 100, height: 100,
+  mosaicTruth: { state: "present", boxCoverage: "complete", boxes: index === 0 ? [box, second] : [box] } }));
+const counts = countMosaicResults(inputs, {
+  0: { category: categories.refinedCandidate, status: "完成", checked: true, boxes: [box] },
+  1: { category: categories.refinedCandidate, status: "完成", checked: true, boxes: [box] },
+});
+assert.equal(counts.fullyCoveredPositiveImages, 1);
+assert.equal(counts.completePositiveImages, 3, "missing results remain in the complete-annotation denominator");
+const reportRow = { ...counts, runId: "fixture", label: "fixture", round: 1, seconds: 2, elapsedMs: 2000,
+  status: "完成", runFailures: 0, issues: [], freeze: { version: 1, inputs: "i", truth: "t" }, timing: "whole-wall-v1" };
+reportRow.score = scoreMosaicRun("mosaicRefine", reportRow);
+const workbook = await createMosaicTaskWorkbook({ title: "fixture", stage: "mosaicRefine", totals: [reportRow] });
+const zip = await Zip.loadAsync(await workbook.arrayBuffer());
+const sheet = await zip.file("xl/worksheets/sheet1.xml").async("string");
+assert.match(sheet, /人工框全覆盖图片比例/);
+assert.match(sheet, /33\.33/);
+console.log("PASS negative rescue, scoped reuse, semantic review/resume, OCR and reference scoring, full-box delivery coverage and Excel export");
