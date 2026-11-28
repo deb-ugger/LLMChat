@@ -26,6 +26,10 @@ def emit(kind, value):
     print(json.dumps({"type": kind, "value": value}, ensure_ascii=True), flush=True)
 
 
+def mosaic_redraw_diagnostic(stage, **fields):
+    emit("diagnostic", json.dumps({"stage": stage, **fields}, separators=(",", ":")))
+
+
 def png(image):
     buffer = io.BytesIO()
     image.save(buffer, "PNG")
@@ -52,7 +56,7 @@ async def check_mosaic_cancel(session, cancel_path, prompt_id=None):
         raise RuntimeError("重绘任务已取消")
 
 
-async def ready(session, root, cancel_path=None):
+async def ready(session, root, cancel_path=None, report_gpu=False):
     await check_mosaic_cancel(session, cancel_path)
     try:
         stats = await request(session, "GET", "/system_stats")
@@ -84,6 +88,11 @@ async def ready(session, root, cancel_path=None):
     argv = stats["system"].get("argv", [])
     if argv and Path(argv[0]).is_absolute() and Path(argv[0]).resolve() != (root / "ComfyUI/main.py").resolve():
         raise RuntimeError("8188 端口上的 ComfyUI 不属于所选目录，请切换目录或退出该实例后重试")
+    if report_gpu:
+        mosaic_redraw_diagnostic("comfy_ready", devices=[
+            {key: device.get(key) for key in ("type", "vram_total", "vram_free", "torch_vram_total", "torch_vram_free")}
+            for device in stats.get("devices", [])
+        ])
     return argv
 
 
@@ -302,32 +311,53 @@ async def recover_image_graph(session, prompt_id, output_id, label, workflow_tim
 
 
 async def run_image_graph(session, graph, output_id, label, workflow_times, prompt_ids=None,
-                          resume_id=None, old_history=None, cancel_path=None):
+                          resume_id=None, old_history=None, cancel_path=None, trace=False):
     outputs = [key for key,n in graph.items() if n["class_type"] in ("PreviewImage","SaveImage","SaveImageAdvanced")]
     output_id = output_id or (outputs[0] if len(outputs)==1 else "")
     if output_id not in graph:
         raise ValueError("请选择工作流的图像输出节点 ID")
     client = uuid.uuid4().hex
+    started = time.monotonic()
+    pid = resume_id
+
+    def log(stage, **details):
+        if trace:
+            mosaic_redraw_diagnostic(stage, promptId=pid, elapsedMs=round((time.monotonic() - started) * 1000), **details)
+
+    log("connect")
     async with session.ws_connect(BASE + "/ws", params={"clientId": client}) as ws:
         payload = {"client_id": client, "prompt": graph}
         if resume_id:
             payload["prompt_id"] = resume_id
         await check_mosaic_cancel(session, cancel_path)
+        log("submit")
         job = await request(session, "POST", "/prompt", json=payload)
         pid = job["prompt_id"]
+        if trace:
+            sampling_steps = sorted({node["inputs"]["steps"] for node in graph.values()
+                                     if node["class_type"] == "KSampler"})
+            log("queued", samplingSteps=sampling_steps)
         await check_mosaic_cancel(session, cancel_path, pid)
         if prompt_ids is not None:
             prompt_ids.append(pid)
         emit("status", f"{label} · 已提交，等待 ComfyUI")
-        deadline = time.monotonic() + 3600
+        last_activity = time.monotonic()
+        deadline = last_activity + 3600
+        node_type = None
+        first_progress = True
+        stalled = False
         while time.monotonic() < deadline:
             try:
                 packet = await ws.receive(timeout=4)
             except asyncio.TimeoutError:
                 packet = None
+            if trace and not stalled and time.monotonic() - last_activity >= 30:
+                log("waiting", nodeType=node_type, idleMs=round((time.monotonic() - last_activity) * 1000))
+                stalled = True
             await check_mosaic_cancel(session, cancel_path, pid)
             if packet is not None:
                 if packet.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                    log("socket_closed", nodeType=node_type)
                     raise RuntimeError("ComfyUI 进度连接已关闭")
                 if packet.type != aiohttp.WSMsgType.TEXT:
                     continue
@@ -335,17 +365,30 @@ async def run_image_graph(session, graph, output_id, label, workflow_times, prom
                 data = event.get("data", {})
                 if data.get("prompt_id") != pid:
                     continue
-                if event["type"] == "progress":
+                kind = event["type"]
+                if trace and kind in ("execution_start", "executing", "progress"):
+                    last_activity = time.monotonic()
+                    node_type = graph.get(str(data.get("node")), {}).get("class_type") or node_type
+                    if kind == "execution_start":
+                        log("execution_start")
+                    if kind == "progress" and first_progress:
+                        log("first_progress", nodeType=node_type, step=data["value"], totalSteps=data["max"])
+                        first_progress = False
+                if kind == "progress":
                     emit("status", f"{label} · 采样 {data['value']} / {data['max']}")
-                if event["type"] == "execution_error":
+                if kind == "execution_error":
+                    log("execution_error", nodeType=node_type)
                     raise RuntimeError(data.get("exception_message") or "ComfyUI 执行失败")
-                if event["type"] == "execution_interrupted":
+                if kind == "execution_interrupted":
+                    log("execution_interrupted", nodeType=node_type)
                     raise RuntimeError("ComfyUI 任务已中止")
-                if event["type"] not in ("execution_success", "executing") or data.get("node") is not None:
+                if kind not in ("execution_success", "executing") or data.get("node") is not None:
                     continue
             record = await read_graph_history(session, pid)
             if record and record != old_history:
+                log("history_ready", status=record.get("status", {}).get("status_str"))
                 return await graph_history_image(session, record, output_id, workflow_times)
+        log("wait_timeout", nodeType=node_type)
         raise TimeoutError("等待 ComfyUI 结果超时")
 
 
@@ -824,10 +867,11 @@ async def repair_mosaic(original, data, steps, workflow_times):
     validate_mosaic_weights(data["directory"], profile)
     preserve_edges = profile["kind"] in ("diffusion-cream", "illustrious")
     areas = mosaic_redraw_areas(original, data["regions"], profile)
+    mosaic_redraw_diagnostic("redraw_prepare", model=profile["kind"], regions=len(areas), requestedSteps=steps)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])
         cancel_path = data.get("cancelPath")
-        argv = await ready(session, root, cancel_path)
+        argv = await ready(session, root, cancel_path, True)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
             # The versioned job ID excludes outputs from the previous union-crop workflow.
@@ -855,7 +899,7 @@ async def repair_mosaic(original, data, steps, workflow_times):
                             "images": graph[output]["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
                 submitted = prompt_ids if prompt_ids is not None else []
                 raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, submitted,
-                                            resume_id=resume_id, old_history=history, cancel_path=cancel_path)
+                                            resume_id=resume_id, old_history=history, cancel_path=cancel_path, trace=True)
                 patches = [raw]
                 if len(areas) > 1:
                     history = await read_graph_history(session, submitted[-1])

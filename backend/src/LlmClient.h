@@ -5,6 +5,15 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 
+struct LlmHttpTrace {
+    std::optional<long long> elapsedMs;
+    std::optional<long long> headersMs;
+    std::optional<long long> firstBodyMs;
+    const char* failureStage = nullptr;
+    unsigned long windowsError = 0;
+    bool attemptedSend = false;
+};
+
 struct LlmRequest {
     std::string apiUrl;
     std::string apiKey;
@@ -17,6 +26,7 @@ struct LlmRequest {
     bool nativeOllama = false;
     int ollamaContextLength = 0;
     bool ollamaRawChat = false;
+    LlmHttpTrace* httpTrace = nullptr;
 };
 
 struct LlmServiceTiming {

@@ -49,6 +49,9 @@ pub async fn cancel_mosaic_redraw(prompt_id: String, comfy_job_id: String) -> Re
     }
     // Keep a marker across upload and submission. The worker checks it on both sides of POST.
     fs::write(mosaic_cancel_marker(&prompt_id), b"").map_err(|e| format!("无法通知重绘进程取消：{e}"))?;
+    let _ = crate::runtime_log("mosaic-redraw", &json!({
+        "stage": "cancel_requested", "promptId": comfy_job_id, "requestId": prompt_id,
+    }).to_string());
     for id in [&comfy_job_id, &prompt_id] {
         let route = format!("/api/jobs/{id}/cancel");
         match comfy_http()?.post(format!("{COMFY_URL}{route}")).send().await {
@@ -161,6 +164,7 @@ async fn run_worker(directory: String, mut payload: Value, progress: Channel<Str
                 let value = event["value"].as_str().ok_or("重绘任务返回无效数据")?;
                 match event["type"].as_str() {
                     Some("status") => { let _ = progress.send(value.to_owned()); }
+                    Some("diagnostic") => { let _ = crate::runtime_log("mosaic-redraw", value); }
                     Some("error") => return Err(value.to_owned()),
                     _ => return Err("未知重绘任务消息".into()),
                 }

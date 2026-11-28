@@ -13,10 +13,13 @@
 #include "Utf8Path.h"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 #include <string>
+#include <syncstream>
 
 namespace http_router
 {
@@ -55,7 +58,8 @@ void registerGameModelRoute(httplib::Server& svr, const ConfigStore& config_, Us
                     })schema");
                 }
             }
-            if (!image.empty() && body.value("mosaicReview", false)) {
+            const bool mosaicReview = !image.empty() && body.value("mosaicReview", false);
+            if (mosaicReview) {
                 request.options["temperature"] = 0;
                 if (request.nativeOllama) {
                     request.options["max_tokens"] = maxOutputTokens > 0 ? std::min(maxOutputTokens, 256) : 256;
@@ -119,6 +123,19 @@ void registerGameModelRoute(httplib::Server& svr, const ConfigStore& config_, Us
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
             ScopedUsageLog usageLog(usage_, event);
+            LlmHttpTrace httpTrace;
+            const auto started = request_cancel::Clock::now();
+            const auto logMosaicReview = [&](const json& entry) {
+                std::osyncstream(std::cerr) << "[mosaic-review] "
+                    << entry.dump(-1, ' ', false, json::error_handler_t::replace) << '\n' << std::flush;
+            };
+            if (mosaicReview) {
+                request.httpTrace = &httpTrace;
+                logMosaicReview({{"stage", "request_begin"}, {"id", id}, {"model", request.model.substr(0, 160)},
+                    {"host", event.apiHost}, {"nativeOllama", request.nativeOllama}, {"imagePayloadBytes", image.size()},
+                    {"contextLength", request.ollamaContextLength},
+                    {"timeoutMs", std::chrono::duration_cast<std::chrono::milliseconds>(task->deadline - started).count()}});
+            }
             const auto response = callModel(request);
             auto& ev = usageLog.ev();
             const bool cancelled = task->cancelled.load();
@@ -131,6 +148,21 @@ void registerGameModelRoute(httplib::Server& svr, const ConfigStore& config_, Us
                 ev.cacheReadTokens = ev.cacheWriteTokens = kUsageTokensUnknown;
             }
             ev.errorCode = ev.ok ? "" : cancelled ? "CANCELLED" : timedOut ? "TIMEOUT" : "ERROR";
+            if (mosaicReview) {
+                json trace = {{"stage", "request_end"}, {"id", id}, {"outcome", ev.ok ? "OK" : ev.errorCode},
+                    {"elapsedMs", std::chrono::duration_cast<std::chrono::milliseconds>(request_cancel::Clock::now() - started).count()},
+                    {"sendAttempted", httpTrace.attemptedSend}, {"status", response.statusCode},
+                    {"completionTokens", response.completionTokens}};
+                if (httpTrace.elapsedMs) trace["httpMs"] = *httpTrace.elapsedMs;
+                if (httpTrace.headersMs) trace["headersMs"] = *httpTrace.headersMs;
+                if (httpTrace.firstBodyMs) trace["firstBodyMs"] = *httpTrace.firstBodyMs;
+                if (httpTrace.failureStage) {
+                    trace["transportStage"] = httpTrace.failureStage;
+                    trace["winHttpError"] = httpTrace.windowsError;
+                }
+                appendServiceTiming(trace, response.serviceTiming);
+                logMosaicReview(trace);
+            }
             ev.errorMessage = ev.ok ? "" : cancelled ? "模型请求已取消" : timedOut ? "模型请求超时，未在时限内返回结果" : response.error;
             if (!ev.ok) {
                 res.status = cancelled ? 499 : timedOut ? 504 : 502;

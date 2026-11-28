@@ -80,8 +80,24 @@ bool parseUrl(const std::string& url, bool& https, std::wstring& host, INTERNET_
     return true;
 }
 
+const char* transportStageName(http_transport::Stage stage)
+{
+    using http_transport::Stage;
+    switch (stage) {
+    case Stage::session: return "session";
+    case Stage::connection: return "connection";
+    case Stage::request: return "request";
+    case Stage::options: return "options";
+    case Stage::send: return "send";
+    case Stage::receive: return "receive_headers";
+    case Stage::read: return "read_body";
+    }
+    return "unknown";
+}
+
 LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const std::string& body,
-                        const std::string& proxyMode, std::string proxy, bool requireComplete, json* nativeJson = nullptr, bool readOnly = false)
+                        const std::string& proxyMode, std::string proxy, bool requireComplete, json* nativeJson = nullptr, bool readOnly = false,
+                        LlmHttpTrace* trace = nullptr)
 {
     LlmResponse result;
     if (request_cancel::stopped()) { result.error = "翻译已取消"; return result; }
@@ -122,9 +138,29 @@ LlmResponse winHttpPost(const std::string& url, const std::string& bearer, const
     };
     const auto cancellation = request_cancel::current ? request_cancel::current : std::make_shared<request_cancel::State>();
     std::string responseBody;
+    const auto started = request_cancel::Clock::now();
+    const auto elapsedMs = [started] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(request_cancel::Clock::now() - started).count();
+    };
     const auto response = http_transport::perform(request, {
-        {}, [&](std::string_view bytes) { responseBody.append(bytes); return true; },
+        [&](DWORD, const http_transport::ResponseHeaders&) {
+            if (trace) trace->headersMs = elapsedMs();
+            return true;
+        },
+        [&](std::string_view bytes) {
+            if (trace && !trace->firstBodyMs) trace->firstBodyMs = elapsedMs();
+            responseBody.append(bytes);
+            return true;
+        },
     }, {{}, &cancellation->cancelled, cancellation->deadline});
+    if (trace) {
+        trace->elapsedMs = elapsedMs();
+        trace->attemptedSend = response.attemptedSend;
+        if (response.failure) {
+            trace->failureStage = transportStageName(response.failure->stage);
+            trace->windowsError = response.failure->code;
+        }
+    }
     result.externalCall = response.attemptedSend;
     using http_transport::Stage;
     if (response.failure && response.failure->stage != Stage::read)
@@ -457,7 +493,7 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
         }
         json output;
         auto result = winHttpPost(baseUrl + endpoint, request.apiKey,
-            nativeBody.dump(), request.proxyMode, request.httpProxy, false, &output);
+            nativeBody.dump(), request.proxyMode, request.httpProxy, false, &output, false, request.httpTrace);
         if (!result.ok) {
             auto message = result.error;
             std::transform(message.begin(), message.end(), message.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -523,7 +559,8 @@ LlmResponse LlmClient::chat(const LlmRequest& request)
             parsed.serviceTiming = timing;
         return parsed;
     }
-    return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy, request.requireComplete);
+    return winHttpPost(request.apiUrl, request.apiKey, body.dump(), request.proxyMode, request.httpProxy,
+        request.requireComplete, nullptr, false, request.httpTrace);
 #else
     early.error = "LLM client is only implemented for Windows in this build";
     return early;
