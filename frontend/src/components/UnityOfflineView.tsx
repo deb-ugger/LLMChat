@@ -2083,7 +2083,7 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
   const deploymentPage = activeStep === 3;
   const trackEdges = deploymentPage ? deploymentValidation.effectiveEdges.map(({ from, to }) => ({ from: deploymentStageId[from], to: deploymentStageId[to] })) : undefined;
   const trackEnabled = deploymentPage ? deploymentValidation.enabledSteps.map(id => deploymentStageId[id]) : undefined;
-  const trackSkipped = deploymentPage ? deploymentPlan.disabled.map(id => deploymentStageId[id]) : undefined;
+  const trackSkipped = deploymentPlan.disabled.map(id => deploymentStageId[id]);
   const trackSteps: WorkflowTrack["steps"] = UNITY_STAGE_TABS.map(tab=>{
         const { step, id, label } = tab;
         const canvasRunning = deploymentRun?.steps.some(stage => deploymentStageId[stage] === id);

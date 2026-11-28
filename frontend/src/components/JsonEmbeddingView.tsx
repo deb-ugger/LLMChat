@@ -1043,7 +1043,7 @@ export function JsonEmbeddingView({ onBack, initialGame: game, onGameDrop, setti
   };
   const workflowSteps=<GameWorkflowSteps idPrefix="embed-step" panelId="embed-step-panel"
     edges={deploymentPage ? validation.effectiveEdges.map(({ from, to }) => ({ from: stageIds[from], to: stageIds[to] })) : undefined}
-    skipped={deploymentPage ? plan.disabled.map(id => stageIds[id]) : undefined}
+    skipped={plan.disabled.map(id => stageIds[id])}
     enabled={deploymentPage ? validation.enabledSteps.map(id => stageIds[id]) : undefined}
     disconnected={deploymentPage ? validation.disconnected.map(id => stageIds[id]) : undefined} steps={[{id:"1",label:"扫描资源"},{id:"2.1",label:"文本翻译"},...(imageProject?[{id:"2.2",label:"图片翻译"}]:[]),...(selfMosaic?[{id:"2.3",label:"图片去码"}]:[]),{id:"3",label:"生成与应用"}].map(item=>{
     const selected=item.id===activeWorkflowId;
