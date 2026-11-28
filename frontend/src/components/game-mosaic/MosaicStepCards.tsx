@@ -143,7 +143,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
         : refineSelection
     ) : undefined;
     return <li key={id} style={{ minInlineSize: 0 }}><GameFlowCard title={title} state={state} benchmark={benchmark} current={running || !!benchmark}
-      groupedParameters headerSummary={headerSummary}
+      groupedParameters headerSummary={headerSummary} stepMeasurement={benchmark ? benchmark.performance : measured}
       disclosure={{ expanded, toggle: () => expansion.setExpanded(benchmarkSteps[id], !expanded) }}
       label={screeningMethodChanged ? "待按当前方式筛选" : gameProgressLabels[state]}
       elapsed={elapsed != null && !screeningMethodChanged ? gameDuration(elapsed) : undefined}
@@ -242,10 +242,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
             <GameFlowParameterValue label="手动复筛范围" value={refineSelection} />
           </div>
           <div className="game-flow-chip-row">
-            <label data-tooltip="自动流程对未检出打码区域的图片再用大模型整图补查，可能增加整批耗时。">
-              <input type="checkbox" role="switch" checked={!!preferences.refineIncludeMissed} disabled={busy}
-                onChange={e => changePreferences({ refineIncludeMissed: e.target.checked })} />补查未发现</label>
-            <label data-tooltip="自动流程把初筛候选区域交给模型核对。关闭后可在工作台逐张确认。">
+            <label data-tooltip="自动流程复筛初筛后仍勾选的图片。关闭后可在工作台逐张确认。">
               <input type="checkbox" role="switch" checked={preferences.refine !== false} disabled={busy}
                 onChange={e => changePreferences({ refine: e.target.checked })} />执行视觉复筛</label>
           </div>

@@ -1,9 +1,48 @@
 import { createContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BenchmarkState } from "../benchmark/benchmarkRunner";
 import type { BenchmarkParameter } from "../benchmark/benchmarkParameters";
-import { gameDuration } from "../gameModelPerformance";
+import { deriveFlowMetrics } from "../gameFlowMetrics";
+import { gameDuration, type StepPerformance } from "../gameModelPerformance";
 import { GameProgressBar } from "./GameStepProgress";
 import { showAppNotice } from "./AppNotice";
+
+type FoldModelLane = { model: string; rate?: string };
+
+function shortModelName(model: string) {
+  return model.split("/").at(-1) ?? model;
+}
+
+function meterGenerationTokS(meter: { generationTokens?: number; generationMs?: number; tokens?: number; requestMs?: number }) {
+  const rate = deriveFlowMetrics({
+    tokens: meter.generationTokens ?? meter.tokens,
+    generationTokens: meter.generationTokens,
+    generationMs: meter.generationMs,
+    requestMs: meter.requestMs,
+  }).find(metric => metric.key === "generationRate");
+  return rate && rate.value !== "0" ? rate.value : undefined;
+}
+
+function foldModelLanes(measurement: StepPerformance | undefined, fallbackModels?: readonly string[]): FoldModelLane[] {
+  const meters = Object.values(measurement?.models ?? {});
+  const names = meters.length
+    ? [...new Set(meters.map(item => item.model))]
+    : [...new Set((fallbackModels ?? []).filter(Boolean))];
+  return names.map(model => {
+    const meter = measurement?.models[model] ?? meters.find(item => item.model === model);
+    return { model, rate: meter ? meterGenerationTokS(meter) : undefined };
+  });
+}
+
+function sampleModelHead(sample?: string) {
+  const head = sample?.split(" · ")[0]?.trim();
+  return head || undefined;
+}
+
+function modelMatchesSample(sampleHead: string | undefined, model: string) {
+  if (!sampleHead) return false;
+  const short = shortModelName(model);
+  return sampleHead === model || sampleHead === short || model.endsWith(sampleHead);
+}
 
 export type GameFlowProgress = {
   sample?: string;
@@ -282,6 +321,7 @@ type CardProps = GameFlowActivity & {
   parametersLocked?: boolean;
   saveConfiguration?: { run: () => void; cancel: () => void; disabled: boolean; saving?: boolean };
   disclosure?: { expanded: boolean; toggle: () => void };
+  stepMeasurement?: StepPerformance;
 };
 
 export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "disclosure"> & { stepId: string }) {
@@ -292,7 +332,7 @@ export function StandaloneGameFlowCard({ stepId, ...props }: Omit<CardProps, "di
 
 export function GameFlowCard({ title, state, current, benchmark, label, elapsed, progress, details, statusLine, performance,
   actions, onConfigure, body, resultLine, configuration, configurationActions, runningParameters, information, foldedSummary,
-  parametersLocked, saveConfiguration, disclosure, groupedParameters = false, headerSummary }: CardProps) {
+  parametersLocked, saveConfiguration, disclosure, groupedParameters = false, headerSummary, stepMeasurement }: CardProps) {
   const detailsId = useId();
   const settingsId = useId();
   const statusId = useId();
@@ -366,11 +406,71 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
   ].filter(row => row.text);
   const status = benchmark ? benchmark.state === "paused" ? "测试已暂停" : "测试中" : label;
   const elapsedText = groupedParameters ? elapsedLabel ?? "—" : elapsedLabel;
-  const elapsedDisplay = elapsedText != null && <span className="game-flow-elapsed">
+  const showHeaderTiming = groupedParameters && active && elapsedText != null;
+  const elapsedDisplay = elapsedText != null && !showHeaderTiming && <span className="game-flow-elapsed">
     {(groupedParameters || expanded || active) && "已用 "}{elapsedText}</span>;
+  const headerTiming = showHeaderTiming && <span className="game-flow-timing" title="已用与预计剩余">
+    已用 <b>{elapsedText}</b>
+    {remaining && <><span className="game-flow-timing-sep" aria-hidden="true">·</span>剩 <b>{remaining}</b></>}
+  </span>;
   const actionDisplay = actions && <div className="game-flow-actions">{actions}</div>;
-  return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}${groupedParameters ? " has-grouped-parameters" : ""}`} data-benchmark={benchmark?.state}>
-    <div className="game-flow-step">
+  const showFoldedCompact = groupedParameters && !expanded && !!activeProgress;
+  const activeSampleModel = sampleModelHead(progressSample);
+  let foldedLanes = showFoldedCompact
+    ? foldModelLanes(stepMeasurement, foldedSummary?.models) : [];
+  if (showFoldedCompact && activeSampleModel &&
+    !foldedLanes.some(lane => modelMatchesSample(activeSampleModel, lane.model))) {
+    foldedLanes = [{ model: activeSampleModel, rate: undefined }, ...foldedLanes];
+  }
+  const activeLaneIndex = foldedLanes.findIndex(lane => modelMatchesSample(activeSampleModel, lane.model));
+  const progressBar = percent === undefined
+    ? <GameProgressBar label={title + "进度"} />
+    : <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
+      aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: percent + "%" }} /></div>;
+  const progressCounts = (hasCounts || activeProgress?.count) && <span className="game-flow-progress-count">
+    {hasCounts
+      ? <>{progressCurrent!.toLocaleString()} <small>/ {progressTotal!.toLocaleString()}</small></>
+      : activeProgress!.count}
+  </span>;
+  const progressPercentLabel = percent !== undefined &&
+    <b className="game-flow-progress-pct" aria-hidden="true">
+      {percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b>;
+  const foldedProgress = showFoldedCompact && <div className="game-flow-folded-compact" role="group" aria-label={title + "进度"}>
+    <div className="game-flow-fold-primary">
+      <div className="game-flow-fold-bar">{progressBar}</div>
+      {progressPercentLabel}
+      {progressCounts}
+    </div>
+    <div className="game-flow-fold-secondary">
+      {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
+      {foldedLanes.length > 0 && <>
+        {progressPosition && <span className="game-flow-fold-sep" aria-hidden="true">·</span>}
+        <div className="game-flow-fold-model-slot" aria-live="polite">
+          {foldedLanes.map((lane, index) => <div key={lane.model}
+            className={"game-flow-fold-lane" + (index === (activeLaneIndex >= 0 ? activeLaneIndex : 0) ? " is-active" : "")}>
+            <span className="game-flow-fold-model">{shortModelName(lane.model)}</span>
+            {lane.rate && <span className="game-flow-fold-speed">纯生成 <b>{lane.rate}</b> tok/s</span>}
+          </div>)}
+        </div>
+      </>}
+    </div>
+  </div>;
+  const expandedProgress = activeProgress && <div className="game-flow-progress">
+    <div className="game-flow-progress-top">
+      {progressSample && <span className="game-flow-sample" data-tooltip={progressSample}>{progressSample}</span>}
+    </div>
+    <div className="game-flow-progress-track">{progressBar}</div>
+    <div className="game-flow-progress-bottom">
+      {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
+      {remaining && !showHeaderTiming && <span className="game-flow-progress-remaining">预计剩余 <b>{remaining}</b></span>}
+      <span className="game-flow-progress-tail">
+        {progressPercentLabel}
+        {progressCounts}
+      </span>
+    </div>
+  </div>;
+  return <article className={`game-flow-item is-${state}${benchmark ? " is-benchmark" : ""}${benchmark?.state === "running" ? " is-benchmark-running" : ""}${current ? " is-current-step" : ""}${configured ? " is-configured" : ""}${groupedParameters ? " has-grouped-parameters" : ""}${showFoldedCompact ? " has-folded-progress" : ""}`} data-benchmark={benchmark?.state}>
+    <div className={"game-flow-step" + (showFoldedCompact ? " is-folded-compact" : "")}>
       <header className={"game-flow-head" + (disclosure ? " is-collapsible" : "") + (expanded ? "" : " is-folded")}>
         {disclosure && <button type="button" className="game-flow-head-toggle" onClick={disclosure.toggle}
           aria-label={(expanded ? "折叠" : "展开") + title + "详情"} aria-expanded={expanded} aria-controls={detailsId}
@@ -383,10 +483,11 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         <span id={statusId} className="game-flow-state" role="status">{status}</span>
         {groupedParameters ? <>
           {headerSummary && <span className="game-flow-header-summary">{headerSummary}</span>}
-          <div className="game-flow-header-operations">{elapsedDisplay}{actionDisplay}</div>
+          <div className="game-flow-header-operations">{headerTiming ?? elapsedDisplay}{actionDisplay}</div>
         </> : <>{elapsedDisplay}{actionDisplay}</>}
       </header>
-      {!expanded && summaryRows.length > 0 && <div className="game-flow-collapsed-summary">
+      {foldedProgress}
+      {!expanded && !showFoldedCompact && summaryRows.length > 0 && <div className="game-flow-collapsed-summary">
         {summaryRows.map(({ key, text }, index) => <span key={key} className={"game-flow-folded-" + key}>
           {index > 0 && <span aria-hidden="true"> · </span>}
           <span className="game-flow-folded-value" data-tooltip={key === "models" ? text : undefined}>{text}</span>
@@ -396,28 +497,7 @@ export function GameFlowCard({ title, state, current, benchmark, label, elapsed,
         {infoRows.length > 0 && <dl className="game-flow-card-info" aria-label="步骤信息">
           {infoRows.map(({ label, value }, index) => <div key={label + index}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>}
-        {activeProgress && <div className="game-flow-progress">
-          <div className="game-flow-progress-top">
-            {progressSample && <span className="game-flow-sample" data-tooltip={progressSample}>{progressSample}</span>}
-          </div>
-          <div className="game-flow-progress-track">
-            {percent === undefined ? <GameProgressBar label={title + "进度"} /> :
-              <div className="game-flow-progress-bar" role="progressbar" aria-label={title + "进度"}
-                aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: percent + "%" }} /></div>}
-          </div>
-          <div className="game-flow-progress-bottom">
-            {progressPosition && <span className="game-flow-progress-chip">{progressPosition}</span>}
-            {remaining && <span className="game-flow-progress-remaining">预计剩余 <b>{remaining}</b></span>}
-            <span className="game-flow-progress-tail">
-              {percent !== undefined && <b className="game-flow-progress-pct" aria-hidden="true">{percent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b>}
-              {(hasCounts || activeProgress.count) && <span className="game-flow-progress-count">
-                {hasCounts
-                  ? <>{progressCurrent.toLocaleString()} <small>/ {progressTotal.toLocaleString()}</small></>
-                  : activeProgress.count}
-              </span>}
-            </span>
-          </div>
-        </div>}
+        {expandedProgress}
         {activeProgress?.details}
         {details}
         {performance}

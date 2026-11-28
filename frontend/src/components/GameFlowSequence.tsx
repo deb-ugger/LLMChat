@@ -595,7 +595,7 @@ export function GameFlowSequence({ configurationCommit, steps, configured, onCon
         const elapsed = liveActivity?.elapsed ?? (measured.elapsedMs > 0 || measured.started !== undefined
           ? gameDuration(measured.elapsedMs) : undefined);
         return <li key={step.id} style={{ minInlineSize: 0 }}><GameFlowCard title={step.title} state={state} benchmark={displayedTest} current={current}
-          groupedParameters={step.groupedParameters} headerSummary={step.summary}
+          groupedParameters={step.groupedParameters} headerSummary={step.summary} stepMeasurement={measured}
           disclosure={{ expanded, toggle: expanded ? () => expansion.setExpanded(expansionId(step), false) : openConfiguration }}
           onConfigure={openConfiguration}
           label={statusLabel ?? ((state === "current" || state === "done") && step.stateLabel ? step.stateLabel : stateLabels[state])}
