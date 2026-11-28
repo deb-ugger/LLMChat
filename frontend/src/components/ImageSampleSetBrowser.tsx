@@ -1,7 +1,7 @@
-import { ImageBrowser } from "./ImageBrowser";
+import { ImageBrowser, focusImagePreview } from "./ImageBrowser";
 import { ImageCanvas } from "./ImageCanvas";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { loadAnnotatedSampleSet, type AnnotatedImage, type AnnotatedSampleSet } from "../benchmark/imageSampleSet";
 import { UNITY_LANGUAGES } from "../unityTranslation";
@@ -58,7 +58,7 @@ function SamplePreview({ image, read }: { image: AnnotatedImage; read: Annotated
     };
   }, [image, read]);
 
-  return <section className="image-sample-set-preview" aria-label="图片标注">
+  return <section className="image-sample-set-preview" aria-label="图片标注" tabIndex={0} data-game-image-preview-pane="" onPointerDown={focusImagePreview}>
     <header>
       <strong title={image.file}>{image.name}</strong>
       <span className="hint">{image.width} × {image.height}</span>
@@ -114,6 +114,7 @@ function SampleSetContents({ data }: { data: AnnotatedSampleSet }) {
   const [language, setLanguage] = useState("");
   const [rule, setRule] = useState<RuleFilter>("all");
   const list = useRef<HTMLUListElement>(null);
+  const workspace = useRef<HTMLDivElement>(null), keyboardFocus = useRef<"list" | "preview" | undefined>(undefined);
   const [page, setPage] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const languages = useMemo(() => {
@@ -135,11 +136,27 @@ function SampleSetContents({ data }: { data: AnnotatedSampleSet }) {
   const visible = images.slice(page * pageSize, (page + 1) * pageSize);
   const pages = Math.ceil(images.length / pageSize);
   const selected = visible.find(image => image.id === selectedId) ?? visible[0];
+  useLayoutEffect(() => {
+    const focus = keyboardFocus.current;
+    if (!focus) return;
+    keyboardFocus.current = undefined;
+    workspace.current?.querySelector<HTMLElement>(focus === "preview" ? "[data-game-image-preview-pane]" : '[aria-pressed="true"]')?.focus({ preventScroll: true });
+  }, [selected?.id]);
 
   function showPage(next: number) {
     setPage(next);
     setSelectedId("");
     if (list.current) list.current.scrollTop = 0;
+  }
+
+  function navigatePage(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        !["PageUp", "PageDown"].includes(event.key) || (event.target as Element).closest("input, textarea, select, [contenteditable]")) return;
+    event.preventDefault();
+    const next = Math.max(0, Math.min(pages - 1, page + (event.key === "PageUp" ? -1 : 1)));
+    if (next === page) return;
+    keyboardFocus.current = (event.target as Element).closest("[data-game-image-preview-pane]") ? "preview" : "list";
+    showPage(next);
   }
 
   return <div className="image-sample-set-main">
@@ -162,7 +179,8 @@ function SampleSetContents({ data }: { data: AnnotatedSampleSet }) {
       <span className="hint" role="status">显示 {images.length} / {data.images.length} 张</span>
     </div>
     {!selected ? <p className="image-sample-set-empty">{data.images.length ? "没有符合筛选条件的图片。" : "此测试集没有图片。"}</p> : (
-      <ImageBrowser className="image-sample-set-workspace" listProps={{ className: "image-sample-set-list" }} list={<>
+      <ImageBrowser ref={workspace} className="image-sample-set-workspace" onListKeyDown={navigatePage} onPreviewKeyDown={navigatePage}
+        listProps={{ className: "image-sample-set-list", tabIndex: 0, "aria-label": "样本图片列表", "aria-keyshortcuts": "PageUp PageDown" }} list={<>
           <ul ref={list} aria-label="样本图片">
             {visible.map(image => <li key={image.id}><button type="button" title={image.file}
               aria-pressed={image.id === selected.id}

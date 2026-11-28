@@ -2,11 +2,84 @@
 .image-browser-list { min-inline-size: 0; min-block-size: 0; }
 .image-canvas-viewport { touch-action: none; }
 .image-canvas-viewport.is-pan-ready :is(svg, rect, line) { cursor: grab; }
+.image-canvas-viewport.is-pan-ready:not(.is-panning) svg.is-editing,
+.image-canvas-viewport.is-pan-ready:not(.is-panning) svg.is-editing :is(rect, line) { cursor: grab; }
 .image-canvas-viewport.is-panning,
 .image-canvas-viewport.is-panning :is(img, svg, rect, line) { cursor: grabbing; }
 .image-canvas-stage { position: relative; user-select: none; transform-origin: center; }
 .image-canvas-stage > img { display: block; width: 100%; max-width: none; }
 .image-canvas-stage > svg { display: block; width: 100%; height: 100%; }
-.image-canvas-viewport.image-canvas-fit { display: grid; place-items: center; overflow: clip; min-inline-size: 0; min-block-size: 0; }
+.image-canvas-viewport.image-canvas-fit { position: relative; display: grid; place-items: center; overflow: clip; min-inline-size: 0; min-block-size: 0; cursor: grab; }
 .image-canvas-fit > .image-canvas-stage { max-inline-size: 100%; }
 .image-canvas-inline { inline-size: 100%; block-size: 100%; flex: none; }
+.image-canvas-scroll-track {
+  display: grid;
+  place-items: center;
+  inline-size: max-content;
+  block-size: max-content;
+  min-inline-size: 100%;
+  min-block-size: 100%;
+  box-sizing: border-box;
+}
+.image-canvas-viewer-frame { position: relative; display: flex; flex: 1; min-inline-size: 0; min-block-size: 0; overflow: hidden; }
+.image-canvas-scroll-viewport { position: relative; }
+.image-canvas-minimap,
+.image-canvas-minimap-toggle {
+  position: absolute;
+  inset-block-end: 8px;
+  inset-inline-end: 8px;
+  z-index: 7;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 14px #0003;
+  touch-action: none;
+  cursor: default;
+}
+.image-canvas-minimap svg,
+.image-canvas-minimap-toggle svg { pointer-events: none; }
+.image-canvas-minimap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block-end: 3px; color: var(--text-muted); }
+.image-canvas-minimap-head > button,
+.image-canvas-minimap-toggle > button {
+  display: grid;
+  place-items: center;
+  inline-size: 22px;
+  block-size: 20px;
+  min-inline-size: 0;
+  min-block-size: 0;
+  border: 0;
+  padding: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.image-canvas-minimap-head > button:hover,
+.image-canvas-minimap-toggle > button:hover { background: var(--bg-hover); }
+.image-canvas-minimap-image {
+  position: relative;
+  display: block;
+  min-inline-size: 0;
+  min-block-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  line-height: 0;
+  overflow: hidden;
+  background: var(--bg-muted);
+  cursor: crosshair;
+  touch-action: none;
+}
+.image-canvas-minimap-image > img { display: block; inline-size: 100%; block-size: 100%; object-fit: fill; pointer-events: none; }
+.image-canvas-minimap-viewport {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid #fff;
+  background: #ffffff14;
+  box-shadow: 0 0 0 1px #0008;
+  pointer-events: none;
+}
+.image-canvas-minimap button:focus-visible,
+.image-canvas-minimap-toggle button:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }

@@ -101,12 +101,14 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
   }, [groupMenu, closeGroupMenu]);
 
   function navigateList(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    const paging = event.key === "PageUp" || event.key === "PageDown";
+    const navKey = event.key === "PageUp" ? "ArrowLeft" : event.key === "PageDown" ? "ArrowRight" : event.key;
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(navKey)) return;
     const element = event.target as HTMLElement;
-    if (element.matches("input:not([type=checkbox]), select, textarea")) return;
+    if (element.closest("input:not([type=checkbox]), select, textarea, [contenteditable]")) return;
     const summary = element.closest<HTMLElement>("summary[data-mosaic-group]");
-    if (summary) {
+    if (summary && !paging) {
       const key = summary.dataset.mosaicGroup!;
       event.preventDefault();
       if (event.key === "ArrowLeft" || event.key === "ArrowRight")
@@ -119,17 +121,20 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
     }
     if (!ordered.length) return;
     event.preventDefault();
-    const focused = element.closest<HTMLElement>("[data-mosaic-item]")?.dataset.mosaicItem;
+    const summaryGroup = summary?.dataset.mosaicGroup;
+    const focused = summaryGroup
+      ? groups.get(summaryGroup)?.items[(groupPages[summaryGroup] || 0) * mosaicGroupPageSize]?.id
+      : element.closest<HTMLElement>("[data-mosaic-item]")?.dataset.mosaicItem;
     const index = ordered.findIndex(item => item.image.id === (focused || active?.id));
     let next = Math.max(0, index);
-    if (index >= 0 && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      next = Math.max(0, Math.min(ordered.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
+    if (index >= 0 && (navKey === "ArrowUp" || navKey === "ArrowDown")) {
+      next = Math.max(0, Math.min(ordered.length - 1, index + (navKey === "ArrowUp" ? -1 : 1)));
     } else if (index >= 0) {
       const key = ordered[index].id;
       const images = groups.get(key)!.items;
       const local = images.findIndex(image => image.id === ordered[index].image.id);
       const page = Math.min(groupPages[key] || 0, Math.ceil(images.length / mosaicGroupPageSize) - 1);
-      const destination = page + (event.key === "ArrowLeft" ? -1 : 1);
+      const destination = page + (navKey === "ArrowLeft" ? -1 : 1);
       if (destination < 0 || destination * mosaicGroupPageSize >= images.length) return;
       const image = images[Math.min(images.length - 1, destination * mosaicGroupPageSize + local % mosaicGroupPageSize)];
       next = ordered.findIndex(item => item.image.id === image.id);
@@ -138,6 +143,7 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
     const id = image.id;
     const local = groups.get(key)!.items.findIndex(item => item.id === id);
     setGroupPages(previous => ({ ...previous, [key]: Math.floor(local / mosaicGroupPageSize) }));
+    if (paging) setCollapsed(previous => ({ ...previous, [key]: false }));
     selectPreview(id);
     setKeyboardTarget(id);
   }

@@ -7,7 +7,7 @@ const controls = "button, a, input, textarea, select, [contenteditable]";
 /** Route browsing keys only after the preview's editor has had a chance to consume them. */
 export function routeImageBrowserKey(event: Parameters<KeyboardEventHandler<HTMLDivElement>>[0], navigate?: KeyboardEventHandler<HTMLDivElement>) {
   if (!navigate || event.defaultPrevented || event.nativeEvent.isComposing ||
-      !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(event.key)) return;
   const target = event.target as Element;
   if (!event.currentTarget.contains(target) || !target.closest(previewPane) ||
       target.closest(controls) || target.closest("[data-image-preview-dragging]")) return;
