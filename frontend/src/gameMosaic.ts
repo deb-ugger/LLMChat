@@ -270,7 +270,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
 const mosaicWorkflowKeys: Record<MosaicModel, string> = {
   "2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
   turbo: "expanded-regions-v2", "diffusion-cream": "diffusion-cream-regions-v2",
-  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-contours-v7",
+  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-contours-v8",
 };
 
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {

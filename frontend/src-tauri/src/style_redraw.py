@@ -587,7 +587,7 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
                         "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v4"}
-ILLUSTRIOUS_CONTOUR_WORKFLOW_KEY = "illustrious-contours-v7"
+ILLUSTRIOUS_CONTOUR_WORKFLOW_KEY = "illustrious-contours-v8"
 EDIT_LIGHTNING_LORA = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
@@ -605,12 +605,48 @@ def validate_mosaic_weights(directory, profile):
             raise ValueError("缺少本地权重：" + "、".join(missing))
 
 
+def diffusion_mosaic_size(crop_size, illustrious):
+    longest = max(crop_size)
+    scale = (min(1024, max(768, longest)) if illustrious else 1152) / longest
+    return tuple(max(64, round(side * scale / 8) * 8) for side in crop_size)
+
+
+def mosaic_contour_blur(crop, mask, size):
+    from scipy import ndimage, signal
+
+    pixels = np.asarray(crop.convert("RGB").resize(size, Image.Resampling.LANCZOS), dtype=np.float32)
+    editable = np.asarray(mask.resize(size, Image.Resampling.NEAREST)) > 0
+    widths = []
+    for axis in (1, 0):
+        difference = np.abs(np.diff(pixels, axis=axis)).mean(axis=2)
+        pairs = np.diff(editable.astype(np.int8), axis=axis) == 0
+        pairs &= np.take(editable, range(editable.shape[axis] - 1), axis=axis)
+        across = 1 - axis
+        edges = (difference * pairs).sum(axis=across) / np.maximum(pairs.sum(axis=across), 1)
+        edges = ndimage.gaussian_filter1d(edges, .8)
+        positive = edges[edges > 0]
+        prominence = max(1.0, float(np.percentile(positive, 90)) * .25) if positive.size else 1.0
+        peaks, _ = signal.find_peaks(edges, prominence=prominence, distance=2)
+        gaps = np.diff(peaks)
+        if len(gaps) < 2:
+            widths.append(None)
+            continue
+        width = float(np.median(gaps))
+        regular = np.abs(gaps - width) <= max(2, width * .2)
+        widths.append(round(float(np.median(gaps[regular])), 2) if regular.mean() >= .6 else None)
+    measured = [width for width in widths if width is not None]
+    if not measured:
+        raise ValueError("无法从蒙版内测得重复的马赛克格宽，请检查蒙版是否覆盖足够的马赛克格")
+    # An odd kernel slightly larger than one measured cell, in sampling-resolution pixels.
+    kernel = int(np.ceil(max(measured) * 1.2)) | 1
+    return {"cellWidthX": widths[0], "cellWidthY": widths[1], "blurKernel": max(3, kernel),
+            "width": size[0], "height": size[1]}
+
+
 def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name, kind="diffusion-cream"):
     # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
     illustrious = kind == "illustrious"
-    longest = max(crop_size)
-    scale = (min(1024, max(768, longest)) if illustrious else 1152) / longest
-    width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
+    width, height = diffusion_mosaic_size(crop_size, illustrious)
 
     def node(kind, **inputs):
         return {"class_type": kind, "inputs": inputs}
@@ -673,7 +709,7 @@ def mosaic_target_prompt(profile):
     return " Repair only inside the mask. Follow existing contours and occlusion. Keep pixels outside the mask unchanged."
 
 
-def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None):
+def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None, contour_blur=None):
     target = mosaic_target_prompt(profile) if mask_name is not None and profile["kind"] != "illustrious" else ""
     target_negative = "mosaic artifacts, flat color fills, broken outlines, distorted proportions, duplicated forms"
     if profile["kind"] in ("diffusion-cream", "illustrious"):
@@ -681,7 +717,9 @@ def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop
                                         profile.get("seed", 1), crop_size, guide_mask_name, profile["kind"])
         if profile["kind"] == "illustrious" and profile.get("preserveContours"):
             # Keep visible contours in the guide and retain Tile through the low-noise steps.
-            graph["41"]["inputs"].update(blur=9, falloff=3)
+            if contour_blur is None:
+                raise ValueError("轮廓重绘需要先测量当前裁剪的马赛克格宽")
+            graph["41"]["inputs"].update(blur=contour_blur, falloff=3)
             graph["35"]["inputs"].update(strength=0.65, end_percent=1.0)
             graph["13"]["inputs"].update(denoise=0.45)
             graph["6"]["inputs"]["text"] = (
@@ -802,7 +840,16 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
             guide = mosaic_core_mask(blend, 128 if illustrious else 255)
             guide_name = await upload(guide)
         reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
-        local = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_name)
+        contour_blur = None
+        if illustrious and profile.get("preserveContours"):
+            measured = mosaic_contour_blur(crop, Image.fromarray(generation.astype(np.uint8) * 255),
+                                           diffusion_mosaic_size(crop.size, True))
+            contour_blur = measured["blurKernel"]
+            mosaic_redraw_diagnostic("contour_grid_measurement", region=index + 1, seed=profile.get("seed", 1), **measured)
+            widths = " / ".join(f"{axis} {measured[key]:g}" for axis, key in
+                                (("横", "cellWidthX"), ("纵", "cellWidthY")) if measured[key] is not None)
+            emit("status", f"区域 {index + 1} · 放大后格宽 {widths} 像素 · 模糊核 {contour_blur}")
+        local = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_name, contour_blur)
         if illustrious and guide.getextrema() == (255, 255):
             # There are no original pixels for color matching when the guide covers the entire crop.
             del local["14"]

@@ -27,6 +27,59 @@ def texture(size=(640, 240)):
     return Image.fromarray(np.dstack((rgb, np.full_like(x, 255))).astype(np.uint8))
 
 
+def mosaic_texture(size=(640, 240), cell=(3, 3)):
+    width, height = size
+    rng = np.random.default_rng(8127)
+    colors = rng.integers(40, 220, ((height + cell[1] - 1) // cell[1],
+                                  (width + cell[0] - 1) // cell[0], 3), dtype=np.uint8)
+    pixels = colors.repeat(cell[1], axis=0).repeat(cell[0], axis=1)[:height, :width]
+    return Image.fromarray(pixels).convert("RGBA")
+
+
+class MosaicCellMeasurement(unittest.TestCase):
+    def test_measures_in_sampling_pixels_after_resize(self):
+        image = mosaic_texture((160, 128), (8, 8))
+        mask = Image.new("L", image.size, 255)
+        measured = worker.mosaic_contour_blur(image, mask, (640, 512))
+        self.assertAlmostEqual(measured["cellWidthX"], 32, delta=1)
+        self.assertAlmostEqual(measured["cellWidthY"], 32, delta=1)
+        self.assertGreater(measured["blurKernel"], 32)
+        self.assertLess(measured["blurKernel"], 42)
+        self.assertEqual(measured["blurKernel"] % 2, 1)
+
+    def test_vertical_bands_and_anisotropic_cells(self):
+        image = mosaic_texture((180, 120), (12, 120))
+        mask = Image.new("L", image.size, 255)
+        measured = worker.mosaic_contour_blur(image, mask, (720, 480))
+        self.assertAlmostEqual(measured["cellWidthX"], 48, delta=1)
+        self.assertIsNone(measured["cellWidthY"])
+        image = mosaic_texture((180, 120), (12, 6))
+        measured = worker.mosaic_contour_blur(image, mask, (720, 480))
+        self.assertAlmostEqual(measured["cellWidthX"], 48, delta=1)
+        self.assertAlmostEqual(measured["cellWidthY"], 24, delta=1)
+        self.assertGreater(measured["blurKernel"], 48)
+
+    def test_clean_pixels_and_protected_holes_do_not_set_period(self):
+        image = mosaic_texture((160, 128), (8, 8))
+        pixels = np.array(image)
+        pixels[:, 80:, :3] = np.arange(80)[None, :, None] % 2 * 255
+        image = Image.fromarray(pixels)
+        mask = np.zeros((128, 160), np.uint8)
+        mask[:, :80] = 255
+        mask[32:48, 24:40] = 0
+        measured = worker.mosaic_contour_blur(image, Image.fromarray(mask), (640, 512))
+        self.assertAlmostEqual(measured["cellWidthX"], 32, delta=1)
+        self.assertAlmostEqual(measured["cellWidthY"], 32, delta=1)
+
+    def test_flat_fill_and_single_outline_cannot_define_cell_width(self):
+        for single_edge in (False, True):
+            image = Image.new("RGB", (160, 128), (100, 100, 100))
+            if single_edge:
+                image.paste((220, 220, 220), (80, 0, 160, 128))
+            with self.assertRaisesRegex(ValueError, "无法.*格宽"):
+                worker.mosaic_contour_blur(image, Image.new("L", image.size, 255), (640, 512))
+
+
 class RegionGeometry(unittest.TestCase):
     def test_far_regions_split_and_near_regions_merge(self):
         source = texture((1400, 600))
@@ -133,7 +186,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
 
     async def test_contour_recipe_keeps_guide_and_runs_one_pass(self):
         settings = {**profile("illustrious"), "preserveContours": True, "seed": 923}
-        source = texture()
+        source = mosaic_texture()
         regions = [{"box": [25, 30, 45, 50]}]
         areas = worker.mosaic_redraw_areas(source, regions, settings)
         uploads = {}
@@ -147,7 +200,12 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([n["inputs"]["steps"] for n in graph.values() if n["class_type"] == "KSampler"], [22])
         self.assertEqual(graph["region_0_13"]["inputs"]["seed"], 923)
         self.assertEqual(graph["region_0_13"]["inputs"]["denoise"], .45)
-        self.assertEqual(graph["region_0_41"]["inputs"]["blur"], 9)
+        resize = graph["region_0_5"]["inputs"]
+        _, crop, generation, _, _ = areas[0]
+        measured = worker.mosaic_contour_blur(crop, Image.fromarray(generation.astype(np.uint8) * 255),
+                                              (resize["width"], resize["height"]))
+        self.assertEqual(graph["region_0_41"]["inputs"]["blur"], measured["blurKernel"])
+        self.assertGreater(measured["blurKernel"], max(width for width in (measured["cellWidthX"], measured["cellWidthY"]) if width))
         self.assertEqual(graph["region_0_35"]["inputs"]["end_percent"], 1)
         self.assertFalse(any(n["class_type"] == "UnetLoaderGGUF" for n in graph.values()))
         mask = np.asarray(uploads[graph["region_0_17"]["inputs"]["image"]])[:, :, 0]
@@ -160,7 +218,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         with (patch.object(worker, "validate_mosaic_weights"),
               patch.object(worker, "ready", AsyncMock(return_value=[])),
               patch.object(worker, "recover_image_graph", recover)):
-            for enabled, key in ((False, "illustrious-regions-v4"), (True, "illustrious-contours-v7")):
+            for enabled, key in ((False, "illustrious-regions-v4"), (True, "illustrious-contours-v8")):
                 settings = {**profile("illustrious"), "preserveContours": enabled, "promptId": "fixture-job"}
                 with self.assertRaisesRegex(RuntimeError, "fixture history lookup"):
                     await worker.repair_mosaic(texture(), {"directory": "fixture", "profile": settings,
@@ -293,7 +351,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                          [22, 22])
 
     async def test_runtime_recovery_composition_and_missing_patch(self):
-        source = texture((220, 160))
+        source = mosaic_texture((220, 160), (2, 2))
         original = np.asarray(source)
         data = {"directory": "fixture", "profile": {**profile("illustrious"), "preserveContours": True}, "promptId": "fixture-job",
                 "regions": [{"box": [40, 50, 50, 60]}, {"box": [95, 50, 105, 60]}]}
