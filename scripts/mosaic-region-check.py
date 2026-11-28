@@ -63,7 +63,7 @@ class RegionGeometry(unittest.TestCase):
 
 class RegionGraphs(unittest.IsolatedAsyncioTestCase):
     def test_illustrious_recipe_and_reference_does_not_load_vision(self):
-        settings = {**profile("illustrious"), "targetParts": ["male_external"]}
+        settings = profile("illustrious")
         for size in ((2048, 1152), (320, 480), (4096, 64)):
             graph = worker.mosaic_workflow("source.png", "style.png", "mask.png", 28,
                                            settings, size, "core.png")
@@ -78,12 +78,25 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(graph["30"]["inputs"]["ckpt_name"], "Illustrious-XL-v2.0.safetensors")
             self.assertEqual(graph["46"]["inputs"], {"model": ["30", 0],
                 "lora_name": "sdxl_lightning_8step_lora.safetensors", "strength_model": 1.0})
+            self.assertEqual(graph["32"]["inputs"]["control_type"], "tile")
+            self.assertEqual(graph["33"]["inputs"]["name"], "controlnet-union-sdxl-1.0.safetensors")
             self.assertEqual(graph["35"]["inputs"]["strength"], .65)
             self.assertTrue(graph["34"]["inputs"]["noise_mask"])
             self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
         self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v1")
-        self.assertEqual(worker.mosaic_target_prompt(settings), worker.mosaic_target_prompt(profile("illustrious")))
+
+    def test_illustrious_passes_target_parts_to_existing_prompt(self):
+        parts = ["male_external"]
+        settings = {**profile("illustrious"), "targetParts": parts}
+        size = (320, 480)
+        base_graph = worker.diffusion_cream_workflow("source.png", None, "mask.png", 8, 1, size, "core.png", "illustrious")
+        target = worker.mosaic_target_prompt(settings)
+        with patch.object(worker, "mosaic_target_prompt", wraps=worker.mosaic_target_prompt) as target_prompt:
+            graph = worker.mosaic_workflow("source.png", None, "mask.png", 8, settings, size, "core.png")
+        target_prompt.assert_called_once()
+        self.assertIs(target_prompt.call_args.args[0]["targetParts"], parts)
+        self.assertEqual(graph["6"]["inputs"]["text"], base_graph["6"]["inputs"]["text"] + target)
 
     async def test_missing_illustrious_weights_fail_before_comfy_start(self):
         settings = profile("illustrious")
