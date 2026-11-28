@@ -1,6 +1,6 @@
 import { mosaicRunImageOutcome } from "../../benchmark/formalRunHistory";
-import { groupMosaicScenes, mosaicDefaultSteps, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
-import { mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
+import { groupMosaicScenes, matchesMosaicDetectorKey, mosaicDefaultSteps, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
+import { mosaicInitialScreening, mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
 import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
 import type { MosaicAutomaticPlan, MosaicAutomaticPorts, MosaicCandidate, MosaicBatchPorts, MosaicBatchStep, MosaicBatchWork,
@@ -47,6 +47,7 @@ export function refineMovementFor(row: Result): RefineMovement | undefined {
   const movement = row.refineMovement;
   if (movement) {
     if (row.refineError && movement.to !== "failed") return { ...movement, to: "failed" };
+    if (movement.to === "clear" && row.refined && !row.refineQuickExcluded) return { ...movement, to: "refinedClear" };
     // Older projects recorded a successful positive review as a candidate.
     return movement.to === "candidate" && row.refined ? { ...movement, to: "refinedCandidate" } : movement;
   }
@@ -57,7 +58,8 @@ export function refineMovementFor(row: Result): RefineMovement | undefined {
 export function reviewedResult(row: Result, scan: MosaicScan, reviewKey: string): Result {
   return attachRefineMovement(row, { ...row,
     boxes: removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes),
-    checked: row.manualChecked ? row.checked : !!scan.boxes.length && !scan.review,
+    checked: row.checked && !!(scan.boxes.length || scan.review),
+    manualChecked: scan.boxes.length || scan.review ? row.manualChecked : undefined,
     refined: reviewKey, refineMovement: undefined, refineQuickExcluded: scan.quickExcluded, manualStatus: undefined,
     reason: undefined, refineError: undefined, redrawError: undefined, review: scan.review });
 }
@@ -145,6 +147,17 @@ export function stopMosaicBatch(controller: AbortController | null, setProgress:
   setProgress("正在保存进度并停止后续任务");
 }
 
+function screenedResult(row: Result, scan: MosaicScan, detector: string): Result {
+  const preserve = row.manualBoxes || row.saved;
+  const boxes = removeContainedMosaicBoxes(scan.boxes.length ? scan.boxes : scan.reviewBoxes || []);
+  const checked = row.checked && !!(preserve || boxes.length || scan.review);
+  return { ...row, boxes: preserve ? row.boxes : boxes, checked, manualChecked: checked ? row.manualChecked : undefined,
+    signature: btoa(String.fromCharCode(...scan.signature)), detector, scanned: true,
+    beforeRefine: undefined, refineMovement: undefined, refined: undefined, refineQuickExcluded: undefined,
+    refineError: undefined, redrawError: undefined, reason: undefined, manualStatus: undefined,
+    review: preserve ? undefined : scan.review };
+}
+
 export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSignal, report: (progress: StepReport) => void,
   usage: MosaicStepUsage | undefined, ports: MosaicScreenPorts) {
   const { targets, usable, rows, initial, detectorKind, detectorKey, detectorFile, modelName, concurrency } = plan;
@@ -153,8 +166,9 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
   const fresh = { ...rows };
   const ids = new Set(targets.map(image => image.id));
   for (const image of targets) {
-    const row = clearReviewResult(resultFor(rows, image));
-    fresh[image.id] = row.saved ? row : { ...row, scanned: false, reason: undefined };
+    const old = resultFor(rows, image);
+    const row = clearReviewResult(old);
+    fresh[image.id] = row.saved ? row : { ...row, checked: old.checked, scanned: false, reason: undefined };
   }
   replaceRows(fresh);
   clearReviews([...ids]);
@@ -192,11 +206,7 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
             if (signal.aborted) break;
             const scan = await usage!.measure(modelName, lanes, () => scanner.scan(input));
             usage?.recordImage?.(image.id, mosaicRunImageOutcome(scan, false));
-            const { signature } = scan;
-            const boxes = removeContainedMosaicBoxes(scan.boxes.length ? scan.boxes : scan.reviewBoxes || []);
-            batch[image.id] = { ...old, boxes: old.manualBoxes || old.saved ? old.boxes : boxes,
-              checked: old.manualChecked || old.manualBoxes || old.saved ? old.checked : boxes.length > 0 || !!scan.review,
-              signature: btoa(String.fromCharCode(...signature)), detector: detectorKey, scanned: true, beforeRefine:undefined, refineMovement:undefined, refined:undefined, refineQuickExcluded:undefined, refineError:undefined, redrawError:undefined, reason: undefined, manualStatus: undefined, review: old.manualBoxes || old.saved ? undefined : scan.review };
+            batch[image.id] = screenedResult(old, scan, detectorKey);
           } catch (cause) {
             if (signal.aborted) break;
             failures++;
@@ -232,7 +242,9 @@ export async function runMosaicScreen(plan: MosaicScreenPlan, signal: AbortSigna
       const signature = typeof row.signature === "string" ? Array.from(atob(row.signature), c => c.charCodeAt(0)) : row.signature;
       return [{ ...image, signature }];
     }));
-    for (const list of proposals) for (const image of list) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
+    for (const list of proposals) for (const image of list) {
+      if (ids.has(image.id)) next[image.id] = { ...next[image.id], group: "scene-" + list[0].id };
+    }
     return next;
   });
   setProgress([failures ? failures + " 张筛选失败，详情见「处理失败」分组。" : "", detector?.reused ? "已复用 " + detector.reused + " 张相同图片的检测结果" : ""].filter(Boolean).join(" · "));
@@ -243,11 +255,10 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
   report: ((completed: number, detail: string) => void) | undefined, ports: MosaicReviewPorts) {
   const { targets, rows, gamePath, preferences, reviewKey, detectorFile, restart, automatic, metrics, deploymentScope } = plan;
   const { read, prepareSources, refineBatch, readMosaicReviews, setRows, setRefineRetries, gameStepSelections, prepareRequest, request } = ports;
-  const reviewSettings = automatic ? { ...preferences, refineScope: preferences.refineIncludeMissed ? "all" as const : "suspected" as const } : preferences;
   const cached = automatic && !restart ? readMosaicReviews(gamePath,reviewKey) : undefined;
   const isCached = (image: UnityImage) => {
     const old = cached?.[image.id];
-    return old?.source === image.sourceHash && !(reviewSettings.refineScope === "all" && old.scan.quickExcluded);
+    return old?.source === image.sourceHash && !old.scan.quickExcluded;
   };
   const ownedUsage = !deploymentScope && !metrics?.usage && targets.some(image => !isCached(image))
     ? ports.beginUsage(!restart) : undefined;
@@ -269,14 +280,14 @@ export async function performMosaicReviews(plan: MosaicReviewPlan, signal: Abort
   let succeeded = false;
   try {
     const result = await refineBatch(targets, {
-      root: gamePath, settings: reviewSettings, signal, modelFile: detectorFile, read, prepare: prepareSources, restart, timingScope, prepareRequest,
+      root: gamePath, settings: preferences, signal, modelFile: detectorFile, read, prepare: prepareSources, restart, timingScope, prepareRequest,
       request: (model, prompt, image, signal, lanes) => request(model, prompt, image, signal, selections ? selections(lanes) : undefined)
         .finally(() => usage?.refresh()),
       onResult: (image, scan) => {
         usage?.recordImage?.(image.id, mosaicRunImageOutcome(scan, true));
         setRows(previous => {
           const old = resultFor(previous, image);
-          if (old.manualBoxes || old.saved || sameReview(old, scan, reviewKey)) return previous;
+          if (old.manualBoxes || old.saved || (!automatic && sameReview(old, scan, reviewKey))) return previous;
           return { ...previous, [image.id]: reviewedResult(old, scan, reviewKey) };
         });
         finishRetry(image);
@@ -315,7 +326,10 @@ export async function runMosaicRefine(plan: MosaicRefinePlan, signal: AbortSigna
   if (restart) {
     const next = { ...rows };
     const ids = new Set(targets.map(image => image.id));
-    for (const image of targets) next[image.id] = clearReviewResult(resultFor(rows, image));
+    for (const image of targets) {
+      const row = resultFor(rows, image);
+      next[image.id] = { ...clearReviewResult(row), checked: row.checked };
+    }
     replaceRows(next);
     clearReviews([...ids]);
     resetRedraw(ids);
@@ -382,7 +396,7 @@ function createMosaicReferenceReader(readSaved: (image: UnityImage, signal: Abor
   };
 }
 
-export function automaticMosaicRedrawStyle(usable: readonly UnityImage[], rows: Results,
+function automaticMosaicRedrawStyle(usable: readonly UnityImage[], rows: Results,
   readSaved: (image: UnityImage, signal: AbortSignal) => Promise<Blob>, signal: AbortSignal) {
   const references = mosaicRedrawReferences(usable, rows);
   const readReference = createMosaicReferenceReader(readSaved, signal);
@@ -422,9 +436,11 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
   const references = mosaicRedrawReferences(usable, rows);
   const independentDiffusion = !plan.groupReferences && plan.models.every(model => model === "diffusion-cream");
   const targetIds = new Set(plan.targets.map(target => target.image.id));
-  return plan.targets.every(({ image, boxes, keep, style }) => {
+  return plan.targets.every(({ image, boxes, keep, style, pending }) => {
     const latest = current.get(image.id);
     if (latest?.sourceHash !== image.sourceHash) return false;
+    const row = resultFor(rows, latest);
+    if (pending.size && !row.checked) return false;
     const latestStyle = mosaicRedrawStyle(latest, rows, references);
     const automatic = plan.groupReferences?.get(style.group);
     const referenceImage = automatic && current.get(automatic.image.id);
@@ -436,7 +452,7 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
       : (independentDiffusion && !style.reference) ||
         (latestStyle.reference?.id === style.reference?.id && latestStyle.reference?.sourceHash === style.reference?.sourceHash);
     return latestStyle.group === style.group && referenceUnchanged &&
-      JSON.stringify(resultFor(rows, latest).boxes) === JSON.stringify(boxes) &&
+      JSON.stringify(row.boxes) === JSON.stringify(boxes) &&
       JSON.stringify(keepText(latest, protect)) === JSON.stringify(keep);
   });
 }
@@ -536,79 +552,81 @@ export async function runMosaicRedraw(plan: RedrawPlan, initial: number, signal:
 }
 
 export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: AbortSignal, ports: MosaicAutomaticPorts) {
-  const { selected, scoped, usable, rows, detectorKey, protect, refine, model, steps, timingScope } = plan;
-  const { read, readSaved, performReviews, openDetector, savedMosaicScan, redrawMosaic, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews } = ports;
+  const { selected, scoped, usable, rows, detectorKey, refine, model, steps, timingScope } = plan;
+  const { read, readSaved, performReviews, openDetector, redrawMosaic, reportGameStepItems, recordGameCacheHit,
+    measureGameAsync, update, setProgress, clearReviews, saveScreening } = ports;
+  const ids = new Set(selected.filter(image => resultFor(rows, image).checked).map(image => image.id));
+  const targets = scoped.filter(image => resultFor(rows, image).checked && !ids.has(image.id));
+  if (!targets.length) return [...ids];
 
-  const ids = new Set(selected.map(image => image.id));
-  const existing = await ports.readExisting(signal);
-  for (const image of usable) {
-    const row = resultFor(rows, image);
-    if (existing[image.id] === image.sourceHash && row.discardedHash !== image.sourceHash && !(row.manualChecked && !row.checked))
-      ids.add(image.id);
+  const screened: Results = {};
+  const rescreened: string[] = [];
+  const readSource = (image: UnityImage) => measureGameAsync(timingScope, "processingMs", () => read(image, signal));
+  let detector: Awaited<ReturnType<typeof openDetector>> | undefined;
+  try {
+    for (const [index, image] of targets.entries()) {
+      signal.throwIfAborted();
+      const row = resultFor(rows, image);
+      if (row.manualBoxes) continue;
+      const initial = mosaicInitialScreening(row);
+      if (initial.scanned && !initial.reason && matchesMosaicDetectorKey(initial.detector, detectorKey)) {
+        recordGameCacheHit(timingScope);
+        continue;
+      }
+      setProgress("初筛打码区域 · " + image.name, index, targets.length);
+      try {
+        detector ??= await openDetector(signal, timingScope);
+        const source = await readSource(image);
+        const scan = await measureGameAsync(timingScope, "processingMs", () => detector!.scan(source));
+        signal.throwIfAborted();
+        screened[image.id] = screenedResult(row, scan, detectorKey);
+        rescreened.push(image.id);
+      } catch (error) {
+        if (!signal.aborted) screened[image.id] = { ...row, scanned: false, reason: error instanceof Error ? error.message : String(error) };
+        throw error;
+      }
+    }
+  } finally {
+    try {
+      if (Object.keys(screened).length) saveScreening(screened);
+      if (rescreened.length) clearReviews(rescreened);
+    } finally { await detector?.release(); }
   }
-  const unscreened = scoped.filter(image => !ids.has(image.id) && !(resultFor(rows, image).manualChecked && !resultFor(rows, image).checked));
-  if (!unscreened.length) return [...ids];
-  const reviews = refine !== false ? await performReviews(unscreened.filter(image => !resultFor(rows,image).manualBoxes),
-    signal, (_completed, detail) => setProgress(detail), false, true, undefined, timingScope) : undefined;
+
+  const screenedRows = { ...rows, ...screened };
+  const checked = targets.filter(image => resultFor(screenedRows, image).checked);
+  const reviewTargets = refine !== false ? checked.filter(image => !resultFor(screenedRows, image).manualBoxes) : [];
+  const reviews = reviewTargets.length ? await performReviews(reviewTargets, signal,
+    (completed, detail) => setProgress(detail, completed, reviewTargets.length)) : undefined;
   if (reviews?.failed) {
     reportGameStepItems(timingScope, "mosaic", reviews.results.size + reviews.failed, reviews.failed);
     throw new Error(reviews.failed + " 张图片复筛失败");
   }
-  let detector: Awaited<ReturnType<typeof openDetector>> | undefined;
-  const rescreened = new Set<string>();
+
   const redrawStyle = automaticMosaicRedrawStyle(usable, rows, readSaved, signal);
-  try {
-    for (const [index, image] of unscreened.entries()) {
-      signal.throwIfAborted();
-      reportGameStepItems(timingScope, "mosaic", index);
-      const row = resultFor(rows, image);
-      const readSource = () => measureGameAsync(timingScope, "processingMs", () => read(image, signal));
-      let source: Blob | undefined;
-      const cached = savedMosaicScan(row, detectorKey);
-      let scan = reviews?.results.get(image.id) ?? cached;
-      if (scan && scan === cached) recordGameCacheHit(timingScope);
-      if (!scan) {
-        try {
-          detector ??= await openDetector(signal, timingScope);
-          source = await readSource();
-          const imageSource = source;
-          scan = await measureGameAsync(timingScope, "processingMs", () => detector!.scan(imageSource));
-        } catch (error) {
-          if (!signal.aborted) update(image, { scanned: false, reason: error instanceof Error ? error.message : String(error) });
-          throw error;
-        }
-        rescreened.add(image.id);
-        update(image, { scanned: true, detector: detectorKey, review: scan.review,
-          boxes: removeContainedMosaicBoxes(scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes),
-          reason: undefined, refineError: undefined, refined: undefined, refineQuickExcluded: undefined,
-          beforeRefine: undefined, refineMovement: undefined, manualStatus: undefined });
-      }
-      if (scan.review && !row.manualChecked) {
-        update(image, { review: scan.review, boxes: removeContainedMosaicBoxes(scan.reviewBoxes || []), checked: false });
-        throw new Error(image.name + " · " + scan.review);
-      }
-      const boxes = removeContainedMosaicBoxes(scan.boxes);
-      if (!boxes.length) continue;
-      try {
-        const style = await redrawStyle(image);
-        const original = source ?? await readSource();
-        if (ports.resolveTargets) setProgress("识别蒙版部位 · " + image.name);
-        const targetParts = await ports.resolveTargets?.(image, original, boxes, signal);
-        const rendered = await redrawMosaic({ source: original, boxes, keep: keepText(image, protect), model, steps,
-          ...style, signal, timingScope, progress: setProgress, targetParts });
-        await measureGameAsync(timingScope, "saveMs", async () =>
-          ports.writeCandidate(image, rendered, signal));
-      } catch (error) {
-        if (!signal.aborted) update(image, { redrawError: error instanceof Error ? error.message : String(error) });
-        throw error;
-      }
-      ids.add(image.id);
-      update(image, { boxes, saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
+  for (const [index, image] of checked.entries()) {
+    signal.throwIfAborted();
+    reportGameStepItems(timingScope, "mosaic", index);
+    const row = resultFor(screenedRows, image);
+    const scan = reviews?.results.get(image.id) ?? row;
+    if (scan.review && row.manualStatus !== "refinedCandidate") throw new Error(image.name + " · " + scan.review);
+    const boxes = removeContainedMosaicBoxes(scan.boxes);
+    if (!boxes.length) continue;
+    try {
+      const style = await redrawStyle(image);
+      const original = await readSource(image);
+      if (ports.resolveTargets) setProgress("识别蒙版部位 · " + image.name, index, checked.length);
+      const targetParts = await ports.resolveTargets?.(image, original, boxes, signal);
+      const rendered = await redrawMosaic({ source: original, boxes, keep: ports.keep(image), model, steps,
+        ...style, signal, timingScope, progress: detail => setProgress(detail, index, checked.length), targetParts });
+      await measureGameAsync(timingScope, "saveMs", () => ports.writeCandidate(image, rendered, signal));
+    } catch (error) {
+      if (!signal.aborted) update(image, { redrawError: error instanceof Error ? error.message : String(error) });
+      throw error;
     }
-    reportGameStepItems(timingScope, "mosaic", unscreened.length, 0);
-    return [...ids];
-  } finally {
-    try { if (rescreened.size) clearReviews([...rescreened]); }
-    finally { await detector?.release(); }
+    ids.add(image.id);
+    update(image, { boxes, saved: true, checked: true, discardedHash: undefined, redrawError: undefined });
   }
+  reportGameStepItems(timingScope, "mosaic", targets.length, 0);
+  return [...ids];
 }

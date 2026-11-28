@@ -1,5 +1,5 @@
 import type { MosaicBox } from "../gameMosaic";
-import { mosaicStatusLabels as status } from "../gameMosaicStatus";
+import { isMosaicClearCategory, mosaicStatusLabels as status } from "../gameMosaicStatus";
 import type { ImageBenchmarkInput, ImageBenchmarkOutcome } from "./imageBenchmarkHistory";
 import { mosaicBoxCoverage, orderedMosaicBoxes, type MosaicTruth } from "./mosaicScoreInputs";
 
@@ -49,10 +49,11 @@ function classify(sample: ImageBenchmarkInput, result?: Outcome): { verdict: Ver
   if (result.boxes !== undefined && (!Array.isArray(result.boxes) || !result.boxes.every(box => validBox(box, sample))))
     return { verdict: "invalid", reason: "输出框无效或越界" };
   if (result.category === status.review) return { verdict: "review" };
-  if (result.category === status.clear && !result.boxes?.length) return { verdict: "negative" };
+  if (isMosaicClearCategory(result.category))
+    return result.boxes?.length ? { verdict: "invalid", reason: "负判含输出框" } : { verdict: "negative" };
   if (result.category === status.candidate || result.category === status.refinedCandidate)
     return result.boxes?.length && result.checked !== false ? { verdict: "positive" } : { verdict: "invalid", reason: "正判缺少可交付的有效框" };
-  return { verdict: "invalid", reason: result.category === status.clear ? "负判含输出框" : "未知结果分类" };
+  return { verdict: "invalid", reason: "未知结果分类" };
 }
 
 export function countMosaicResults(samples: readonly ImageBenchmarkInput[], results: Readonly<Record<string, Outcome>>,

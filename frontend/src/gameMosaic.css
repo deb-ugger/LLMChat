@@ -228,6 +228,15 @@ input.game-mosaic-threshold[type="number"] {
 .game-mosaic-original-thumbnail > canvas { inline-size: 100%; block-size: 100%; object-fit: contain; }
 .game-mosaic-status-group > details > ul { list-style: none; margin: 0; padding: 0; }
 .game-mosaic-status-group > details > summary { min-height: 30px; }
+.game-mosaic-status-group.is-redrawn > details > summary {
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-panel));
+  box-shadow: inset 2px 0 var(--success);
+}
+.game-mosaic-status-group.is-redrawn > details > summary > span:first-child,
+.game-mosaic-image-meta > .is-redrawn,
+.game-mosaic-original-tile > .game-mosaic-original-status.is-redrawn {
+  color: var(--success);
+}
 .game-mosaic-image-heading {
   display: flex;
   align-items: center;

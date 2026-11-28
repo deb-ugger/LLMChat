@@ -5,7 +5,7 @@ import { API_BASE } from "./api";
 import { createMosaicGridScanner, gameDetectorFile, loadMosaicDetector, redrawMosaic, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import { mosaicReviewPolicy, readMosaicRows, refineMosaicBatch, reviewMosaicScreen } from "./gameMosaicRefine";
 import { mosaicScreenZoomPolicy, usesMosaicPresenceProbes } from "./gameMosaicScreening";
-import { mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
+import { isMosaicClearCategory, mosaicScreeningStatus, mosaicStatusLabels, type MosaicScreeningSnapshot, type MosaicScreeningState } from "./gameMosaicStatus";
 import { prepareMosaicReviewModel, requestGameModelJson } from "./gameModelRequest";
 import { gameStepSelections, measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import type { AnnotatedSampleSet } from "./benchmark/imageSampleSet";
@@ -169,7 +169,7 @@ export function runMosaicBenchmark(step: MosaicBenchmarkStep, images: UnityImage
         initialScreening: image => {
           if (annotated) return;
           const category = workload.categories?.[image.id];
-          if (category === mosaicStatusLabels.candidate || category === mosaicStatusLabels.clear || category === mosaicStatusLabels.review)
+          if (category === mosaicStatusLabels.candidate || isMosaicClearCategory(category) || category === mosaicStatusLabels.review)
             return { scanned: true, boxes: workload.boxes[image.id] ?? [], review: category === mosaicStatusLabels.review ? category : undefined };
         },
         prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal,

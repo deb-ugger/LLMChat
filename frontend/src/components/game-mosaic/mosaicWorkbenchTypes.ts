@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import type { Settings } from "../../api";
 import type { createMosaicGridScanner, loadMosaicDetector, mosaicInputKey, openDeploymentDetector, redrawMosaic,
   MosaicBox, MosaicDevice, MosaicModel, MosaicSettings } from "../../gameMosaic";
-import type { readMosaicReviews, refineMosaicBatch, savedMosaicScan } from "../../gameMosaicRefine";
+import type { readMosaicReviews, refineMosaicBatch } from "../../gameMosaicRefine";
 import type { MosaicInitialScreeningSnapshot, MosaicManualStatus, MosaicStatus } from "../../gameMosaicStatus";
 import type { gameStepSelections, measureGameAsync, recordGameCacheHit, reportGameStepItems, StepPerformance } from "../../gameModelPerformance";
 import type { UnityImage } from "../../unityOffline";
@@ -206,7 +206,6 @@ export type MosaicAutomaticPlan = {
   usable: readonly UnityImage[];
   rows: Results;
   detectorKey: string;
-  protect: boolean;
   refine?: boolean;
   model: MosaicModel;
   steps: number;
@@ -217,17 +216,17 @@ export type MosaicAutomaticPorts = {
   resolveTargets?: import("../../mosaicRegionTargets").MosaicTargetResolver;
   read: MosaicRead;
   readSaved: MosaicRead;
-  performReviews: PerformMosaicReviews;
+  performReviews: (targets: readonly UnityImage[], signal: AbortSignal, report: (completed: number, detail: string) => void) => ReturnType<typeof refineMosaicBatch>;
   openDetector: (signal: AbortSignal, timingScope: string) => ReturnType<typeof openDeploymentDetector>;
-  savedMosaicScan: typeof savedMosaicScan;
+  keep: (image: UnityImage) => MosaicBox[];
+  saveScreening: (changes: Results) => void;
   redrawMosaic: typeof redrawMosaic;
   reportGameStepItems: typeof reportGameStepItems;
   recordGameCacheHit: typeof recordGameCacheHit;
   measureGameAsync: typeof measureGameAsync;
   update: MosaicUpdateRow;
-  setProgress: (message: string) => void;
+  setProgress: (message: string, completed: number, total: number) => void;
   clearReviews: (ids: string[]) => void;
-  readExisting: (signal: AbortSignal) => Promise<Record<string, string>>;
   writeCandidate: (image: UnityImage, blob: Blob, signal: AbortSignal) => Promise<unknown>;
 };
 

@@ -57,10 +57,10 @@ export function createMosaicGridScanner() {
 
 export type MosaicSettings = {
   screening?: Partial<MosaicScreening>;
-  concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number; refineIncludeMissed?: boolean;
+  concurrency?: number; refine?: boolean; refineModel?: string; refineGuardModel?: string; refineScope?: "all" | "suspected" | "selected"; refineConcurrency?: number;
   detector: "grid" | "anime"; scope: "scenes" | "all"; model: MosaicModel; steps: number; protect: boolean; regionTargeting?: boolean;
 };
-export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, refineIncludeMissed: false, scope: "scenes", model: "illustrious", steps: 8, protect: true };
+export const defaultMosaicSettings: MosaicSettings = { detector: "anime", screening: { ...defaultMosaicScreening }, concurrency: 2, refine: true, refineModel: "qwen3.5:latest", refineGuardModel: "qwen3-vl:8b-instruct", refineScope: "selected", refineConcurrency: 1, scope: "scenes", model: "illustrious", steps: 8, protect: true };
 export const mosaicRefineConcurrencyChoices = [1, 2, 4];
 
 export function mosaicRefineConcurrency(value?: number) {

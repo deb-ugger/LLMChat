@@ -107,7 +107,6 @@ export function formatMosaicParameters(step: MosaicBenchmarkStep, settings?: Par
       add("纹理与漏检复核模型", labelForModelId(mosaic.refineGuardModel || defaultMosaicSettings.refineGuardModel!));
       add("复筛并发", mosaic.refineConcurrency ?? 1);
       add("手动复筛范围", refineScopes[mosaic.refineScope ?? "selected"]);
-      add("自动补查未发现", switchLabel(!!mosaic.refineIncludeMissed));
       add("自动执行视觉复筛", switchLabel(mosaic.refine !== false));
     } else if (step === "mosaicScreen") {
       add("筛选方式", mosaic.detector === "grid" ? "方格规则" : "分类＋定位");

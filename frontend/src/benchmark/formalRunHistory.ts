@@ -49,7 +49,7 @@ export function mosaicRunImageOutcome(scan: MosaicScan | undefined, refine: bool
       ...scan, scanned: true, refined: refine ? "mosaicRefine" : undefined, refineQuickExcluded: scan.quickExcluded,
     })],
     boxes: scan.review ? scan.reviewBoxes || scan.boxes : scan.boxes,
-    checked: !!scan.boxes.length && !scan.review, reason: scan.review, status: "完成",
+    checked: !!(scan.boxes.length || scan.review), reason: scan.review, status: "完成",
   };
 }
 

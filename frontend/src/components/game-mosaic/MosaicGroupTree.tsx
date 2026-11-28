@@ -147,7 +147,7 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
     <div className="game-mosaic-list-toolbar">
       <div className="game-mosaic-list-header">
         <GameImageFilter menuRef={filterMenu}>
-          <GameImageFilterOptions filters={imageFilters} onChange={onImageFiltersChange} doneHint="已采用去码图，含已纳入补丁的图片" />
+          <GameImageFilterOptions filters={imageFilters} onChange={onImageFiltersChange} doneHint="已重绘、已采用去码图或已纳入补丁的图片" />
         </GameImageFilter>
         <span className="game-mosaic-list-statistics" data-tooltip={statistics}>{statistics}</span>
         {(counts.failed > 0 || failuresOnly) && <button type="button" className="unity-btn game-mosaic-failed-filter"
@@ -174,7 +174,7 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
           const checked = items.filter(image => getRow(image).checked).length;
           const closed = mosaicGroupCollapsed(collapsed, id);
           const delta = status && refineChanges.get(status);
-          return <li key={id} className={`game-mosaic-status-group${status === "failed" ? " has-error" : ""}`}>
+          return <li key={id} className={`game-mosaic-status-group${status === "failed" ? " has-error" : ""}${status === "redrawn" ? " is-redrawn" : ""}`}>
             <details className="unity-image-result-group" open={!closed} onToggle={event => {
               const next = !event.currentTarget.open;
               setCollapsed(previous => mosaicGroupCollapsed(previous, id) === next ? previous : { ...previous, [id]: next });
@@ -213,7 +213,7 @@ export function MosaicGroupTree({ listId, toolbarActions, filterMenu, filters, o
                       <strong><SearchHighlight text={image.name} query={needle} /></strong>
                     </span>
                     <small className="game-mosaic-image-meta">
-                      <span>{detail}</span>
+                      <span className={state === "redrawn" ? "is-redrawn" : undefined}>{detail}</span>
                       <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
                     </small>
                     {edited.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}

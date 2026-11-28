@@ -2,9 +2,9 @@ import { hasMosaicDrafts, mosaicDraftsOf, saveMosaicDrafts, useHasMosaicDrafts }
 import { GameTextParameters } from "./GameTextParameters";
 import { showAppNotice } from "./AppNotice";
 import { benchmarkBlockingReason, isBenchmarkRunning, useBenchmarkRunning, useFormalWorkflowActivity } from "../benchmark/benchmarkRunner";
-import { automaticMosaicRedrawStyle } from "./game-mosaic/mosaicBatchRunner";
+import { resultFor, reviewedResult, runAutomaticMosaic } from "./game-mosaic/mosaicBatchRunner";
 import { createMosaicTargetResolver, mosaicRegionTargeting } from "../mosaicRegionTargets";
-import { clearMosaicRows, persistMosaicErrorUpdates, readMosaicRows, refineMosaicBatch, savedMosaicScan, type MosaicErrorUpdate } from "../gameMosaicRefine";
+import { clearMosaicReviews, clearMosaicRows, mosaicReviewKey, persistMosaicRowUpdates, readMosaicRows, refineMosaicBatch, type MosaicRowUpdate } from "../gameMosaicRefine";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { needsImageSemanticReview, reviewGameImageTranslation } from "../gameImageSemanticReview";
 import { useOutputMessage, writeOutput, type OutputLevel } from "../appOutput";
@@ -63,7 +63,7 @@ import { UNITY_STAGE_TABS, unityImageWorkDone, unityImageReadyForTarget, tagLega
 import { unityTranslationStats, unityTranslationContextKey, textTranslationMatchesTarget, tagLegacyTextTargets } from "../unityTranslationSession";
 import { type UnityLineMode } from "../unityLineLayout";
 import { deploymentSequence, deploymentPhases, loadDeploymentPlan, saveDeploymentPlan, validateDeploymentPlan, type DeploymentActions, type DeploymentModel, type DeploymentPhase, type DeploymentPlan, type DeploymentRun, type DeploymentStep } from "./UnityDeploymentPanel";
-import { redrawMosaic, gameDetectorFile, mosaicDetectorKey, openDeploymentDetector, readMosaicSettings, saveMosaicSettings, type MosaicBox } from "../gameMosaic";
+import { redrawMosaic, gameDetectorFile, mosaicDetectorKey, openDeploymentDetector, readMosaicSettings, saveMosaicSettings } from "../gameMosaic";
 import { UnityProjectLoading } from "./UnityProjectLoading";
 import { reconcileImageEdit } from "../unityImageEdits";
 import { mergeUnityTranslationProject, UnityTranslationStopped, type UnityTranslationPart } from "../unityTranslationJobs";
@@ -1767,112 +1767,71 @@ export const UnityOfflineView = forwardRef<UnityOfflineHandle, Props>(function U
     let { candidates } = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-status", { root });
     const preferences = readMosaicSettings(root), modelFile = gameDetectorFile(root);
     const detectorKey = mosaicDetectorKey(preferences.detector, modelFile, preferences.screening);
+    const reviewKey = mosaicReviewKey(preferences, modelFile);
     const rows = readMosaicRows(root);
-    const savedRow = (image: UnityImage) => rows[image.id]?.source === image.sourceHash ? rows[image.id] : undefined;
     const usable = (current.images || []).filter(image => image.sourceFile && image.width > 0 && image.height > 0);
     const scenes = usable.filter(image => /(?:^|[\\/])img[\\/]pictures[\\/]/i.test(image.file));
-    const eligible = (preferences.scope === "scenes" && scenes.length ? scenes : usable).filter(image => {
-      const row = savedRow(image);
-      return !row?.manualChecked || row.checked;
+    const scoped = preferences.scope === "scenes" && scenes.length ? scenes : usable;
+    const selected = scoped.filter(image => {
+      const candidate = candidates[image.id], row = resultFor(rows, image);
+      return row.checked && candidate?.source === image.sourceHash && (candidate.included ||
+        row.discardedHash !== candidate.hash && row.discardedHash !== candidate.source);
     });
-    const reusable = (image: UnityImage) => {
-      const candidate = candidates[image.id], row = savedRow(image);
-      return candidate?.source === image.sourceHash && (candidate.included ||
-        row?.discardedHash !== candidate.hash && row?.discardedHash !== candidate.source);
-    };
-    const reused = eligible.filter(reusable);
-    const ids = new Set(reused.filter(image => !candidates[image.id].included).map(image => image.id));
-    const images = eligible.filter(image => !reusable(image));
     const request = { root, path: current.folder };
-    const scope = deploymentMetricScope(root, "mosaic");
-    const selections = gameStepSelections(scope, "mosaic");
-    for (const _image of reused) recordGameCacheHit(scope);
-    let failed = 0;
-    const reviewUpdates: MosaicErrorUpdate[] = [];
-    const reviews = preferences.refine !== false ? await refineMosaicBatch(images.filter(image => !savedRow(image)?.manualBoxes), {
-      root,settings:{...preferences,refineScope:preferences.refineIncludeMissed?"all":"suspected"},signal,modelFile,read:readMosaicSource,prepare:prepareMosaicSources,
-      timingScope: scope,
-      prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal, (detail, level) => logAction(detail, level, "图片去码")),
-      request:(model,prompt,image,signal,lanes)=>requestGameModelJson(settings,model,prompt,signal,image,"game-images",undefined,{role:"mosaic",selection:selections(lanes)}),
-      onResult: image => {
-        if (savedRow(image)?.refineError || savedRow(image)?.reason)
-          reviewUpdates.push({ image, change: { refineError: undefined, reason: undefined } });
-      },
-      onError: (image, error) => {
-        failed++;
-        reviewUpdates.push({ image, change: { refineError: error } });
-      },
-      onProgress:(completed,detail)=>report({completed,total:images.length,detail})
-    }).finally(() => persistMosaicErrorUpdates(root, reviewUpdates)) : undefined;
-    if (reviews?.failed) {
-      reportGameStepItems(scope, "mosaic", reviews.results.size + failed, failed);
-      throw new Error(reviews.failed + " 张图片复筛失败");
-    }
-    let detector: Awaited<ReturnType<typeof openDeploymentDetector>> | undefined;
+    const timingScope = deploymentMetricScope(root, "mosaic");
+    const selections = gameStepSelections(timingScope, "mosaic");
     const savedDrafts = new Set<string>();
-    const redrawStyle = automaticMosaicRedrawStyle(usable, rows, (image, signal) => readSavedMosaicImage(image, signal, current.folder), signal);
-    const resolveTargets = createMosaicTargetResolver(root, mosaicRegionTargeting(preferences), rows, () => settings);
+    for (const _image of selected) recordGameCacheHit(timingScope);
     try {
-      for (const [index, image] of images.entries()) {
-        signal.throwIfAborted();
-        report({ completed: index, total: images.length, detail: image.name || image.id });
-        reportGameStepItems(scope, "mosaic", index);
-        const row = savedRow(image);
-        const readSource = () => measureGameAsync(scope, "processingMs", () => readUnitySourceImage(current, image, signal));
-        let source: Blob | undefined;
-        const cached = savedMosaicScan(row, detectorKey);
-        let detected = reviews?.results.get(image.id) ?? cached;
-        if (detected && detected === cached) recordGameCacheHit(scope);
-        if (!detected) {
+      const ready = await runAutomaticMosaic({
+        selected, scoped, usable, rows, detectorKey, timingScope, refine: preferences.refine, model: preferences.model, steps: preferences.steps,
+      }, signal, {
+        read: (image, signal) => readUnitySourceImage(current, image, signal),
+        readSaved: (image, signal) => readSavedMosaicImage(image, signal, current.folder),
+        openDetector: (signal, scope) => openDeploymentDetector(root, preferences, signal, scope),
+        keep: image => preferences.protect
+          ? image.regions.filter(region => region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1])
+          : [],
+        resolveTargets: createMosaicTargetResolver(root, mosaicRegionTargeting(preferences), rows, () => settings),
+        performReviews: async (targets, signal, onProgress) => {
+          const screened = readMosaicRows(root);
+          const updates: MosaicRowUpdate[] = [];
           try {
-            detector ??= await openDeploymentDetector(root, preferences, signal, scope);
-            source = await readSource();
-            const imageSource = source;
-            detected = await measureGameAsync(scope, "processingMs", () => detector!.scan(imageSource));
-          } catch (error) {
-            if (!signal.aborted) persistMosaicErrorUpdates(root, [{ image, change: { scanned: false, reason: error instanceof Error ? error.message : String(error) } }]);
-            throw error;
-          }
-          if (row?.reason || row?.refineError) persistMosaicErrorUpdates(root, [{ image, change: { reason: undefined, refineError: undefined } }]);
-        }
-        if (detected.review && !row?.manualChecked) throw new Error(image.name + " · " + detected.review);
-        const { boxes } = detected;
-        signal.throwIfAborted();
-        if (!boxes.length) continue;
-        const keep: MosaicBox[] = image.regions.filter(region => preferences.protect && region.selected && region.text).map(region => [region.x0, region.y0, region.x1, region.y1]);
-        try {
-          const style = await redrawStyle(image);
-          const original = source ?? await readSource();
-          if (resolveTargets) report({ completed: index, total: images.length, detail: "识别蒙版部位 · " + image.name });
-          const targetParts = await resolveTargets?.(image, original, boxes, signal);
-          const rendered = await redrawMosaic({ source: original, boxes, keep, model: preferences.model,
-            steps: preferences.steps, ...style, signal, timingScope: scope, targetParts,
-            progress: detail => report({ completed: index, total: images.length, detail }) });
-          const imageData = await imageBase64(rendered);
-          const saved = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {
+            return await refineMosaicBatch(targets, {
+              root, settings: preferences, signal, modelFile, read: readMosaicSource, prepare: prepareMosaicSources, timingScope,
+              prepareRequest: (model, lanes) => prepareMosaicReviewModel(settings, model, lanes, signal, (detail, level) => logAction(detail, level, "图片去码")),
+              request: (model, prompt, image, signal, lanes) => requestGameModelJson(settings, model, prompt, signal,
+                image, "game-images", undefined, { role: "mosaic", selection: selections(lanes) }),
+              onResult: (image, scan) => updates.push({ image, change: reviewedResult(resultFor(screened, image), scan, reviewKey) }),
+              onError: (image, error) => updates.push({ image, change: { refineError: error, refined: undefined, refineQuickExcluded: undefined } }),
+              onProgress,
+            });
+          } finally { persistMosaicRowUpdates(root, updates); }
+        },
+        redrawMosaic, reportGameStepItems, recordGameCacheHit, measureGameAsync,
+        saveScreening: changes => persistMosaicRowUpdates(root, Object.entries(changes).map(([id, row]) =>
+          ({ image: { id, sourceHash: row.source }, change: row }))),
+        update: (image, change) => persistMosaicRowUpdates(root, [{ image, change }]),
+        clearReviews: ids => clearMosaicReviews(root, ids),
+        setProgress: (detail, completed, total) => report({ completed, total, detail }),
+        writeCandidate: async (image, blob, signal) => {
+          const imageData = await imageBase64(blob);
+          const saved = await unityRun<{ candidates: MosaicCandidateIndex }>("mosaic-save", {
             ...request, imageId: image.id, imageSourceHash: image.sourceHash, imageData,
-          }, undefined, signal));
+          }, undefined, signal);
           candidates = saved.candidates;
-        } catch (error) {
-          if (!signal.aborted) persistMosaicErrorUpdates(root, [{ image, change: { redrawError: error instanceof Error ? error.message : String(error) } }]);
-          throw error;
-        }
-        if (row?.redrawError) persistMosaicErrorUpdates(root, [{ image, change: { redrawError: undefined } }]);
-        savedDrafts.add(image.id);
-        ids.add(image.id);
-      }
+          savedDrafts.add(image.id);
+        },
+      });
       signal.throwIfAborted();
-      if (ids.size) {
-        const result = await measureGameAsync(scope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>(
-          "mosaic-select", { ...request, selectedIds: [...ids], includeMosaic: true }, undefined, signal));
+      const ids = ready.filter(id => !candidates[id]?.included);
+      if (ids.length) {
+        const result = await measureGameAsync(timingScope, "saveMs", () => unityRun<{ candidates: MosaicCandidateIndex }>(
+          "mosaic-select", { ...request, selectedIds: ids, includeMosaic: true }, undefined, signal));
         candidates = result.candidates;
       }
-      reportGameStepItems(scope, "mosaic", images.length, 0);
       setMosaicCompleted(current.folder);
-    } finally {
-      setMosaicStatus({ root, candidates, savedDrafts });
-      await detector?.release();
-    }
+    } finally { setMosaicStatus({ root, candidates, savedDrafts }); }
   }
 
   function runDeployment(action: "automatic" | "export" | DeploymentPhase) {

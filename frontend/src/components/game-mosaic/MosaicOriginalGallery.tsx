@@ -241,7 +241,7 @@ export function MosaicOriginalGallery({ images, navigationRef, activeId, page, o
               <span>{image.width} × {image.height}</span>
               <MosaicImageBadges adopted={isAdopted(image)} reference={!!(row.saved && row.reference)} />
             </small>
-            {state !== "confirmed" && <small className="game-mosaic-original-status">{label}</small>}
+            {state !== "confirmed" && <small className={state === "redrawn" ? "game-mosaic-original-status is-redrawn" : "game-mosaic-original-status"}>{label}</small>}
             {change.mask && <span className="game-mosaic-mask-draft">蒙版变动</span>}
           </button>
         </li>;

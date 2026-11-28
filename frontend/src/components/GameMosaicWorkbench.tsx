@@ -7,7 +7,7 @@ import { api } from "../api";
 import { prepareMosaicReviewModel, requestGameModelJson } from "../gameModelRequest";
 import { createMosaicTargetResolver, mosaicRegionTargeting } from "../mosaicRegionTargets";
 import { gameAvailableModels } from "./GameTranslationTabs";
-import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicErrorUpdates, mosaicErrorUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, savedMosaicScan, clearMosaicReviews, type MosaicErrorUpdate } from "../gameMosaicRefine";
+import { refineMosaicBatch, mosaicReviewKey, matchesMosaicReviewKey, mergeMosaicRowUpdates, mosaicRowUpdateEvent, writeMosaicRows, readMosaicRows, readMosaicReviews, clearMosaicReviews, type MosaicRowUpdate } from "../gameMosaicRefine";
 import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "../api";
@@ -131,13 +131,20 @@ export const GameMosaicCompletionContext = createContext<((completed: boolean) =
 
 export type { GameMosaicDeploymentHandle, MosaicCandidateIndex } from "./game-mosaic/mosaicWorkbenchTypes";
 
-function mosaicStatus(row: Result, included: boolean): MosaicStatus {
-  if (row.manualStatus && !row.saved) return row.manualStatus;
-  const state = mosaicScreeningStatus(row);
-  return state === "failed" || !row.saved ? state : included ? "included" : "confirmed";
+function hasMosaicRedraw(row: Result, candidate?: MosaicCandidate) {
+  return candidate?.revision === row.source && candidate.versions.length > 0;
 }
-const mosaicFilterPhase = (row: Result) => row.manualStatus === "failed" || mosaicProcessingError(row)
-  ? "failed" : row.saved ? "done" : "pending";
+
+function mosaicStatus(row: Result, included: boolean, candidate?: MosaicCandidate): MosaicStatus {
+  const state = mosaicScreeningStatus(row);
+  if (!row.saved) {
+    if (state !== "failed" && row.manualStatus !== "failed" && hasMosaicRedraw(row, candidate)) return "redrawn";
+    return row.manualStatus ?? state;
+  }
+  return state === "failed" ? state : included ? "included" : "confirmed";
+}
+const mosaicFilterPhase = (row: Result, candidate?: MosaicCandidate) => row.manualStatus === "failed" || mosaicProcessingError(row)
+  ? "failed" : row.saved || hasMosaicRedraw(row, candidate) ? "done" : "pending";
 
 const pictureGroupKey = (row: Result) => "picture:" + (row.group || "");
 const detectorLabels = { grid: "方格规则", anime: "高召回初筛（分类＋定位）" };
@@ -201,13 +208,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   }, [gamePath,rows]);
   useLayoutEffect(() => () => publishMosaicBenchmarkSource(gamePath),[gamePath]);
   useEffect(() => {
-    const onErrors = (event: Event) => {
-      const { root, updates } = (event as CustomEvent<{ root: string; updates: readonly MosaicErrorUpdate[] }>).detail;
+    const onRowsUpdated = (event: Event) => {
+      const { root, updates } = (event as CustomEvent<{ root: string; updates: readonly MosaicRowUpdate[] }>).detail;
       if (root !== gamePath) return;
-      setRows(previous => mergeMosaicErrorUpdates(previous, updates));
+      setRows(previous => mergeMosaicRowUpdates(previous, updates));
     };
-    window.addEventListener(mosaicErrorUpdateEvent, onErrors);
-    return () => window.removeEventListener(mosaicErrorUpdateEvent, onErrors);
+    window.addEventListener(mosaicRowUpdateEvent, onRowsUpdated);
+    return () => window.removeEventListener(mosaicRowUpdateEvent, onRowsUpdated);
   }, [gamePath]);
   useEffect(() => {
     if (!storage) return;
@@ -349,12 +356,12 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     return grouped;
   }, [rows, usable]);
   const imageStatus = useCallback((image: UnityImage) => mosaicStatus(resultFor(rows, image),
-    !!storage?.index[image.id]?.included), [rows, storage?.index]);
+    !!storage?.index[image.id]?.included, candidates[image.id]), [rows, storage?.index, candidates]);
   const isRefineRetrying = (image: UnityImage) => refineRetries.get(image.id) === image.sourceHash;
   const visible = useMemo(() => Object.values(imageFilters).every(Boolean) ? currentScope : currentScope.filter(image => {
     const row = resultFor(rows, image);
-    return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row));
-  }), [currentScope, imageFilters, rows]);
+    return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row, candidates[image.id]));
+  }), [currentScope, imageFilters, rows, candidates]);
   const groups = useMemo(() => {
     const groups = new Map<string, MosaicListGroup>();
     if (listView === "picture") {
@@ -419,16 +426,19 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       const { root, changes, drafts } = (event as CustomEvent<MosaicDraftSaved>).detail;
       if (root !== gamePath) return;
       const nextRows = { ...latestRows.current, ...changes };
+      const previous = candidateRows.current;
+      const nextCandidates = editedCandidates(previous, nextRows, drafts);
       const nextActive = previewedImage.current;
       if (nextActive) {
         const before = imageStatus(nextActive);
-        const after = mosaicStatus(resultFor(nextRows, nextActive), !!storage?.index[nextActive.id]?.included);
+        const after = mosaicStatus(resultFor(nextRows, nextActive), !!storage?.index[nextActive.id]?.included, nextCandidates[nextActive.id]);
         if (before !== after) {
           setCollapsed(previous => ({ ...previous, [after]: false }));
           const index = currentScope.filter(image => {
             const row = resultFor(nextRows, image);
-            return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row)) &&
-              mosaicStatus(row, !!storage?.index[image.id]?.included) === after;
+            const candidate = nextCandidates[image.id];
+            return gameImageFilterMatch(imageFilters, row.checked, mosaicFilterPhase(row, candidate)) &&
+              mosaicStatus(row, !!storage?.index[image.id]?.included, candidate) === after;
           }).findIndex(image => image.id === nextActive.id);
           if (index >= 0) setGroupPages(previous => ({ ...previous, [after]: Math.floor(index / mosaicGroupPageSize) }));
         }
@@ -436,8 +446,6 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       latestRows.current = nextRows;
       writtenRows.current = nextRows;
       setRows(nextRows);
-      const previous = candidateRows.current;
-      const nextCandidates = editedCandidates(previous, nextRows, drafts);
       if (nextCandidates !== previous) {
         const changed = [...drafts.keys()].flatMap(id =>
           previous[id] === nextCandidates[id] ? [] : [[id, nextCandidates[id]] as const]);
@@ -650,15 +658,26 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     onDeploymentSelectionChange?.(selectedIds);
     deploymentHandle.current = {
       selectedIds: () => selectedIds,
-      automatic: signal => measureDeploymentStage(gamePath, "mosaic", () => runAutomaticMosaic({
-        selected, scoped, usable, rows, detectorKey, protect, refine: preferences.refine, model, steps, timingScope: deploymentMetricScope(gamePath, "mosaic"),
-      }, signal, {
-        read, readSaved, performReviews, openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
-        resolveTargets: createMosaicTargetResolver(gamePath, mosaicRegionTargeting(preferences), rows, () => settings || api.getSettings()),
-        savedMosaicScan, redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, setProgress, clearReviews,
-        readExisting: signal => readSavedMosaicSources(gamePath, signal),
-        writeCandidate: saveCandidate,
-      })),
+      automatic: signal => measureDeploymentStage(gamePath, "mosaic", async () => {
+        const existing = await readSavedMosaicSources(gamePath, signal);
+        const reusable = usable.filter(image => {
+          const row = resultFor(rows, image);
+          return row.checked && (row.saved || existing[image.id] === image.sourceHash && row.discardedHash !== image.sourceHash);
+        });
+        const timingScope = deploymentMetricScope(gamePath, "mosaic");
+        return runAutomaticMosaic({
+          selected: reusable, scoped, usable, rows, detectorKey, refine: preferences.refine, model, steps, timingScope,
+        }, signal, {
+          read, readSaved, keep: image => keepText(image, protect),
+          performReviews: (targets, signal, report) => performReviews(targets, signal, report, false, true, undefined, timingScope),
+          openDetector: (signal, timingScope) => openDeploymentDetector(gamePath, preferences, signal, timingScope),
+          resolveTargets: createMosaicTargetResolver(gamePath, mosaicRegionTargeting(preferences), rows, () => settings || api.getSettings()),
+          redrawMosaic: redrawWithConfirmation, reportGameStepItems, recordGameCacheHit, measureGameAsync, update, clearReviews,
+          setProgress: detail => setProgress(detail),
+          saveScreening: changes => replaceRows({ ...latestRows.current, ...changes }),
+          writeCandidate: saveCandidate,
+        });
+      }),
       prepare: async (signal, imageIds = selected.map(image => image.id)) => {
         const patchId = crypto.randomUUID().replaceAll("-", "");
         const response = await mosaicResponse(await fetch(API_BASE + "/api/game-images/mosaic-prepare", {
@@ -834,7 +853,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     const row = resultFor(rows,image);
     if ((!row.scanned && !row.refined && !row.refineError) || row.saved || row.manualBoxes) continue;
     const olderReview = !!row.refined && !matchesMosaicReviewKey(row.refined, reviewKey);
-    const selectedForReview = row.checked || (olderReview && !row.manualChecked && !!row.beforeRefine?.checked);
+    const selectedForReview = row.checked;
     if (selectedForReview) checkedReviewScope.push(image);
     if (isReviewed(row)) {
       if (row.checked || row.beforeRefine?.checked && !row.manualChecked ||
@@ -879,21 +898,21 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   for (const image of currentScope) {
     const row = resultFor(rows, image);
     const initial = mosaicInitialScreening(row);
-    const needsScreening = row.checked || (initial.scanned && !row.manualChecked && !row.saved && !row.manualBoxes && !row.manualStatus);
-    if (needsScreening) screenTargets.push(image);
+    if (row.checked) screenTargets.push(image);
     if (initial.scanned && !initial.reason && matchesMosaicDetectorKey(initial.detector, detectorKey)) {
       screenedCount++;
       continue;
     }
+    if (!row.checked) continue;
     if (initial.scanned && !initial.reason) otherDetectorCount++;
     if (initial.reason) hasScreenFailure = true;
-    if (needsScreening) remaining.push(image);
+    remaining.push(image);
   }
   const screenTotal = screenedCount + remaining.length;
 
-  function screen(checkedOnly = false) {
-    const restart = checkedOnly || remaining.length === 0 || (screenedCount === 0 && otherDetectorCount > 0);
-    const targets = checkedOnly ? screenTargets.filter(image => resultFor(rows, image).checked) : restart ? screenTargets : remaining;
+  function screen(restartChecked = false) {
+    const restart = restartChecked || remaining.length === 0 || (screenedCount === 0 && otherDetectorCount > 0);
+    const targets = restart ? screenTargets : remaining;
     if (!targets.length) return;
     lastScreen.current = { scope: currentScope, detector: detectorKey };
     const initial = restart ? 0 : screenedCount;
@@ -933,7 +952,7 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       pendingRedraw.current = null;
       void enqueueArchiveWrite(() => writeMosaicRedrawPlan(gamePath, null)).catch(reportArchiveError);
       setStepRuns(previous => ({ ...previous, redraw: undefined }));
-      setError("原图、蒙版、文字保护范围或画风分组已变更，请按当前选择重绘");
+      setError("勾选范围、原图、蒙版、文字保护范围或画风分组已变更，请按当前选择重绘");
       return;
     }
     for (const target of plan.targets) {
@@ -975,11 +994,15 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     }
   }
   function canRedrawImage(row: Result) {
-    return preferences.refine === false || !!row.saved || !!row.manualBoxes || isReviewed(row);
+    return preferences.refine === false || !!row.saved || !!row.manualBoxes ||
+      (isReviewed(row) && (!row.review || row.manualStatus === "refinedCandidate"));
   }
 
   function generate(targets: UnityImage[], models: MosaicModel[], mode: "regular" | "reference" | "automatic" = "regular") {
-    const usableTargets = targets.filter(image => resultFor(rows, image).boxes.length);
+    const usableTargets = targets.filter(image => {
+      const row = resultFor(rows, image);
+      return row.checked && row.boxes.length > 0;
+    });
     if (!usableTargets.length) return;
     if (usableTargets.some(image => !canRedrawImage(resultFor(rows, image)))) {
       setError("请先完成视觉复筛，再重绘所选图片");
@@ -1001,7 +1024,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
 
   function redrawCurrent(models: MosaicModel[]) {
     if (!active || actionsDisabled || archiveReason || pendingRedraw.current || isBenchmarkRunning() || waitForDraftSave()) return;
-    if (!activeResult?.boxes.length) {
+    if (!activeResult?.checked) { showAppNotice("请先勾选当前图片"); return; }
+    if (!activeResult.boxes.length) {
       if (source?.id !== active.id || source.revision !== active.sourceHash || !source.blob) {
         showAppNotice("请等待原图读取完成");
         return;
@@ -1145,7 +1169,10 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   for (const image of visible) {
     const row = resultFor(rows, image);
     if (!row.checked) continue;
-    if (existingRedraw.ready.has(image.id)) { alreadyGenerated++; continue; }
+    if (existingRedraw.ready.has(image.id) || (!row.redrawError && hasMosaicRedraw(row, candidates[image.id]))) {
+      alreadyGenerated++;
+      continue;
+    }
     if (!row.boxes.length) { noMask++; continue; }
     if (!canRedrawImage(row)) { awaitingReview++; continue; }
     listRedraw.push(image);
@@ -1374,7 +1401,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
   };
   const redrawBlocked = testTitle ?? busyReason ?? draftReason ?? archiveReason;
   const pendingRedrawReason = pausedRedraw ? "请先继续或清理上一次重绘任务" : undefined;
-  const redrawReason = redrawBlocked ?? pendingRedrawReason ?? (!activeSaved && !activeResult?.boxes.length ? "先在图上框选打码区域" : undefined);
+  const redrawReason = redrawBlocked ?? pendingRedrawReason ?? (!activeResult?.checked ? "请先勾选当前图片"
+    : !activeSaved && !activeResult.boxes.length ? "先在图上框选打码区域" : undefined);
   const batchReason = redrawBlocked ?? (!pausedRedraw && !listRedraw.length ? redrawSkipped || "先勾选已有蒙版的图片" : undefined);
   const groupRedrawReason = redrawBlocked ?? pendingRedrawReason ?? (!redrawGroup.length ? "本组没有可重绘的已勾选图片" : undefined);
   const guidedCandidate = active ? draftCandidates[active.id] : undefined;
@@ -1382,7 +1410,8 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
     ? guidedCandidate?.versions.filter(version => !!version.referenceGroup && version.referenceGroup === group).at(-1)?.blob : undefined;
   const guideRemaining = redrawGroup.filter(image => (reference || image.id !== active?.id) && !resultFor(rows, image).saved);
   const guideReason = redrawBlocked ?? pendingRedrawReason;
-  const guideCandidateReason = guideReason ?? (!activeResult?.boxes.length ? "请先为当前图片保存蒙版"
+  const guideCandidateReason = guideReason ?? (!activeResult?.checked ? "请先勾选当前图片"
+    : !activeResult.boxes.length ? "请先为当前图片保存蒙版"
     : active && !canRedrawImage(resultFor(rows, active)) ? "请先完成当前图片的视觉复筛" : undefined);
   const referenceFlow = !active || members.length < 2 ? undefined
     : reference ? {

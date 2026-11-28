@@ -1,4 +1,4 @@
-import { loadMosaicDetector, scanMosaic, matchesMosaicDetectorKey, mosaicVisibleBox, mosaicPresenceThreshold, mosaicRefineConcurrency, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
+import { loadMosaicDetector, scanMosaic, mosaicVisibleBox, mosaicPresenceThreshold, mosaicRefineConcurrency, type MosaicBox, type MosaicScan, type MosaicSettings } from "./gameMosaic";
 import type { UnityImage } from "./unityOffline";
 import { mosaicInitialScreening, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot, type MosaicScreeningSnapshot } from "./gameMosaicStatus";
 import { measureGameAsync, measureGameWork, recordGameCacheHit } from "./gameModelPerformance";
@@ -37,13 +37,13 @@ export function readMosaicRows<T extends MosaicStoredResult = MosaicStoredResult
   return edits ? Object.assign(rows, JSON.parse(edits)) : rows;
 }
 
-export const mosaicErrorUpdateEvent = "llmchat-game-mosaic-error-update";
-export type MosaicErrorUpdate = {
+export const mosaicRowUpdateEvent = "llmchat-game-mosaic-row-update";
+export type MosaicRowUpdate = {
   image: Pick<UnityImage, "id" | "sourceHash">;
-  change: Partial<Pick<MosaicStoredResult, "scanned" | "reason" | "refineError" | "redrawError">>;
+  change: Partial<MosaicStoredResult>;
 };
 
-export function mergeMosaicErrorUpdates(rows: Record<string, MosaicStoredResult>, updates: readonly MosaicErrorUpdate[]) {
+export function mergeMosaicRowUpdates(rows: Record<string, MosaicStoredResult>, updates: readonly MosaicRowUpdate[]) {
   const next = { ...rows };
   for (const { image, change } of updates) {
     const stored = next[image.id];
@@ -53,19 +53,11 @@ export function mergeMosaicErrorUpdates(rows: Record<string, MosaicStoredResult>
   return next;
 }
 
-export function persistMosaicErrorUpdates(root: string, updates: readonly MosaicErrorUpdate[]) {
+export function persistMosaicRowUpdates(root: string, updates: readonly MosaicRowUpdate[]) {
   if (!updates.length) return;
-  const rows = mergeMosaicErrorUpdates(readMosaicRows(root), updates);
+  const rows = mergeMosaicRowUpdates(readMosaicRows(root), updates);
   writeMosaicRows(root, rows);
-  window.dispatchEvent(new CustomEvent(mosaicErrorUpdateEvent, { detail: { root, updates } }));
-}
-
-export function savedMosaicScan(row: MosaicStoredResult | undefined, detector: string) {
-  if (row?.manualBoxes) return { boxes: row.boxes };
-  if (!row || row.reason || row.refineError) return undefined;
-  const initial = mosaicInitialScreening(row);
-  if (initial.scanned && !initial.reason && matchesMosaicDetectorKey(initial.detector, detector))
-    return { boxes: row.boxes, review: row.review, reviewBoxes: row.boxes };
+  window.dispatchEvent(new CustomEvent(mosaicRowUpdateEvent, { detail: { root, updates } }));
 }
 
 export const mosaicReviewPolicy = "visual-review-v7";
