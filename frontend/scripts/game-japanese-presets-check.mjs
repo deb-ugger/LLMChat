@@ -30,6 +30,8 @@ for (const preset of all) {
   assert.equal(preset.value.text.options.joinLines, true);
   assert.equal(preset.value.text.options.lineMode, "local");
   assert.equal(preset.value.text.options.lineModel, undefined);
+  assert.equal(preset.value.images.roles.layout.model, "qwen3.5:4b");
+  assert.equal(preset.value.images.roles.layout.concurrency, 1);
 }
 assert.equal(JSON.stringify(current), original);
 const textScenes = ["textScreen", "text", "dialogue", "names", "textReview", "line"];
@@ -78,7 +80,9 @@ delete user.value.text.roles.names;
 const adult = structuredClone(user); adult.id = "user-ja-r18"; adult.name = "日语 R18";
 const english = { id: "en-custom", name: "英语配置", value: structuredClone(current) };
 presets.saveGameTestConfigurations("project", [user, adult, english]);
-const snapshot = JSON.stringify(english);
+const expectedEnglish = structuredClone(english);
+expectedEnglish.value.images.roles.layout = { model: "qwen3.5:4b", concurrency: 1, prompt: "builtin:layout" };
+const snapshot = JSON.stringify(expectedEnglish);
 presets.refreshSavedGameTestConfigurations();
 const migrated = presets.readGameTestConfigurations("project");
 const japanese = migrated.find(row => row.id === user.id);
@@ -121,3 +125,22 @@ for (const preset of updated.filter(row => row.id.startsWith("builtin:"))) {
 }
 assert.equal(JSON.stringify(updated.find(row => row.id === custom.id)), customBefore, "refresh saved defaults while retaining custom wrap settings and prompts");
 console.log("PASS all default configurations use integrated natural wrapping and saved defaults update without changing custom configurations");
+
+storage.delete("llmchat-game-test-config-image-layout-v1");
+const older = structuredClone(user);
+older.id = "custom-layout";
+older.value.images.roles.layout = { model: "qwen3.5:latest", prompt: "custom:layout", concurrency: 4 };
+const textOnly = { id: "text-only", name: "仅文本", value: { text: structuredClone(current.text) } };
+presets.saveGameTestConfigurations("another-game", [older, textOnly]);
+const beforeRefresh = presets.readGameTestConfigurations("another-game")[0];
+beforeRefresh.value.images.roles.layout = { model: "qwen3.5:4b", prompt: "custom:layout", concurrency: 1 };
+presets.refreshSavedGameTestConfigurations();
+const layouts = presets.readGameTestConfigurations("another-game");
+assert.deepEqual(layouts, [beforeRefresh, textOnly], "existing scopes update only the image layout role");
+assert.ok(presets.readGameTestConfigurations("project").every(row => row.value.images.roles.layout.model === "qwen3.5:4b"));
+const manuallyAdjusted = structuredClone(layouts);
+manuallyAdjusted[0].value.images.roles.layout.model = "my-layout-model";
+presets.saveGameTestConfigurations("another-game", manuallyAdjusted);
+presets.refreshSavedGameTestConfigurations();
+assert.deepEqual(presets.readGameTestConfigurations("another-game"), manuallyAdjusted, "one-time refresh preserves subsequent edits");
+console.log("PASS all saved image configurations use the measured 4B layout model with single concurrency");

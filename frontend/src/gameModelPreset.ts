@@ -14,6 +14,7 @@ const testModels = {
   qwen: { id: "qwen3.5:latest", pattern: /^qwen3\.5(?::(?:latest|9b(?:-q4_k_m)?))?$/i },
   vision: { id: "qwen3-vl:8b-instruct", pattern: /^qwen3-vl:8b-instruct$/i },
 } as const;
+const imageLayoutModel = "qwen3.5:4b";
 
 export type GameTestRole = { model?: string; prompt: string; concurrency: number };
 export type GameTestRoles = Partial<Record<GamePromptScene, GameTestRole>>;
@@ -158,7 +159,8 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   if (hasScreeningStep && !images.options.refine) images.options.refine = { method: "local", mode: "precise", concurrency: 2, confidence: 50 };
   else if (images.options.refine) Object.assign(images.options.refine, { method: "local", mode: "precise", concurrency: 2 });
   if (images.options.translation) Object.assign(images.options.translation, { kind: "llm", provider: "llm" });
-  setRole(images.roles, "screen"); setRole(images.roles, "refine"); setRole(images.roles, "layout");
+  setRole(images.roles, "screen"); setRole(images.roles, "refine");
+  setRole(images.roles, "layout", imageLayoutModel);
   setRole(images.roles, "recognize", hasScreeningStep ? defaultGameImageVision(configured) || modelId(testModels.vision) : undefined, 2);
   setRole(images.roles, "image", normal, gameDefaultTextModel.concurrency);
   setRole(images.roles, "review", modelId(testModels.qwen));
@@ -178,7 +180,34 @@ export function japaneseGameTestConfiguration(current: GameTestConfiguration, r1
   return value;
 }
 
+function refreshSavedImageLayoutConfigurations() {
+  const revision = "llmchat-game-test-config-image-layout-v1";
+  if (localStorage.getItem(revision) !== null) return;
+  const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
+  for (const key of keys) {
+    if (!key?.startsWith(configurationsPrefix)) continue;
+    let rows: SavedGameTestConfiguration[];
+    try { rows = JSON.parse(localStorage.getItem(key) || "[]"); }
+    catch { continue; }
+    if (!Array.isArray(rows)) continue;
+    let changed = false;
+    const next = rows.map(row => {
+      const images = row?.value?.images;
+      if (!row?.id || !row.name || !images?.roles) return row;
+      const role = images.roles.layout;
+      if (role?.model === imageLayoutModel && role.concurrency === 1) return row;
+      changed = true;
+      return { ...row, value: { ...row.value, images: { ...images, roles: { ...images.roles,
+        layout: { model: imageLayoutModel, concurrency: 1, prompt: role?.prompt || "builtin:layout" },
+      } } } };
+    });
+    if (changed) localStorage.setItem(key, JSON.stringify(next));
+  }
+  localStorage.setItem(revision, "1");
+}
+
 export function refreshSavedGameTestConfigurations() {
+  refreshSavedImageLayoutConfigurations();
   const revision = "llmchat-game-test-config-semantics-v1";
   if (localStorage.getItem(revision) !== null) return;
   const updateCustomPrompts = localStorage.getItem("llmchat-game-test-config-japanese-prompts-v2") === null;
