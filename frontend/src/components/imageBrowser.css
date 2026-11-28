@@ -1,0 +1,12 @@
+.image-browser { min-inline-size: 0; min-block-size: 0; }
+.image-browser-list { min-inline-size: 0; min-block-size: 0; }
+.image-canvas-viewport { touch-action: none; }
+.image-canvas-viewport.is-pan-ready :is(svg, rect, line) { cursor: grab; }
+.image-canvas-viewport.is-panning,
+.image-canvas-viewport.is-panning :is(img, svg, rect, line) { cursor: grabbing; }
+.image-canvas-stage { position: relative; user-select: none; transform-origin: center; }
+.image-canvas-stage > img { display: block; width: 100%; max-width: none; }
+.image-canvas-stage > svg { display: block; width: 100%; height: 100%; }
+.image-canvas-viewport.image-canvas-fit { display: grid; place-items: center; overflow: clip; min-inline-size: 0; min-block-size: 0; }
+.image-canvas-fit > .image-canvas-stage { max-inline-size: 100%; }
+.image-canvas-inline { inline-size: 100%; block-size: 100%; flex: none; }

@@ -1,13 +1,14 @@
 import { Image as NativeImage } from "@tauri-apps/api/image";
 import { isTauri } from "@tauri-apps/api/core";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import type { AnnotatedImage, AnnotatedSampleSet } from "../benchmark/imageSampleSet";
 import { datasetParts, type DatasetPart } from "../benchmark/trainingDatasets";
 import type { MosaicBox } from "../gameMosaic";
 import { getFixedMenuPoint } from "../viewportLayout";
 import { showAppNotice } from "./AppNotice";
-import { MaskResizeControls } from "./game-mosaic/MosaicPreview";
+import { ImageCanvasMinimap, ImageCanvasViewport, useImageCanvasScroll } from "./ImageCanvas";
+import { ImageMaskToolbar, MaskResizeControls, runImageToolShortcut } from "./ImageMaskTools";
 import "../gameMosaic.css";
 
 export type DatasetMask = { box: MosaicBox; part: DatasetPart | "" };
@@ -54,28 +55,6 @@ export async function copyDatasetPicture(image: AnnotatedImage, read: AnnotatedS
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const rectangle = (a: number[], b: number[]): MosaicBox => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
-const minimapMax = 120;
-
-type CanvasLayout = { L: number; T: number; W: number; H: number };
-
-function clampCanvasScroll(view: HTMLDivElement, layout: CanvasLayout) {
-  const { L, T, W, H } = layout;
-  const vw = view.clientWidth, vh = view.clientHeight;
-  const axis = (value: number, start: number, size: number, port: number, limit: number) => {
-    const maxScroll = Math.max(0, limit - port);
-    // Keep half of the smaller image/viewport span visible while allowing every edge to be reached.
-    const visible = Math.min(size, port) / 2;
-    const min = start + visible - port;
-    const max = start + size - visible;
-    return clamp(clamp(value, min, max), 0, maxScroll);
-  };
-  const s = axis(view.scrollLeft, L, W, vw, view.scrollWidth);
-  const t = axis(view.scrollTop, T, H, vh, view.scrollHeight);
-  if (s !== view.scrollLeft) view.scrollLeft = s;
-  if (t !== view.scrollTop) view.scrollTop = t;
-  return { left: s, top: t };
-}
-
 export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0, read, masks, editable, busy, status, onChange, onUndo, canUndo, onRedo, canRedo, onContextMenu, readOnlyHint }: {
   image: AnnotatedImage; galleryIndex?: number; galleryTotal?: number; read: AnnotatedSampleSet["read"]; masks: DatasetMask[]; editable: boolean; busy: boolean; status?: string;
   onChange: (masks: DatasetMask[]) => Promise<void>; onUndo: () => void; canUndo: boolean;
@@ -83,31 +62,20 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
   onPreview: () => void; onContextMenu: (event: MouseEvent<HTMLDivElement>) => void; readOnlyHint?: string;
 }) {
   const picture = useSamplePicture(image, read);
-  const viewport = useRef<HTMLDivElement>(null), bitmap = useRef<HTMLDivElement>(null), table = useRef<HTMLDivElement>(null);
+  const table = useRef<HTMLDivElement>(null);
   const partsMenu = useRef<HTMLDivElement>(null), contextMenu = useRef<HTMLDivElement>(null);
   const [drafts, setDrafts] = useState(() => masks.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox })));
   const current = useRef(drafts), pending = useRef(0), [saving, setSaving] = useState(false), [error, setError] = useState("");
   const [selected, setSelected] = useState(-1), selectedRef = useRef(-1), pointerHit = useRef(-1);
-  const [fit, setFit] = useState(1), [manualZoom, setManualZoom] = useState<number>();
-  const zoom = manualZoom ?? fit;
-  const zoomRef = useRef(zoom); zoomRef.current = zoom;
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [panScroll, setPanScroll] = useState({ left: 0, top: 0 });
-  const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>();
-  const anchor = useRef<{ x: number; y: number; clientX: number; clientY: number } | undefined>(undefined);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | undefined>(undefined);
   const [tool, setTool] = useState<"add" | "select">("select");
   const [panning, setPanning] = useState(false);
   const drawing = tool === "add";
-  const canvasPadding = useMemo(() => {
-    const vw = viewportSize.width || 1, vh = viewportSize.height || 1;
-    const iw = image.width * zoom, ih = image.height * zoom;
-    const padX = iw <= vw ? Math.max(12, (vw - iw) / 2) : vw * 0.5;
-    const padY = ih <= vh ? Math.max(12, (vh - ih) / 2) : vh * 0.5;
-    return { padX, padY };
-  }, [viewportSize, image.width, image.height, zoom]);
   const signature = JSON.stringify(masks);
   const drag = useRef<{ mode: "draw" | "move" | "resize"; index: number; handle: number; start: [number,number]; before: DatasetMask[]; box?: MosaicBox } | undefined>(undefined);
+  const { viewport, bitmap, zoom, changeZoom, canvasPadding, minimap, panToImagePoint, syncCanvasScroll, onWheelZoom } = useImageCanvasScroll({
+    width: image.width, height: image.height, src: picture.url, canZoom: () => !drag.current && !pan.current,
+  });
   const handles = [[0,0],[.5,0],[1,0],[1,.5],[1,1],[.5,1],[0,1],[0,.5]];
   const copy = (values: DatasetMask[]) => values.map(mask => ({ ...mask, box: [...mask.box] as MosaicBox }));
   function display(values: DatasetMask[]) { current.current = values; setDrafts(values); }
@@ -118,94 +86,6 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
       if (selectedRef.current >= masks.length) { selectedRef.current = masks.length - 1; setSelected(masks.length - 1); }
     }
   }, [signature]);
-  useLayoutEffect(() => {
-    const element = viewport.current;
-    if (!element) return;
-    const measure = () => {
-      const width = element.clientWidth, height = element.clientHeight;
-      setViewportSize(current => current.width === width && current.height === height ? current : { width, height });
-      setFit(Math.max(.01, Math.min(4, (element.clientWidth - 58) / image.width, (element.clientHeight - 26) / image.height)));
-    };
-    measure(); const observer = new ResizeObserver(measure); observer.observe(element);
-    return () => observer.disconnect();
-  }, [image.width, image.height]);
-  function measureCanvasLayout(): CanvasLayout | undefined {
-    const imageEl = bitmap.current;
-    if (!imageEl) return;
-    return { L: imageEl.offsetLeft, T: imageEl.offsetTop, W: imageEl.offsetWidth, H: imageEl.offsetHeight };
-  }
-  function syncCanvasScroll() {
-    const view = viewport.current;
-    if (!view) return;
-    const layout = measureCanvasLayout();
-    if (!layout) return;
-    setPanScroll(clampCanvasScroll(view, layout));
-    setCanvasLayout(layout);
-  }
-  function panToImagePoint(nx: number, ny: number) {
-    const view = viewport.current, layout = measureCanvasLayout();
-    if (!view || !layout) return;
-    const { L, T, W, H } = layout;
-    view.scrollLeft = L + nx * W - view.clientWidth / 2;
-    view.scrollTop = T + ny * H - view.clientHeight / 2;
-    syncCanvasScroll();
-  }
-  const minimap = useMemo(() => {
-    if (!canvasLayout || !picture.url) return undefined;
-    const { L, T, W, H } = canvasLayout;
-    const vw = viewportSize.width, vh = viewportSize.height;
-    if (!vw || !vh || !W || !H) return undefined;
-    const scale = minimapMax / Math.max(W, H);
-    const mapW = W * scale, mapH = H * scale;
-    const { left: s, top: t } = panScroll;
-    const iL = Math.max(L, s), iT = Math.max(T, t);
-    const iR = Math.min(L + W, s + vw), iB = Math.min(T + H, t + vh);
-    const iW = Math.max(0, iR - iL), iH = Math.max(0, iB - iT);
-    return {
-      mapW, mapH, url: picture.url,
-      view: { left: (iL - L) / W * mapW, top: (iT - T) / H * mapH, width: iW / W * mapW, height: iH / H * mapH },
-    };
-  }, [canvasLayout, panScroll, viewportSize, picture.url]);
-  function changeZoom(value: number, clientX?: number, clientY?: number) {
-    const view = viewport.current, imageElement = bitmap.current;
-    if (!view || !imageElement || drag.current || pan.current) return;
-    const next = clamp(value, .25, 4);
-    if (next === zoomRef.current) return;
-    const v = view.getBoundingClientRect(), r = imageElement.getBoundingClientRect();
-    const x = clientX ?? v.left + view.clientLeft + view.clientWidth / 2;
-    const y = clientY ?? v.top + view.clientTop + view.clientHeight / 2;
-    // Wheel events can arrive before React paints the previous zoom; read the displayed image geometry.
-    anchor.current = { x: (x - r.left) / r.width * image.width, y: (y - r.top) / r.height * image.height, clientX: x, clientY: y };
-    zoomRef.current = next;
-    setManualZoom(next);
-  }
-  useLayoutEffect(() => {
-    const view = viewport.current, imageElement = bitmap.current;
-    if (!view || !imageElement) return;
-    const point = anchor.current;
-    if (point) {
-      const r = imageElement.getBoundingClientRect();
-      view.scrollLeft += r.left + point.x * zoom - point.clientX;
-      view.scrollTop += r.top + point.y * zoom - point.clientY;
-      anchor.current = undefined;
-    } else {
-      view.scrollLeft = (view.scrollWidth - view.clientWidth) / 2;
-      view.scrollTop = (view.scrollHeight - view.clientHeight) / 2;
-    }
-    syncCanvasScroll();
-  }, [zoom, viewportSize, picture.url]);
-  useEffect(() => {
-    const view = viewport.current;
-    if (!view) return;
-    const wheel = (event: WheelEvent) => {
-      if (!event.deltaY) return;
-      event.preventDefault();
-      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? view.clientHeight : 1);
-      changeZoom(zoomRef.current * Math.exp(-clamp(pixels, -100, 100) * Math.log(1.1) / 100), event.clientX, event.clientY);
-    };
-    view.addEventListener("wheel", wheel, { passive: false });
-    return () => view.removeEventListener("wheel", wheel);
-  }, []);
   function persist(values: DatasetMask[]) {
     const next = copy(values); display(next); pending.current++; setSaving(true);
     void onChange(next).then(() => setError("")).catch(cause => {
@@ -352,12 +232,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
       if (dx || dy) persist(current.current.map((mask, i) => i === index ? { ...mask, box: [box[0]+dx, box[1]+dy, box[2]+dx, box[3]+dy] } : mask));
       return;
     }
-    if (event.repeat) return;
-    const modifier = command ? "command" : event.shiftKey ? "shift" : undefined;
-    const action = imageTools.find(item => item.key === key && (item.modifier === modifier ||
-      (item.id === "clear" && hasSelection && modifier === "shift")));
-    if (!action || action.disabled) return;
-    event.preventDefault(); event.stopPropagation(); action.run();
+    runImageToolShortcut(event, imageTools, hasSelection);
   }}>
     <header className="training-dataset-editor-tools">
       <div className="training-dataset-editor-identity">
@@ -376,7 +251,7 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
     </header>
     <div className="training-dataset-editor-main">
     <div className="training-dataset-canvas-frame game-mosaic-original-viewport">
-    <div ref={viewport} tabIndex={0} className={`training-dataset-canvas game-mosaic-image-area${!drawing ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => { if (!pan.current) syncCanvasScroll(); }} onContextMenu={onContextMenu}
+    <ImageCanvasViewport ref={viewport} tabIndex={0} onWheelZoom={onWheelZoom} className={`training-dataset-canvas game-mosaic-image-area${!drawing ? " is-pan-ready" : ""}${panning ? " is-panning" : ""}`} data-drawing={drawing && editable} aria-label="图片画布" onScroll={() => { if (!pan.current) syncCanvasScroll(); }} onContextMenu={onContextMenu}
       onDoubleClick={event => { if (pointerHit.current >= 0) { event.stopPropagation(); choosePart(pointerHit.current,event.clientX,event.clientY); } }}
       onPointerDown={event => {
         pointerHit.current = -1;
@@ -432,31 +307,10 @@ export function TrainingDatasetImage({ image, galleryIndex = 0, galleryTotal = 0
         {canSelectMask && hasSelection && <MaskResizeControls box={drafts[selected].box} />}
         </svg>
       </div></div>
-    </div>
-      {minimap && <div className="training-dataset-canvas-minimap" role="img" aria-label="画布导航"
-        onPointerDown={event => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          const inner = event.currentTarget.querySelector(".training-dataset-minimap-image")!.getBoundingClientRect();
-          panToImagePoint(clamp((event.clientX - inner.left) / inner.width, 0, 1), clamp((event.clientY - inner.top) / inner.height, 0, 1));
-        }}>
-        <span className="training-dataset-minimap-image" style={{ width: minimap.mapW, height: minimap.mapH }}>
-          <img src={minimap.url} alt="" draggable={false} />
-          <span className="training-dataset-minimap-viewport" style={{
-            left: minimap.view.left, top: minimap.view.top, width: minimap.view.width, height: minimap.view.height,
-          }} aria-hidden="true" />
-        </span>
-      </div>}
-      <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
-        onDoubleClick={event => event.stopPropagation()}>
-        {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
-          aria-label={tool.label} aria-pressed={tool.pressed}
-          aria-keyshortcuts={tool.modifier === "command" ? "Control+Z Meta+Z" : tool.id === "clear" && hasSelection ? "Delete Shift+Delete" : tool.shortcut}
-          data-tooltip={[tool.label + " · " + tool.shortcut, tool.reason].filter(Boolean).join("\n")} disabled={tool.disabled} onClick={tool.run}>
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
-            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>
-        </button>)}
-      </div>
+    </ImageCanvasViewport>
+      {minimap && <ImageCanvasMinimap map={minimap} onNavigate={panToImagePoint}
+        className="training-dataset-canvas-minimap" imageClassName="training-dataset-minimap-image" viewClassName="training-dataset-minimap-viewport" />}
+      <ImageMaskToolbar tools={imageTools} hasSelection={hasSelection} />
     </div>
     <section className="training-dataset-regions" aria-label="区域清单">
       <header className="training-dataset-regions-head">

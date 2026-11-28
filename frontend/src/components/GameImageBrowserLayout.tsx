@@ -1,7 +1,9 @@
 import { getLayoutRect, getLayoutViewport } from "../viewportLayout";
-import { useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type KeyboardEventHandler, type PointerEventHandler, type ReactNode, type Ref, type RefObject } from "react";
+import { useId, useLayoutEffect, useRef, useState, type KeyboardEventHandler, type ReactNode, type Ref, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { usePersistedWidth } from "../hooks/usePersistedWidth";
+import { ImageBrowser } from "./ImageBrowser";
+export { ImagePreviewFrame as GameImagePreviewFrame, focusImagePreview as focusGameImagePreview } from "./ImageBrowser";
 import { GamePageNumber } from "./GamePageNumber";
 
 export function GameImageSplit({ listId, listRef, listLabel, listClassName, widthKey, onListKeyDown, onPreviewKeyDown, list, children }: {
@@ -28,31 +30,20 @@ export function GameImageSplit({ listId, listRef, listLabel, listClassName, widt
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  return <div ref={body} className="unity-image-body" onKeyDown={event => {
-      if (list == null || event.defaultPrevented || event.nativeEvent.isComposing ||
-          !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-      const target = event.target as Element;
-      if (!event.currentTarget.contains(target) || !target.closest(previewPaneSelector) ||
-          target.closest(previewControls) || target.closest("[data-image-preview-dragging]")) return;
-      (onPreviewKeyDown ?? onListKeyDown)?.(event);
-    }}>
-    {list != null && <>
-      <div id={listId} ref={listRef} className={`unity-image-list${listClassName ? " " + listClassName : ""}`}
-        style={{ width: listWidth.width }} aria-label={listLabel} tabIndex={onListKeyDown ? 0 : undefined} onKeyDown={onListKeyDown}>
-        {list}
-      </div>
-      <button type="button" role="separator" aria-orientation="vertical" aria-controls={listId} aria-label="调整图片列表宽度"
-        aria-valuemin={minWidth} aria-valuemax={maxWidth} aria-valuenow={Math.round(listWidth.width)}
-        className="unity-image-list-divider" data-tooltip="拖动调整图片列表宽度"
-        onMouseDown={event => listWidth.beginResize(event, "grow-right")} onKeyDown={event => {
-          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-            event.preventDefault();
-            listWidth.setWidth(listWidth.width + (event.key === "ArrowRight" ? 16 : -16));
-          }
-        }} />
-    </>}
+  return <ImageBrowser ref={body} className="unity-image-body"
+    list={list} onListKeyDown={onListKeyDown} onPreviewKeyDown={onPreviewKeyDown}
+    listProps={{ id: listId, ref: listRef, className: ["unity-image-list", listClassName].filter(Boolean).join(" "),
+      style: { width: listWidth.width }, "aria-label": listLabel, tabIndex: onListKeyDown ? 0 : undefined }}
+    divider={<button type="button" role="separator" aria-orientation="vertical" aria-controls={listId} aria-label="调整图片列表宽度"
+      aria-valuemin={minWidth} aria-valuemax={maxWidth} aria-valuenow={Math.round(listWidth.width)}
+      className="unity-image-list-divider" data-tooltip="拖动调整图片列表宽度"
+      onMouseDown={event => listWidth.beginResize(event, "grow-right")} onKeyDown={event => {
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault(); listWidth.setWidth(listWidth.width + (event.key === "ArrowRight" ? 16 : -16));
+        }
+      }} />}>
     {children}
-  </div>;
+  </ImageBrowser>;
 }
 
 export function GameImageListPagination({ label, page, pages, onPage }: {
@@ -113,28 +104,4 @@ export function GameImageFilterOptions({ filters, onChange, doneHint }: {
         onChange={event => onChange({ ...filters, [key]: event.currentTarget.checked })} />{label}
     </label>)}
   </>;
-}
-
-const previewPaneSelector = "[data-game-image-preview-pane]";
-const previewControls = "button, a, input, textarea, select, [contenteditable]";
-
-export const focusGameImagePreview: PointerEventHandler<HTMLElement> = event => {
-  const target = event.target as Element;
-  if (event.button === 0 && target.closest(previewPaneSelector) === event.currentTarget && !target.closest(previewControls)) {
-    event.currentTarget.focus({ preventScroll: true });
-  }
-};
-
-export function GameImagePreviewFrame({ caption, fallback, children, keyboardPane, ...props }: ComponentPropsWithRef<"figure"> & {
-  caption?: ReactNode; fallback?: ReactNode; keyboardPane?: boolean;
-}) {
-  return <figure {...props} tabIndex={keyboardPane ? 0 : props.tabIndex}
-    data-game-image-preview-pane={keyboardPane ? "" : undefined}
-    onPointerDown={keyboardPane ? event => {
-      focusGameImagePreview(event);
-      props.onPointerDown?.(event);
-    } : props.onPointerDown}>
-    {caption && <figcaption>{caption}</figcaption>}
-    {children ? <div className="unity-image-preview-surface">{children}</div> : fallback}
-  </figure>;
 }

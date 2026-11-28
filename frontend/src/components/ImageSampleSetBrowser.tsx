@@ -1,3 +1,5 @@
+import { ImageBrowser } from "./ImageBrowser";
+import { ImageCanvas } from "./ImageCanvas";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -70,7 +72,7 @@ function SamplePreview({ image, read }: { image: AnnotatedImage; read: Annotated
       {!preview ? <p className="hint" role="status">正在读取原图…</p> : "error" in preview ? (
         <p className="image-sample-set-error" role="alert">读取原图失败。{preview.error}</p>
       ) : (
-        <svg viewBox={`0 0 ${image.width} ${image.height}`} width={image.width} height={image.height} role="img" aria-label={`${image.name} 原图`}>
+        <ImageCanvas className="image-canvas-fit image-sample-set-image-canvas"><svg viewBox={`0 0 ${image.width} ${image.height}`} width={image.width} height={image.height} role="img" aria-label={`${image.name} 原图`}>
           <image href={preview.url} width={image.width} height={image.height}
             onError={() => setPreview({ error: "无法解码此图片。" })} />
           {overlays.filter(group => !hidden.includes(group.kind)).map(group => (
@@ -82,7 +84,7 @@ function SamplePreview({ image, read }: { image: AnnotatedImage; read: Annotated
               ))}
             </g>
           ))}
-        </svg>
+        </svg></ImageCanvas>
       )}
     </div>
     {overlays.length > 0 && <div className="image-sample-set-overlays" aria-label="定位框">
@@ -160,8 +162,7 @@ function SampleSetContents({ data }: { data: AnnotatedSampleSet }) {
       <span className="hint" role="status">显示 {images.length} / {data.images.length} 张</span>
     </div>
     {!selected ? <p className="image-sample-set-empty">{data.images.length ? "没有符合筛选条件的图片。" : "此测试集没有图片。"}</p> : (
-      <div className="image-sample-set-workspace">
-        <div className="image-sample-set-list">
+      <ImageBrowser className="image-sample-set-workspace" listProps={{ className: "image-sample-set-list" }} list={<>
           <ul ref={list} aria-label="样本图片">
             {visible.map(image => <li key={image.id}><button type="button" title={image.file}
               aria-pressed={image.id === selected.id}
@@ -175,9 +176,9 @@ function SampleSetContents({ data }: { data: AnnotatedSampleSet }) {
             <span className="hint">{page + 1} / {pages}</span>
             <button type="button" className="unity-btn" disabled={page + 1 === pages} onClick={() => showPage(page + 1)}>下一页</button>
           </nav>}
-        </div>
+        </>}>
         <SamplePreview key={selected.id} image={selected} read={data.read} />
-      </div>
+      </ImageBrowser>
     )}
   </div>;
 }

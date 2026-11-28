@@ -1,3 +1,4 @@
+import { ImageCanvas } from "./ImageCanvas";
 import { benchmarkBlockingReason, useBenchmarkRunning } from "../benchmark/benchmarkRunner";
 import { getFixedMenuPoint, getLayoutRect, getLayoutViewport } from "../viewportLayout";
 import { useGameActionConfirm, GameDialog } from "./GameActionConfirm";
@@ -89,8 +90,9 @@ const ImagePreview = memo(function ImagePreview({ project, image, translated, co
   const url = excluded.length ? masked.key === maskKey ? masked.url : "" : value?.url || "", opaqueUrl = value?.opaqueUrl || "", displayUrl=ignoreAlpha&&opaqueUrl?opaqueUrl:url,error = loaded.key === key&&(!loaded.url||loaded.url===displayUrl) ? loaded.error || "" : "";
   const previewLabel = translated ? "译图" : "原图";
   const ratio = Math.max(1, image.width) / Math.max(1, image.height);
-  const stageWidth = keyboardPane ? `calc(min(100cqw, 100cqh * ${ratio}) * ${inlineZoom})`
+  const stageWidth = keyboardPane ? `min(100cqw, 100cqh * ${ratio})`
     : full ? image.width * zoom : Math.min(image.width, 130 * ratio);
+  const content = <><img src={displayUrl} alt={`${image.name} ${translated ? "译图" : "原图"}`} draggable={false} onError={event => {if(event.currentTarget.currentSrc===displayUrl)setLoaded({ key,url:displayUrl,error: "图片解码失败，请检查原图缓存或重新扫描" });}} />{!compact && onRegion && (!translated||unityImageUsesRegionMask(image)) && <svg viewBox={`0 0 ${image.width} ${image.height}`} preserveAspectRatio="none" className="unity-image-region-overlay" aria-label="图片文字区域">{image.regions.map((region, index) => translated && !effectiveRegions[index].selected ? null : <rect key={index} x={region.x0} y={region.y0} width={Math.max(1, region.x1 - region.x0)} height={Math.max(1, region.y1 - region.y0)} role="button" tabIndex={0} aria-label={`区域 ${index + 1}：${region.text}`} className={activeRegion === index ? "is-active" : ""} onClick={() => onRegion(index)} onFocus={() => onRegion(index)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onRegion(index); } }} />)}</svg>}</>;
   return <GameImagePreviewFrame ref={figure} keyboardPane={keyboardPane} className={keyboardPane ? "unity-image-inline-preview" : undefined}
     aria-label={keyboardPane ? (translated ? "译图预览" : "原图预览") : undefined} onDoubleClick={onOpen} onContextMenu={event => { if (onMenu) { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); } }}
     caption={!compact && <><span>{previewLabel}</span>{opaqueUrl && <label data-tooltip="原图完全透明；忽略透明度只改变预览，不改写原图缓存"><input type="checkbox" checked={ignoreAlpha} onChange={event => setIgnoreAlpha(event.target.checked)} />忽略透明度</label>}{keyboardPane && <div className="unity-image-preview-zoom" role="group" aria-label={previewLabel + "缩放"}
@@ -104,7 +106,11 @@ const ImagePreview = memo(function ImagePreview({ project, image, translated, co
           onClick={() => setInlineZoom(1)}>适应</button>
       </div>}</>}
     fallback={error ? <p className="unity-offline-error" role="alert">{error}</p> : <p className="hint">{file ? "正在读取图片…" : translated ? "尚未生成译图" : image.error || "没有可读取的原图"}</p>}>
-    {!error && url && <div className="unity-image-stage" style={{ width: stageWidth, aspectRatio: keyboardPane ? ratio : undefined }}><img src={displayUrl} alt={`${image.name} ${translated ? "译图" : "原图"}`} draggable={false} onError={event => {if(event.currentTarget.currentSrc===displayUrl)setLoaded({ key,url:displayUrl,error: "图片解码失败，请检查原图缓存或重新扫描" });}} />{!compact && onRegion && (!translated||unityImageUsesRegionMask(image)) && <svg viewBox={`0 0 ${image.width} ${image.height}`} preserveAspectRatio="none" className="unity-image-region-overlay" aria-label="图片文字区域">{image.regions.map((region, index) => translated && !effectiveRegions[index].selected ? null : <rect key={index} x={region.x0} y={region.y0} width={Math.max(1, region.x1 - region.x0)} height={Math.max(1, region.y1 - region.y0)} role="button" tabIndex={0} aria-label={`区域 ${index + 1}：${region.text}`} className={activeRegion === index ? "is-active" : ""} onClick={() => onRegion(index)} onFocus={() => onRegion(index)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onRegion(index); } }} />)}</svg>}</div>}
+    {!error && url && (keyboardPane ? <ImageCanvas className="image-canvas-fit image-canvas-inline" stageClassName="unity-image-stage"
+      zoom={inlineZoom} onZoomChange={setInlineZoom} minZoom={previewZoomStep} maxZoom={previewZoomMax}
+      stageStyle={{ width: stageWidth, aspectRatio: ratio }}>
+      {content}
+    </ImageCanvas> : <div className="unity-image-stage" style={{ width: stageWidth }}>{content}</div>)}
   </GameImagePreviewFrame>;
 });
 

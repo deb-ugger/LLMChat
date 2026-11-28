@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { mosaicModelLabels, type MosaicModel } from "../../gameMosaic";
 import { getFixedMenuPoint } from "../../viewportLayout";
 import { showAppNotice } from "../AppNotice";
+import { ImageCanvas } from "../ImageCanvas";
+import { ImageMaskToolbar, MaskResizeControls, runImageToolShortcut } from "../ImageMaskTools";
 import { GameImagePreviewFrame } from "../GameImageBrowserLayout";
 import { GameImageViewer, useImageBlobUrl, type GameImageView, type GameImageViews } from "../GameImageViewer";
 import { UnityDescriptionSelect } from "../UnityDescriptionSelect";
@@ -25,142 +27,11 @@ async function clipboardPng(blob: Blob): Promise<Blob> {
   }
 }
 
-function MosaicImageCanvas({ width, editing = false, onBackground, children }: {
-  width?: number; editing?: boolean; onBackground?: () => void; children: ReactNode;
-}) {
-  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
-  const [panReady, setPanReady] = useState(false);
-  const [panning, setPanning] = useState(false);
-  const spaceHeld = useRef(false);
-  const surface = useRef<HTMLDivElement>(null);
-  const stage = useRef<HTMLDivElement>(null);
-  const pan = useRef<{ pointer: number; clientX: number; clientY: number; x: number; y: number; clearOnClick: boolean } | null>(null);
-
-  const containPan = useCallback((zoom: number, x: number, y: number) => {
-    const image = stage.current;
-    if (!image) return { zoom, x: 0, y: 0 };
-    // Allow every image edge to reach the center of the editing area.
-    const maxX = image.offsetWidth * zoom / 2;
-    const maxY = image.offsetHeight * zoom / 2;
-    return { zoom, x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
-  }, []);
-
-  useEffect(() => {
-    const area = surface.current;
-    if (!area) return;
-    const onWheel = (event: WheelEvent) => {
-      if (!event.deltaY) return;
-      event.preventDefault();
-      setView(current => {
-        const next = Math.max(1, Math.min(8, current.zoom * Math.exp(-event.deltaY * .002)));
-        return next === current.zoom ? current : containPan(next, current.x * next / current.zoom, current.y * next / current.zoom);
-      });
-    };
-    const observer = new ResizeObserver(() => {
-      setView(current => current.x || current.y ? containPan(current.zoom, current.x, current.y) : current);
-    });
-    observer.observe(area);
-    area.addEventListener("wheel", onWheel, { passive: false });
-    return () => { observer.disconnect(); area.removeEventListener("wheel", onWheel); };
-  }, [containPan]);
-
-  useEffect(() => {
-    const onSpaceDown = (event: KeyboardEvent) => {
-      const area = surface.current;
-      if (event.code !== "Space" || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || !area?.matches(":hover")) return;
-      if (event.target instanceof Element && (event.target.closest("input, textarea, select, [contenteditable]") ||
-          (event.target.closest("button, a, [role='button']") && !area.closest("figure")?.contains(event.target)))) return;
-      event.preventDefault();
-      event.stopPropagation();
-      spaceHeld.current = true;
-      setPanReady(true);
-    };
-    const endSpace = () => {
-      spaceHeld.current = false;
-      setPanReady(false);
-    };
-    const onSpaceUp = (event: KeyboardEvent) => {
-      if (event.code !== "Space" || !spaceHeld.current) return;
-      event.preventDefault();
-      event.stopPropagation();
-      endSpace();
-    };
-    window.addEventListener("keydown", onSpaceDown, true);
-    window.addEventListener("keyup", onSpaceUp, true);
-    window.addEventListener("blur", endSpace);
-    return () => {
-      window.removeEventListener("keydown", onSpaceDown, true);
-      window.removeEventListener("keyup", onSpaceUp, true);
-      window.removeEventListener("blur", endSpace);
-    };
-  }, []);
-
-  const endPan = (pointer: number) => {
-    if (pan.current?.pointer !== pointer) return;
-    pan.current = null;
-    setPanning(false);
-  };
-
-  return <div ref={surface} className={"game-mosaic-image-area" + (panning ? " is-panning" : panReady ? " is-pan-ready" : "")}
-    style={width === undefined ? undefined : { "--mosaic-image-width": width + "px" } as CSSProperties}
-    onPointerDownCapture={event => {
-      if (!event.isPrimary || pan.current) return;
-      const target = event.target as Element;
-      const moveOnly = event.button === 1 || (event.button === 0 && spaceHeld.current);
-      const background = !stage.current?.contains(target);
-      if (!moveOnly && (event.button !== 0 || (!background && (editing || target.closest("svg"))))) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.closest("figure")?.focus({ preventScroll: true });
-      pan.current = { pointer: event.pointerId, clientX: event.clientX, clientY: event.clientY,
-        x: view.x, y: view.y, clearOnClick: !moveOnly };
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setPanning(true);
-    }}
-    onPointerMove={event => {
-      const start = pan.current;
-      if (start?.pointer !== event.pointerId) return;
-      const scale = event.currentTarget.currentCSSZoom;
-      setView(current => containPan(current.zoom, start.x + (event.clientX - start.clientX) / scale,
-        start.y + (event.clientY - start.clientY) / scale));
-    }}
-    onPointerUp={event => {
-      const start = pan.current;
-      if (start?.pointer !== event.pointerId) return;
-      endPan(event.pointerId);
-      if (start.clearOnClick && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 4) onBackground?.();
-    }}
-    onPointerCancel={event => endPan(event.pointerId)}
-    onLostPointerCapture={event => endPan(event.pointerId)}>
-    <div ref={stage} className="unity-image-stage game-mosaic-stage"
-      style={{ translate: view.x + "px " + view.y + "px", scale: view.zoom, "--mosaic-preview-zoom": view.zoom } as CSSProperties}>
-      {children}
-    </div>
-  </div>;
-}
-
-export function MaskResizeControls({ box }: { box: MosaicBox }) {
-  const [left, top, right, bottom] = box;
-  const sides = [
-    ["n", left, top, right, top], ["s", left, bottom, right, bottom],
-    ["w", left, top, left, bottom], ["e", right, top, right, bottom],
-  ] as const;
-  const corners = [
-    ["nw", left, top], ["ne", right, top], ["sw", left, bottom], ["se", right, bottom],
-  ] as const;
-  return <g aria-hidden="true">
-    {sides.map(([edge, x1, y1, x2, y2]) => <line key={edge} data-mosaic-resize={edge}
-      className="game-mosaic-resize-edge" x1={x1} y1={y1} x2={x2} y2={y2} vectorEffect="non-scaling-stroke" />)}
-    {corners.map(([edge, x, y]) => <line key={edge} data-mosaic-resize={edge}
-      className="game-mosaic-resize-corner" x1={x} y1={y} x2={x + .01} y2={y} vectorEffect="non-scaling-stroke" />)}
-  </g>;
-}
-
 function MosaicResultImage({ src, alt }: { src: string; alt: string }) {
   return <div className="game-mosaic-preview-viewport">
-    <MosaicImageCanvas>
+    <ImageCanvas className="game-mosaic-image-area" stageClassName="unity-image-stage game-mosaic-stage">
       <img src={src} alt={alt} draggable={false} />
-    </MosaicImageCanvas>
+    </ImageCanvas>
   </div>;
 }
 
@@ -294,28 +165,10 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   ] : [];
 
   function onImageToolKey(event: ReactKeyboardEvent<HTMLElement>) {
-    if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.repeat ||
-        (event.target as Element).closest("input, textarea, select, [contenteditable]")) return;
-    const modifier = event.ctrlKey || event.metaKey ? "command" : event.shiftKey ? "shift" : undefined;
-    if (modifier === "command" && event.shiftKey) return;
-    const action = imageTools.find(item => item.key === event.key.toLowerCase() && (item.modifier === modifier ||
-      (item.id === "clear" && hasSelection && modifier === "shift")));
-    if (!action || action.disabled) return;
-    event.preventDefault();
-    event.stopPropagation();
-    action.run();
+    runImageToolShortcut(event, imageTools, hasSelection);
   }
 
-  const imageToolbar = imageTools.length > 0 && <div className="game-mosaic-image-tools" role="group" aria-label="原图蒙版工具"
-    onDoubleClick={event => event.stopPropagation()}>
-    {imageTools.map(tool => <button key={tool.id} type="button" className="game-mosaic-image-tool" data-tool={tool.id}
-      aria-label={tool.label} aria-pressed={tool.pressed}
-      aria-keyshortcuts={tool.modifier === "command" ? "Control+Z Meta+Z" : tool.id === "clear" && hasSelection ? "Delete Shift+Delete" : tool.shortcut}
-      data-tooltip={[tool.label + " · " + tool.shortcut, tool.reason].filter(Boolean).join("\n")} disabled={tool.disabled} onClick={tool.run}>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8"
-        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={tool.icon} /></svg>
-    </button>)}
-  </div>;
+  const imageToolbar = imageTools.length > 0 && <ImageMaskToolbar tools={imageTools} hasSelection={hasSelection} />;
 
   return <>
     {paneVisible && active && viewer && <GameImageViewer key={active.id} title={active.name}
@@ -386,7 +239,8 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
           }}
           onKeyDown={onImageToolKey} onDoubleClick={!editing && originalUrl ? () => openPreview("original") : undefined}>
           <div className="game-mosaic-preview-viewport game-mosaic-original-viewport">
-            {originalUrl ? <MosaicImageCanvas key={active.id} width={active.width} editing={editing}
+            {originalUrl ? <ImageCanvas key={active.id} editing={editing} className="game-mosaic-image-area" stageClassName="unity-image-stage game-mosaic-stage"
+              style={{ "--mosaic-image-width": active.width + "px" } as CSSProperties}
               onBackground={deselectMask}>
               <img src={originalUrl} alt={`${active.name} 原图`} draggable={false} />
               <svg viewBox={`0 0 ${active.width} ${active.height}`} className={editing ? "is-editing" : undefined}
@@ -410,7 +264,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
                   className={tool === "select" ? "game-mosaic-mask-selection" : "game-mosaic-mask"} vectorEffect="non-scaling-stroke" />}
                 {canSelectMask && resizeTarget && <MaskResizeControls box={transformed?.get(resizeTarget) ?? resizeTarget} />}
               </svg>
-            </MosaicImageCanvas> : original?.error
+            </ImageCanvas> : original?.error
               ? <p className="game-mosaic-error" role="alert">{original.error}</p>
               : <p className="hint">正在读取图片…</p>}
             {imageToolbar}

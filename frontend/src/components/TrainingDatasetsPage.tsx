@@ -1,3 +1,4 @@
+import { ImageBrowser } from "./ImageBrowser";
 import { TrainingView } from "./TrainingView";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -631,9 +632,11 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
           </div>
         </div>
       </div>
-      <div ref={listSplit.workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
-        style={{ ["--training-dataset-list-width" as string]: `${listSplit.width}px` }}>
-        <aside className="training-dataset-image-list" style={{ maxInlineSize: listSplit.maxWidth }} id={id + "-image-list"} aria-label="图片列表">
+      <ImageBrowser ref={listSplit.workspaceRef} className="training-dataset-workspace" data-list-open={listOpen}
+        style={{ ["--training-dataset-list-width" as string]: `${listSplit.width}px` }}
+        listProps={{ className: "training-dataset-image-list", style: { maxInlineSize: listSplit.maxWidth }, id: id + "-image-list", role: "complementary", "aria-label": "图片列表" }}
+        divider={<button {...listSplit.dividerProps} aria-controls={id + "-image-list"} />}
+        list={<>
           <header className="training-dataset-list-head">
             <div className="training-dataset-list-head-row training-dataset-list-head-row-pagination">
             <nav className="training-dataset-pagination training-dataset-list-nav" aria-label="数据集分页">
@@ -704,8 +707,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
               </li>;
             })}
           </ul>
-        </aside>
-        <button {...listSplit.dividerProps} aria-controls={id + "-image-list"} />
+        </>}>
         <div className="training-dataset-detail">
           {focused && dataset ? <TrainingDatasetImage key={dataset.reference.path + ":" + focused.id}
             image={focused} galleryIndex={focusedGalleryIndex} galleryTotal={images.length} read={dataset.data.read} editable={editable && purpose === "mosaic"} busy={blocked} status={busy}
@@ -716,7 +718,7 @@ export function TrainingDatasetsPage({ channel: _channel, headerTools }: { chann
             onPreview={() => setPreview(focused)} onContextMenu={event => openImageMenu(event, focused)} />
             : <p className="training-dataset-gallery-empty hint">{dataset ? images.length ? "从左侧选择图片预览。" : "没有符合筛选条件的图片。" : "打开已有数据集，或从图片集导入。"}</p>}
         </div>
-      </div>
+      </ImageBrowser>
     </div>
     <div ref={imageMenu} popover="auto" className="unity-gallery-menu" role="menu" aria-label="样本图片操作" style={{ inset: "auto", margin: 0 }}>
       <button type="button" role="menuitem" onClick={() => {
