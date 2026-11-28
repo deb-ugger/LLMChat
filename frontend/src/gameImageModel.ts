@@ -13,6 +13,7 @@ import type { PaddleOcrLine } from "./ocr/paddleOcr";
 import { renderUnityImage, UnityImageLayoutError } from "./unityImages";
 import type { UnityImageRegion } from "./unityOffline";
 import { IMAGE_PRESENCE_CONFLICT, IMAGE_PRESENCE_REVIEW_HINT, type ImagePresence } from "./gameImageScreening";
+import { imageLayoutPrompt, imageLayoutRegions, imageLayoutText } from "./gameImageLayout";
 
 class InvalidImageRegions extends Error {}
 
@@ -374,7 +375,7 @@ export async function recognizeGameImage(settings: Settings, model: string, blob
 export async function renderGameImage(settings: Settings, model: string, blob: Blob, regions: UnityImageRegion[], signal: AbortSignal, selection?: GamePromptSelection, variables?:{source?:string;target?:string}, report?: OllamaOutput, placement?: GameImagePlacement) {
   const failures = regions.flatMap((region, index) => {
     if (!region.selected) return [];
-    const message = gameImageTranslationProblem(region.text, region.translation, variables?.target);
+    const message = region.error || gameImageTranslationProblem(region.text, region.translation, variables?.target);
     return message ? [{ index, message }] : [];
   });
   if (failures.length) throw new UnityImageLayoutError(failures);
@@ -388,16 +389,9 @@ export async function renderGameImage(settings: Settings, model: string, blob: B
     return renderUnityImage(blob, values);
   });
   if (!model) return render(regions);
-  const segmenter = new Intl.Segmenter(variables?.target, { granularity: "word" });
-  const selected = regions.flatMap((region, index) => {
-    if (!region.selected) return [];
-    const chunks = Array.from(segmenter.segment(region.translation), item => item.segment);
-    return chunks.length < 2 ? [] : [{ index, width: region.x1 - region.x0, height: region.y1 - region.y0, chunks }];
-  });
+  const selected = imageLayoutRegions(regions, variables?.target);
   if (!selected.length) return render(regions);
-  const prompt = gameTaskPrompt("layout", selection, variables) +
-    '\n只选择断行位置。chunks 是依序排列的原译文片段，编号从 1 开始。breakAfter 填要在其后换行的片段编号，不能填最后一段。原译文中已有的换行会保留。返回 {"regions":[{"index":原区域索引,"breakAfter":[编号]}]}，每个区域一项，无需新增换行时填空数组。只返回编号和 JSON，不抄写译文。\n' +
-    JSON.stringify(selected);
+  const prompt = imageLayoutPrompt(selected, gameTaskPrompt("layout", selection, variables));
   let result: unknown;
   try {
     result = await requestGameModelJson(settings, model, prompt, signal, undefined, "game-images", report, { selection, role: "layout" });
@@ -418,22 +412,22 @@ export async function renderGameImage(settings: Settings, model: string, blob: B
     if (!chunks) continue;
     if (seen.has(item.index)) { layouts.delete(item.index); continue; }
     seen.add(item.index);
-    if (!Array.isArray(item.breakAfter) || !item.breakAfter.every((position: unknown) =>
-      typeof position === "number" && Number.isInteger(position) && position > 0 && position < chunks.length)) continue;
-    const breaks = new Set<number>(item.breakAfter);
-    layouts.set(item.index, chunks.map((chunk, index) => breaks.has(index + 1) && !/[\r\n]/.test(chunk + (chunks[index + 1] ?? "")) ? chunk + "\n" : chunk).join(""));
+    const text = imageLayoutText(chunks, item.breakAfter);
+    if (text !== undefined) layouts.set(item.index, text);
   }
   if (layouts.size < selected.length) {
     report?.(`${model} · ${selected.length - layouts.size} 个区域未收到有效断点，已改为自动换行。`, "error");
   }
-  const planned = regions.map((region, index) => ({ ...region, translation: layouts.get(index) ?? region.translation }));
-  try { return await render(planned); }
-  catch (error) {
-    signal.throwIfAborted();
-    if (!(error instanceof UnityImageLayoutError)) throw error;
-    const retry = new Set(error.failures.map(item => item.index).filter(index => planned[index].translation !== regions[index].translation));
-    if (!retry.size) throw error;
-    report?.(`${model} · ${retry.size} 个区域的断点超出排版空间，正在自动换行。`, "error");
-    return render(planned.map((region, index) => retry.has(index) ? regions[index] : region));
+  let planned = regions.map((region, index) => ({ ...region, translation: layouts.get(index) ?? region.translation }));
+  for (;;) {
+    try { return await render(planned); }
+    catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof UnityImageLayoutError)) throw error;
+      const retry = new Set(error.failures.map(item => item.index).filter(index => planned[index].translation !== regions[index].translation));
+      if (!retry.size) throw error;
+      report?.(`${model} · ${retry.size} 个区域的断点超出排版空间，正在自动换行。`, "error");
+      planned = planned.map((region, index) => retry.has(index) ? regions[index] : region);
+    }
   }
 }

@@ -4,6 +4,7 @@ import type { OllamaOutput } from "./gameOllama";
 import { recordGameCacheHit, recordGameWorkflowTiming } from "./gameModelPerformance";
 import { gameImageDigest, readImageCheckpoint, saveImageCheckpoint } from "./gameImageCheckpoints";
 import type { PaddleOcrLine } from "./ocr/paddleOcr";
+import { UnityImageLayoutError } from "./unityImages";
 
 type Box = [number, number, number, number];
 export type StyleRedrawProfileId = "2511" | "turbo" | "custom";
@@ -258,18 +259,27 @@ export async function renderPlacedGameImage(blob: Blob, regions: UnityImageRegio
   const logo = isGameLogoName(placement.assetName);
   const protect = (region: UnityImageRegion) => logo && /^(?:[&＆+]|[A-Z]{1,5})$/.test(region.text.trim()) &&
     (!region.selected || region.translation.trim() === region.text.trim());
-  const selected = regions.filter(region => region.selected && !protect(region)).map(region => ({
-    box: box(region), text: region.text, translation: region.translation,
-  }));
+  const selected = regions.flatMap((region, index) => region.selected && !protect(region) ? [{
+    index, box: box(region), text: region.text, translation: region.translation,
+  }] : []);
   if (!selected.length) return blob;
   const clean = await placement.cleanBase?.();
   signal.throwIfAborted();
   const protectedRegions=regions.filter(protect);
-  const result = await runProgram<{ image: string }>(blob, "layout",
-    { assetName: placement.assetName, cleanImage: clean && await toBase64(clean), protectBoxes: protectedRegions.map(box),
-      protectSymbols: protectedRegions.filter(region=>/^[&＆+]$/.test(region.text.trim())).map(box),
-      occupiedBoxes: logo ? undefined : regions.filter(region=>region.text.trim()).map(box) },
-    selected, signal, report);
+  let result: { image: string } | undefined;
+  try {
+    result = await runProgram<{ image: string }>(blob, "layout",
+      { assetName: placement.assetName, cleanImage: clean && await toBase64(clean), protectBoxes: protectedRegions.map(box),
+        protectSymbols: protectedRegions.filter(region=>/^[&＆+]$/.test(region.text.trim())).map(box),
+        occupiedBoxes: logo ? undefined : regions.filter(region=>region.text.trim()).map(box) },
+      selected, signal, report);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const failed = /区域 (\d+)：(.*可读字号.*)/.exec(detail);
+    const region = failed && selected[Number(failed[1]) - 1];
+    if (region) throw new UnityImageLayoutError([{ index: region.index, message: failed[2] }]);
+    throw error;
+  }
   if (!result) return undefined;
   const bytes = Uint8Array.from(atob(result.image), char => char.charCodeAt(0));
   return new Blob([bytes], { type: "image/png" });

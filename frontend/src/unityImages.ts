@@ -184,8 +184,13 @@ export async function renderUnityImage(source: Blob, regions: UnityImageRegion[]
         }
         return lines;
       };
-      let size = Math.min(48, Math.max(7, box.height * .8)), lines = wrap(size);
-      while (size > 7 && (lines.length * size * 1.2 > box.height - 2 || lines.some(line => context.measureText(line).width > box.width - 4))) { size -= .5; lines = wrap(size); }
+      const sourceLines = Math.max(1, box.region.text.split(/\r\n|\r|\n/).length);
+      const initialSize = Math.min(48, Math.max(8, box.height / (sourceLines * 1.2)));
+      const minimumSize = Math.max(8, initialSize * .75);
+      let size = initialSize, lines = wrap(size);
+      while (size > minimumSize && (lines.length * size * 1.2 > box.height - 2 || lines.some(line => context.measureText(line).width > box.width - 4))) {
+        size = Math.max(minimumSize, size - .5); lines = wrap(size);
+      }
       if (lines.length * size * 1.2 > box.height || lines.some(line => context.measureText(line).width > box.width)) { failures.push({ index: box.index, message: "译文无法放入原文字区域，请缩短译文、调整区域或替换译图" }); continue; }
       context.save(); context.beginPath(); context.rect(box.x, box.y, box.width, box.height); context.clip();
       context.fillStyle = box.color[3] <= 16 || box.color[0] * .299 + box.color[1] * .587 + box.color[2] * .114 > 128 ? "#151515" : "#ffffff";

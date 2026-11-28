@@ -1102,14 +1102,14 @@ def matching_game_background(original_pixels, encoded, regions):
 
 
 def repair_game_region(patch, reference, heading=False):
+    import cv2
     from scipy import ndimage
 
     rgb = patch[:, :, :3].astype(np.float32)
     if reference is not None:
-        changed = np.max(np.abs(rgb-reference[:, :, :3]),axis=2) > 5
-        if changed.mean() >= .015:
-            patch[changed] = reference[changed]
-            return changed, True
+        changed = np.any(patch != reference, axis=2)
+        patch[changed] = reference[changed]
+        return changed, True
     size = 15 if heading else 7
     local = ndimage.median_filter(rgb,size=(size,size,1))
     contrast = np.max(np.abs(rgb-local),axis=2)
@@ -1118,10 +1118,9 @@ def repair_game_region(patch, reference, heading=False):
         changed = ndimage.binary_fill_holes(changed)
     if not changed.any() or changed.all():
         return changed & False, False
-    nearest = ndimage.distance_transform_edt(changed,return_distances=False,return_indices=True)
-    restored = rgb[tuple(nearest)]
-    restored = ndimage.gaussian_filter(restored,sigma=(.75,.75,0))
-    patch[:, :, :3][changed] = np.rint(restored[changed]).astype(np.uint8)
+    # Inpainting follows the neighbouring colour gradients. Only publish masked pixels.
+    restored = cv2.inpaint(np.ascontiguousarray(patch[:, :, :3]), changed.astype(np.uint8) * 255, 3, cv2.INPAINT_NS)
+    patch[:, :, :3][changed] = restored[changed]
     return changed, False
 
 
@@ -1132,6 +1131,8 @@ def game_ink(pixels, logo=False):
     vivid = (np.ptp(values,axis=1)>65) & (values.max(axis=1)>165)
     if vivid.mean() >= .18:
         return tuple(np.median(values[vivid],axis=0).astype(int))
+    if not logo:
+        return tuple(np.median(values, axis=0).astype(int))
     return (220,225,236) if logo else (40,25,40)
 
 
@@ -1173,35 +1174,72 @@ def repair_bright_panel_label(source, background, result, box):
     return (x0, y0, x1, y1), game_ink(roi[ink_slice][ink[ink_slice]])
 
 
-def game_layout_stamp(translation, size, font_path, color, logo=False, heading=False, centered=False):
+def game_reference_font_size(mask, height, source_text):
+    from scipy import ndimage
+
+    labels, _ = ndimage.label(mask)
+    heights = [area[0].stop - area[0].start for area in ndimage.find_objects(labels)
+               if area and area[0].stop - area[0].start >= max(3, height * .12)
+               and area[1].stop - area[1].start <= height * 4]
+    source_lines = max(1, len(source_text.splitlines()))
+    return max(8, round(min(height / source_lines, np.median(heights) * 1.15 if heights else height / source_lines)))
+
+
+def game_wrap_lines(translation, font, width):
+    import re
+
+    lines = []
+    closing = "，。！？、：；,.!?;:）)]】」』"
+    opening = "（([【「『"
+    for paragraph in translation.split("\n"):
+        line = ""
+        for part in re.findall(r"[A-Za-z0-9]+(?:['’.-][A-Za-z0-9]+)*|\s+|.", paragraph):
+            if line and font.getlength(line + part) > width and part[0] not in closing:
+                if line[-1] in opening:
+                    carry = line[-1]
+                    line = line[:-1]
+                else:
+                    carry = ""
+                if line:
+                    lines.append(line)
+                line = carry
+            line += part
+        lines.append(line)
+    return lines
+
+
+def game_layout_plan(translation, size, font_path, logo=False, heading=False, source_size=None):
+    from PIL import ImageFont
+
+    w, h = size
+    initial = max(8, min(140, round(source_size if source_size is not None else h - 3)))
+    minimum = 6 if logo else max(8, round(initial * .75))
+    for fsize in range(initial, minimum - 1, -1):
+        font = ImageFont.truetype(font_path, fsize)
+        stroke = max(1, round(fsize * (.08 if logo else .04))) if logo or heading else 0
+        lines = game_wrap_lines(translation, font, w - 2 * stroke - 4)
+        line_step = round(fsize * 1.2)
+        boxes = [font.getbbox(line or " ", stroke_width=stroke) for line in lines]
+        top = min(box[1] for box in boxes)
+        bottom = max(index * line_step + box[3] for index, box in enumerate(boxes))
+        widths = [font.getlength(line) + 2 * stroke for line in lines]
+        if max(widths) <= w - 4 and bottom - top <= h - 2:
+            return {"font": font, "size": fsize, "stroke": stroke, "lines": lines,
+                    "line_step": line_step, "top": top, "height": bottom - top}
+    raise ValueError("译文无法以可读字号放入区域，请调整文字区域或译文断行")
+
+
+def game_layout_stamp(translation, size, font_path, color, logo=False, heading=False, centered=False, source_size=None):
     from PIL import ImageDraw, ImageFont, ImageFilter
 
     w,h=size
     stamp=Image.new("RGBA",size)
     draw=ImageDraw.Draw(stamp)
     font_path = font_for_lettering(font_path, translation if logo else translation.replace("♡", ""))
-    minimum = 6 if logo else 3
-    fsize = max(minimum, min(140, h - (8 if logo else 3)))
-    while fsize >= minimum:
-        font=ImageFont.truetype(font_path,fsize)
-        stroke=max(1,round(fsize*.08)) if logo else max(1,round(fsize*.09))
-        lines=[]
-        for paragraph in translation.splitlines():
-            line=""
-            for char in paragraph:
-                if line and font.getlength(line+char)>w-2*stroke-2:
-                    lines.append(line)
-                    line=""
-                line+=char
-            if line:
-                lines.append(line)
-        text="\n".join(lines)
-        bounds=draw.multiline_textbbox((0,0),text,font=font,stroke_width=stroke,spacing=0)
-        if bounds[2]-bounds[0]<=w-(2*stroke if heading else 0) and bounds[3]-bounds[1]<=h:
-            break
-        fsize-=1
-    else:
-        raise ValueError("译文太长，无法保留原图排版，请调整范围或缩短译文")
+    plan = game_layout_plan(translation, size, font_path, logo, heading, source_size)
+    font, fsize, stroke, lines = (plan[key] for key in ("font", "size", "stroke", "lines"))
+    text = "\n".join(lines)
+    bounds=draw.multiline_textbbox((0,0),text,font=font,stroke_width=stroke,spacing=0)
     x=2*stroke-bounds[0] if heading else (w-bounds[2]-bounds[0])/2 if logo or centered else stroke-bounds[0]
     y=(h-bounds[3]-bounds[1])/2
     if logo:
@@ -1216,15 +1254,17 @@ def game_layout_stamp(translation, size, font_path, color, logo=False, heading=F
         stamp.alpha_composite(Image.fromarray(gradient))
     else:
         outline="#fffaff" if max(color)-min(color)>55 or max(color)<130 else "#292130"
-        for row,line in enumerate(text.splitlines()):
+        y = (h - plan["height"]) / 2 - plan["top"]
+        for row,line in enumerate(lines):
+            x = (w - font.getlength(line)) / 2 if heading or centered else stroke + 2
             edge=x
             parts=line.split("♡")
             for part_i,part in enumerate(parts):
-                draw.text((edge,y+row*fsize),part,font=font,fill=color+(255,),stroke_width=stroke,stroke_fill=outline)
+                draw.text((edge,y+row*plan["line_step"]),part,font=font,fill=color+(255,),stroke_width=stroke,stroke_fill=outline)
                 edge+=font.getlength(part)
                 if part_i<len(parts)-1:
                     symbol=ImageFont.truetype(str(Path(font_path).with_name("seguisym.ttf")),fsize)
-                    draw.text((edge,y+row*fsize),"♡",font=symbol,fill=color+(255,),stroke_width=stroke,stroke_fill=outline)
+                    draw.text((edge,y+row*plan["line_step"]),"♡",font=symbol,fill=color+(255,),stroke_width=stroke,stroke_fill=outline)
                     edge+=symbol.getlength("♡")
     return stamp
 
@@ -1707,10 +1747,14 @@ def render_game_layout(original, regions, extra, font_path):
                 if label is None:
                     patch=result[y:b,x:r]
                     mask,used_base=repair_game_region(patch,background[y:b,x:r] if background is not None else None,heading)
-                    color=game_ink(source[y:b,x:r][mask],heading)
+                    original_patch=source[y:b,x:r]
+                    ink=mask & (np.max(np.abs(original_patch[:,:,:3].astype(np.int16)-patch[:,:,:3]),axis=2)>32)
+                    color=game_ink(original_patch[ink],False)
+                    source_size=game_reference_font_size(mask,b-y,text)
                 else:
                     (x,y,r,b),color=label
                     used_base=False
+                    source_size=max(8,b-y-4)
                 from_base+=int(used_base)
                 patched+=int(not used_base)
                 if frame:
@@ -1720,7 +1764,8 @@ def render_game_layout(original, regions, extra, font_path):
                 if r<=x or b<=y:
                     raise ValueError("文字区域内没有足够的排版空间，请调整选区")
                 lettering_font=str(Path(font_path).with_name("msyhbd.ttc")) if heading else font_path
-                overlay=game_layout_stamp(region["translation"],(r-x,b-y),lettering_font,color,heading,heading,label is not None)
+                overlay=game_layout_stamp(region["translation"],(r-x,b-y),lettering_font,color,
+                                          heading=heading,centered=heading or label is not None,source_size=source_size)
             overlays.append((x,y,overlay))
         except ValueError as exc:
             raise ValueError(f"区域 {index}：{exc}") from exc
@@ -1811,7 +1856,8 @@ async def run(data):
     lettering_canvas = Image.new("RGBA", original.size)
     drafts = []
     fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    font = next((str(fonts / name) for name in ("simkai.ttf", "msyh.ttc", "simhei.ttf") if (fonts / name).is_file()), None)
+    font_names = ("msyh.ttc", "simhei.ttf", "simkai.ttf") if data["mode"] == "layout" else ("simkai.ttf", "msyh.ttc", "simhei.ttf")
+    font = next((str(fonts / name) for name in font_names if (fonts / name).is_file()), None)
     if not font:
         raise ValueError("缺少中文字体，请安装楷体、微软雅黑或黑体")
     if data["mode"] == "layout":
