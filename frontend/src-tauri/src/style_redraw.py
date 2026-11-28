@@ -533,12 +533,25 @@ def edit_mosaic_size(crop_size):
 
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
-                        "diffusion-cream": "diffusion-cream-regions-v2"}
+                        "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v1"}
+
+ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
+                       "controlnet/controlnet-union-sdxl-1.0.safetensors",
+                       "loras/sdxl_lightning_8step_lora.safetensors")
 
 
-def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name):
+def validate_mosaic_weights(directory, profile):
+    if profile["kind"] == "illustrious":
+        models = Path(directory) / "ComfyUI/models"
+        missing = [name for name in ILLUSTRIOUS_WEIGHTS if not (models / name).is_file()]
+        if missing:
+            raise ValueError("缺少本地权重：" + "、".join(missing))
+
+
+def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed, crop_size, guide_mask_name, kind="diffusion-cream"):
     # DiffusionCreamPy Mosaic-CNet++, using the game workbench's existing crop and final blend.
-    scale = 1152 / max(crop_size)
+    illustrious = kind == "illustrious"
+    scale = (768 if illustrious else 1152) / max(crop_size)
     width, height = (max(64, round(side * scale / 8) * 8) for side in crop_size)
     guide_blur = max(31, min(97, round(min(width, height) * .073)))
 
@@ -555,7 +568,7 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
         "6": node("CLIPTextEncode", clip=["30", 1],
                   text="Anime game illustration, continuous linework, coherent proportions and shading, fine local texture"),
         "7": node("CLIPTextEncode", clip=["30", 1],
-                  text="censored, mosaic artifacts, flat color fills, distorted proportions, broken outlines"),
+                  text="mosaic artifacts, flat color fills, distorted proportions, broken outlines, duplicated forms"),
         # Suppress grid edges within the core and keep the transition band's original contours in both guides.
         "43": node("LoadImage", image=guide_mask_name),
         "44": node("ImageScale", image=["43", 0], width=width, height=height, upscale_method="nearest-exact", crop="disabled"),
@@ -574,7 +587,13 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
         "14": node("INPAINT_ColorMatch", target=["36", 0], reference=["5", 0], exclude_mask=["5", 1], strength=1.0),
         "15": node("PreviewImage", images=["14", 0]),
     }
-    if reference_name:
+    if illustrious:
+        graph["30"]["inputs"]["ckpt_name"] = "Illustrious-XL-v2.0.safetensors"
+        graph["46"] = node("LoraLoaderModelOnly", model=["30", 0],
+                           lora_name="sdxl_lightning_8step_lora.safetensors", strength_model=1.0)
+        graph["35"]["inputs"]["strength"] = 0.65
+        graph["13"]["inputs"].update(model=["46", 0], steps=8, cfg=1.5, scheduler="sgm_uniform", denoise=0.75)
+    elif reference_name:
         graph["16"] = node("LoadImage", image=reference_name)
         graph["37"] = node("CLIPVisionLoader", clip_name="CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors")
         graph["38"] = node("IPAdapterModelLoader", ipadapter_file="ip-adapter-plus_sdxl_vit-h.safetensors")
@@ -587,26 +606,17 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
 
 
 def mosaic_target_prompt(profile):
-    parts = set(profile.get("targetParts") or [])
-    if parts == {"male_external"}:
-        anatomy = "the visible adult male external genital anatomy"
-    elif parts == {"female_external"}:
-        anatomy = "the visible adult external vulvar anatomy"
-    else:
-        return ""
-    return (f" Repair {anatomy} only inside the lower-pelvis mask. "
-            "Follow the target pose, contours, occlusion and perspective. Preserve visible accessories and pixels outside the mask.")
+    return " Repair only inside the mask. Follow existing contours and occlusion. Keep pixels outside the mask unchanged."
 
 
 def mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop_size=None, guide_mask_name=None):
     target = mosaic_target_prompt(profile) if mask_name is not None else ""
-    target_negative = "open mouth, facial features, teeth, tongue, misplaced anatomy"
-    if profile["kind"] == "diffusion-cream":
+    target_negative = "mosaic artifacts, flat color fills, broken outlines, distorted proportions, duplicated forms"
+    if profile["kind"] in ("diffusion-cream", "illustrious"):
         graph = diffusion_cream_workflow(source_name, reference_name, mask_name, steps,
-                                        profile.get("seed", 1), crop_size, guide_mask_name)
+                                        profile.get("seed", 1), crop_size, guide_mask_name, profile["kind"])
         if target:
             graph["6"]["inputs"]["text"] += target
-            graph["7"]["inputs"]["text"] += ", " + target_negative
         return graph
     local_edit = profile["kind"] in ("2511", "2511-lightning") and mask_name is not None
     prompt = ("Remove the mosaic or pixelation within the masked area of image 1 and reconstruct continuous linework and shading. "
@@ -679,7 +689,7 @@ def mosaic_redraw_areas(original, regions, profile):
     areas = []
     for group in mosaic_region_groups(original, regions):
         area = mosaic_redraw_area(original, group, profile.get("keep", []),
-                                  preserve_edges=profile["kind"] == "diffusion-cream", allow_empty=True)
+                                  preserve_edges=profile["kind"] in ("diffusion-cream", "illustrious"), allow_empty=True)
         if area is not None:
             areas.append(area)
     if not areas:
@@ -704,8 +714,8 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
     outputs = []
     for index, (bounds, crop, generation, blend, _) in enumerate(areas):
         mask_name = await upload(Image.fromarray(generation.astype(np.uint8) * 255).convert("RGB"))
-        guide_name = await upload(mosaic_core_mask(blend)) if profile["kind"] == "diffusion-cream" else None
-        reference = profile.get("referenceImage")
+        guide_name = await upload(mosaic_core_mask(blend)) if profile["kind"] in ("diffusion-cream", "illustrious") else None
+        reference = profile.get("referenceImage") if profile["kind"] != "illustrious" else None
         reference_name = await upload(*mosaic_reference_input(reference, original, bounds, profile["kind"])) if reference else None
         local = mosaic_workflow(source_name, reference_name, mask_name, steps, profile, crop.size, guide_name)
         left, top, _, _ = bounds
@@ -726,9 +736,10 @@ async def prepare_mosaic_workflow(original, data, steps):
     profile = data["profile"]
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
+    validate_mosaic_weights(data["directory"], profile)
     masked = bool(data["regions"])
-    if not masked and profile["kind"] == "diffusion-cream":
-        raise ValueError("使用 DiffusionCreamPy 前，请先为当前图片添加蒙版")
+    if not masked and profile["kind"] in ("diffusion-cream", "illustrious"):
+        raise ValueError("使用动漫局部修复前，请先为当前图片添加蒙版")
     areas = mosaic_redraw_areas(original, data["regions"], profile) if masked else []
     reference = profile.get("referenceImage")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
@@ -776,7 +787,8 @@ async def repair_mosaic(original, data, steps, workflow_times):
     profile = data["profile"]
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
-    preserve_edges = profile["kind"] == "diffusion-cream"
+    validate_mosaic_weights(data["directory"], profile)
+    preserve_edges = profile["kind"] in ("diffusion-cream", "illustrious")
     areas = mosaic_redraw_areas(original, data["regions"], profile)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         root = Path(data["directory"])

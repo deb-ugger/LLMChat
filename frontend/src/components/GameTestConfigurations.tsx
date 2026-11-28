@@ -221,7 +221,7 @@ export function GameTestConfigurations({ setup, capture, onApply, onClose }: {
           <Select label="纹理与漏检复核模型" value={mosaic.refineGuardModel || "qwen3-vl:8b-instruct"} choices={[...new Set(["qwen3-vl:8b-instruct",...setup.models])].map(model=>({value:model,label:model.split("/").pop() || model}))} change={refineGuardModel=>updateMosaic({refineGuardModel})}/>
           <Count label="去码复筛并发" value={mosaic.refineConcurrency ?? 1} choices={mosaicRefineConcurrencyChoices} change={refineConcurrency=>updateMosaic({refineConcurrency})}/>
           <Select label="去码模型" value={mosaic.model} choices={mosaicModelChoices} change={model=>updateMosaic({model,steps:mosaicDefaultSteps[model]})}/>
-          {mosaic.model!=="turbo" && mosaic.model!=="2511-lightning" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
+          {mosaic.model!=="turbo" && mosaic.model!=="2511-lightning" && <label>步数<input type="number" min={1} max={100} value={mosaic.steps} disabled={mosaic.model==="illustrious"} onChange={e=>updateMosaic({steps:Math.max(1,Math.min(100,Number(e.target.value)))})}/></label>}
           <Flag label="保护已识别文字" value={mosaic.protect} change={protect=>updateMosaic({protect})}/>
         </Group>}
         <Group title="生成译图">{toggleModel("images", "layout", "排版方式", "本地原位排版")}</Group>

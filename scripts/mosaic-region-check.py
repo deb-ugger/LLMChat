@@ -62,6 +62,43 @@ class RegionGeometry(unittest.TestCase):
 
 
 class RegionGraphs(unittest.IsolatedAsyncioTestCase):
+    def test_illustrious_recipe_and_reference_does_not_load_vision(self):
+        settings = {**profile("illustrious"), "targetParts": ["male_external"]}
+        for size in ((2048, 1152), (320, 480), (4096, 64)):
+            graph = worker.mosaic_workflow("source.png", "style.png", "mask.png", 28,
+                                           settings, size, "core.png")
+            resize = graph["5"]["inputs"]
+            self.assertEqual(max(resize["width"], resize["height"]), 768)
+            self.assertEqual(resize["width"] % 8, 0)
+            self.assertEqual(resize["height"] % 8, 0)
+            sampler = graph["13"]["inputs"]
+            for key, expected in {"steps": 8, "cfg": 1.5, "denoise": .75, "sampler_name": "euler",
+                                  "scheduler": "sgm_uniform", "model": ["46", 0]}.items():
+                self.assertEqual(sampler[key], expected)
+            self.assertEqual(graph["30"]["inputs"]["ckpt_name"], "Illustrious-XL-v2.0.safetensors")
+            self.assertEqual(graph["46"]["inputs"], {"model": ["30", 0],
+                "lora_name": "sdxl_lightning_8step_lora.safetensors", "strength_model": 1.0})
+            self.assertEqual(graph["35"]["inputs"]["strength"], .65)
+            self.assertTrue(graph["34"]["inputs"]["noise_mask"])
+            self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
+            self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
+        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v1")
+        self.assertEqual(worker.mosaic_target_prompt(settings), worker.mosaic_target_prompt(profile("illustrious")))
+
+    async def test_missing_illustrious_weights_fail_before_comfy_start(self):
+        settings = profile("illustrious")
+        models = Path("fixture") / "ComfyUI/models"
+        for missing in worker.ILLUSTRIOUS_WEIGHTS:
+            with patch.object(Path, "is_file", lambda path: path != models / missing):
+                for entry in (worker.prepare_mosaic_workflow, worker.repair_mosaic):
+                    with self.assertRaisesRegex(ValueError, "缺少本地权重") as caught:
+                        args = (texture(), {"directory": "fixture", "profile": settings,
+                                            "regions": [{"box": [25, 30, 45, 50]}]}, 8)
+                        await entry(*args, *([] if entry == worker.prepare_mosaic_workflow else [[]]))
+                    self.assertIn(missing, str(caught.exception))
+        with patch.object(Path, "is_file", return_value=True):
+            worker.validate_mosaic_weights("fixture", settings)
+
     async def test_every_model_graph_has_independent_crops(self):
         source = texture()
         regions = [{"box": [25, 30, 45, 50]}, {"box": [440, 100, 470, 130]}]
@@ -71,6 +108,8 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
 
         for kind in worker.MOSAIC_WORKFLOW_KEYS:
             settings = profile(kind)
+            if kind == "illustrious":
+                settings["referenceImage"] = "unused-reference-must-not-be-uploaded"
             areas = worker.mosaic_redraw_areas(source, regions, settings)
             graph, outputs = await worker.mosaic_region_graphs(source, areas, settings, 8, upload)
             self.assertEqual(len(outputs), 2)
@@ -80,6 +119,9 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(graph["region_0_10"]["inputs"]["model"], ["region_0_29", 0])
                 self.assertEqual(graph["region_0_13"]["inputs"]["positive"], graph["region_0_13"]["inputs"]["negative"])
                 self.assertNotIn("region_0_7", graph)
+            if kind == "illustrious":
+                self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 8)
+                self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
             self.assertEqual(graph["region_0_4"]["class_type"], "ImageCrop")
             self.assertEqual(graph["region_1_4"]["inputs"]["x"], areas[1][0][0])
             for node in graph.values():
