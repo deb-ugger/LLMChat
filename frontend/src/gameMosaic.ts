@@ -20,8 +20,9 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
 export const mosaicModelChoices = (["illustrious", "illustrious-line-refine", "turbo", "2511-lightning", "2511", "diffusion-cream"] as const)
   .map(value => ({ value, label: mosaicModelLabels[value] }));
 const illustriousSteps = 22;
+export const mosaicEdgeRefineSteps = 12;
 export const mosaicDefaultSteps: Record<MosaicModel, number> = {
-  illustrious: illustriousSteps, "illustrious-line-refine": illustriousSteps,
+  illustrious: illustriousSteps, "illustrious-line-refine": illustriousSteps + mosaicEdgeRefineSteps,
   turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28,
 };
 export const isIllustriousMosaicModel = (model: MosaicModel) => model === "illustrious" || model === "illustrious-line-refine";
@@ -270,7 +271,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
 const mosaicWorkflowKeys: Record<MosaicModel, string> = {
   "2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
   turbo: "expanded-regions-v2", "diffusion-cream": "diffusion-cream-regions-v2",
-  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-contours-v8",
+  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-contours-v9",
 };
 
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {

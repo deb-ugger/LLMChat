@@ -587,7 +587,7 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
                         "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v4"}
-ILLUSTRIOUS_CONTOUR_WORKFLOW_KEY = "illustrious-contours-v8"
+ILLUSTRIOUS_CONTOUR_WORKFLOW_KEY = "illustrious-contours-v9"
 EDIT_LIGHTNING_LORA = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
@@ -703,6 +703,36 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                            start_at=0.4, end_at=0.85, embeds_scaling="V only")
         graph["13"]["inputs"]["model"] = ["40", 0]
     return graph
+
+
+def add_illustrious_edge_refinement(graph):
+    def node(kind, **inputs):
+        return {"class_type": kind, "inputs": inputs}
+
+    first_image = graph["15"]["inputs"]["images"]
+    sampler = graph["13"]["inputs"]
+    graph.update({
+        "51": node("CLIPTextEncode", clip=["30", 1],
+                   text="preserve the input illustration's existing silhouettes, positions, occlusion, hues and materials, "
+                        "continuous ink lines matching the surrounding line weight, crisp ink outlines and hard-edged highlights"),
+        "52": node("CLIPTextEncode", clip=["30", 1],
+                   text="soft focus, blurred contours, airbrushed shading, pixel grid, new forms, changed silhouettes"),
+        "53": node("INPAINT_MaskedFill", image=["5", 0], mask=["45", 0], fill="neutral", falloff=0),
+        "54": node("InvertMask", mask=["45", 0]),
+        "55": node("ACN_ControlNet++InputNode", image=["53", 0], control_type="tile"),
+        "56": node("ACN_ControlNet++LoaderAdvanced", plus_input=["55", 0], name=graph["33"]["inputs"]["name"]),
+        "57": node("InpaintModelConditioning", positive=["51", 0], negative=["52", 0], vae=["30", 2],
+                   pixels=["36", 0], mask=["5", 1], noise_mask=True),
+        "58": node("ACN_AdvancedControlNetApply_v2", positive=["57", 0], negative=["57", 1], control_net=["56", 0],
+                   image=["56", 1], mask_optional=["54", 0], strength=0.45, start_percent=0.0, end_percent=1.0),
+        "59": node("KSampler", **{**sampler, "steps": 12, "denoise": 0.50,
+                                  "positive": ["58", 0], "negative": ["58", 1], "latent_image": ["57", 2]}),
+        "60": node("VAEDecode", samples=["59", 0], vae=["30", 2]),
+        "61": node("PreviewImage", images=first_image),
+    })
+    graph["61"]["_meta"] = {"title": "轮廓底图"}
+    graph["59"]["_meta"] = {"title": "边缘重绘"}
+    graph["15"]["inputs"]["images"] = ["60", 0]
 
 
 def mosaic_target_prompt(profile):
@@ -854,6 +884,8 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
             # There are no original pixels for color matching when the guide covers the entire crop.
             del local["14"]
             local["15"]["inputs"]["images"] = ["36", 0]
+        if illustrious and profile.get("preserveContours"):
+            add_illustrious_edge_refinement(local)
         left, top, _, _ = bounds
         local["4"] = {"class_type": "ImageCrop", "inputs": {
             "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
@@ -954,9 +986,10 @@ async def repair_mosaic(original, data, steps, workflow_times):
 
                 graph, outputs = await mosaic_region_graphs(original, areas, profile, steps, upload)
                 if subfolder:
-                    for output in ["15", *outputs]:
-                        graph[output] = {"class_type": "SaveImage", "inputs": {
-                            "images": graph[output]["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
+                    for output, node in list(graph.items()):
+                        if node["class_type"] == "PreviewImage":
+                            graph[output] = {"class_type": "SaveImage", "inputs": {
+                                "images": node["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
                 submitted = prompt_ids if prompt_ids is not None else []
                 raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, submitted,
                                             resume_id=resume_id, old_history=history, cancel_path=cancel_path, trace=True)

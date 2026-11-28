@@ -184,7 +184,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
         self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v4")
 
-    async def test_contour_recipe_keeps_guide_and_runs_one_pass(self):
+    async def test_contour_recipe_keeps_base_and_outputs_edge_pass(self):
         settings = {**profile("illustrious"), "preserveContours": True, "seed": 923}
         source = mosaic_texture()
         regions = [{"box": [25, 30, 45, 50]}]
@@ -197,7 +197,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             return name
 
         graph, _ = await worker.mosaic_region_graphs(source, areas, settings, 22, upload)
-        self.assertEqual([n["inputs"]["steps"] for n in graph.values() if n["class_type"] == "KSampler"], [22])
+        self.assertEqual([n["inputs"]["steps"] for n in graph.values() if n["class_type"] == "KSampler"], [22, 12])
         self.assertEqual(graph["region_0_13"]["inputs"]["seed"], 923)
         self.assertEqual(graph["region_0_13"]["inputs"]["denoise"], .45)
         resize = graph["region_0_5"]["inputs"]
@@ -207,18 +207,56 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph["region_0_41"]["inputs"]["blur"], measured["blurKernel"])
         self.assertGreater(measured["blurKernel"], max(width for width in (measured["cellWidthX"], measured["cellWidthY"]) if width))
         self.assertEqual(graph["region_0_35"]["inputs"]["end_percent"], 1)
+        edge = graph["region_0_59"]["inputs"]
+        self.assertEqual(edge["denoise"], .5)
+        self.assertEqual(edge["seed"], 923)
+        self.assertEqual(edge["model"], graph["region_0_13"]["inputs"]["model"])
+        self.assertEqual(graph["region_0_57"]["inputs"]["pixels"], ["region_0_36", 0])
+        self.assertEqual(graph["region_0_57"]["inputs"]["mask"], ["region_0_5", 1])
+        self.assertEqual(graph["region_0_53"]["inputs"], {
+            "image": ["region_0_5", 0], "mask": ["region_0_45", 0], "fill": "neutral", "falloff": 0})
+        self.assertEqual(graph["region_0_54"]["inputs"]["mask"], ["region_0_45", 0])
+        tile = graph["region_0_58"]["inputs"]
+        self.assertEqual(tile["mask_optional"], ["region_0_54", 0])
+        self.assertEqual((tile["strength"], tile["end_percent"]), (.45, 1))
+        self.assertEqual(graph["region_0_55"]["inputs"]["image"], ["region_0_53", 0])
+        self.assertEqual(graph["15"]["inputs"]["images"], ["region_0_60", 0])
+        self.assertEqual(graph["region_0_15"]["inputs"]["images"], ["region_0_60", 0])
+        self.assertEqual([key for key, n in graph.items() if n["class_type"] == "INPAINT_ColorMatch"], ["region_0_14"])
+        self.assertEqual([key for key, n in graph.items() if n["class_type"] == "INPAINT_MaskedBlur"], ["region_0_41"])
+
         self.assertFalse(any(n["class_type"] == "UnetLoaderGGUF" for n in graph.values()))
         mask = np.asarray(uploads[graph["region_0_17"]["inputs"]["image"]])[:, :, 0]
         _, _, generation, blend, _ = areas[0]
         np.testing.assert_array_equal(mask[~generation], 0)
         self.assertTrue(np.any((np.asarray(blend) > 0) & (np.asarray(blend) < 255)))
 
+    def test_edge_pass_preserves_base_nodes_and_reference_model(self):
+        settings = {**profile("illustrious"), "preserveContours": True}
+        for reference in (None, "style.png"):
+            for whole_crop in (False, True):
+                graph = worker.mosaic_workflow("source.png", reference, "mask.png", 22,
+                    settings, (552, 768), "guide.png", 35)
+                if whole_crop:
+                    del graph["14"]
+                    graph["15"]["inputs"]["images"] = ["36", 0]
+                import copy
+                first = copy.deepcopy(graph)
+                worker.add_illustrious_edge_refinement(graph)
+                for key, node in first.items():
+                    if key != "15":
+                        self.assertEqual(graph[key], node)
+                self.assertEqual(graph["59"]["inputs"]["model"], first["13"]["inputs"]["model"])
+                self.assertEqual(graph["61"]["inputs"]["images"], first["15"]["inputs"]["images"])
+                self.assertEqual(graph["57"]["inputs"]["pixels"], ["36", 0])
+                self.assertEqual(graph["15"]["inputs"]["images"], ["60", 0])
+
     async def test_contour_and_legacy_use_different_recovery_ids(self):
         recover = AsyncMock(side_effect=RuntimeError("fixture history lookup"))
         with (patch.object(worker, "validate_mosaic_weights"),
               patch.object(worker, "ready", AsyncMock(return_value=[])),
               patch.object(worker, "recover_image_graph", recover)):
-            for enabled, key in ((False, "illustrious-regions-v4"), (True, "illustrious-contours-v8")):
+            for enabled, key in ((False, "illustrious-regions-v4"), (True, "illustrious-contours-v9")):
                 settings = {**profile("illustrious"), "preserveContours": enabled, "promptId": "fixture-job"}
                 with self.assertRaisesRegex(RuntimeError, "fixture history lookup"):
                     await worker.repair_mosaic(texture(), {"directory": "fixture", "profile": settings,

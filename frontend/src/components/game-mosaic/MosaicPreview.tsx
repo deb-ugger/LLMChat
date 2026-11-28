@@ -71,7 +71,7 @@ function MosaicContourCrop({ source, version, box, index }: {
     })().catch(error => { if (!disposed) setError("裁剪预览失败 · " + String(error)); });
     return () => { disposed = true; };
   }, [source, version, box]);
-  return <div className="game-mosaic-contour-content" aria-label={`区域 ${index + 1} 第一段裁剪对比`}
+  return <div className="game-mosaic-contour-content" aria-label={`区域 ${index + 1} 裁剪对比`}
     style={{ "--contour-crop-aspect": cropAspect } as CSSProperties}>
     <div className="game-mosaic-contour-pair">
       <GameImagePreviewFrame keyboardPane className="game-mosaic-contour-cell" caption="原图裁剪" aria-label="原图裁剪查看">
@@ -79,9 +79,9 @@ function MosaicContourCrop({ source, version, box, index }: {
           <canvas ref={originalCanvas} aria-label="原图裁剪" />
         </ImageCanvas>
       </GameImagePreviewFrame>
-      <GameImagePreviewFrame keyboardPane className="game-mosaic-contour-cell" caption="第一段结果" aria-label="第一段结果查看">
+      <GameImagePreviewFrame keyboardPane className="game-mosaic-contour-cell" caption="重绘结果" aria-label="重绘结果查看">
         <ImageCanvas className="game-mosaic-contour-viewport" stageClassName="game-mosaic-contour-stage">
-          <canvas ref={resultCanvas} aria-label="第一段结果" />
+          <canvas ref={resultCanvas} aria-label="重绘结果" />
         </ImageCanvas>
       </GameImagePreviewFrame>
     </div>
@@ -97,10 +97,10 @@ function MosaicContourCompare({ source, version, maskIndex }: { source: Blob; ve
     if (maskIndex >= 0 && maskIndex < version.boxes.length) setIndex(maskIndex);
   }, [maskIndex, version.boxes.length]);
   const current = Math.min(index, version.boxes.length - 1);
-  return <section className="game-mosaic-contour-compare" data-open={open} aria-label="第一段裁剪对比">
+  return <section className="game-mosaic-contour-compare" data-open={open} aria-label="裁剪对比">
     <header className="game-mosaic-contour-toolbar">
       <button type="button" className="game-mosaic-contour-toggle" aria-expanded={open} aria-controls={contentId}
-        aria-label={(open ? "收起" : "展开") + "第一段裁剪对比"} onClick={() => setOpen(!open)}>第一段裁剪对比</button>
+        aria-label={(open ? "收起" : "展开") + "裁剪对比"} onClick={() => setOpen(!open)}>裁剪对比</button>
       <span className="game-mosaic-contour-sep" aria-hidden="true">·</span>
       <div className="game-mosaic-contour-regions" role="group" aria-label={`当前区域 ${current + 1}，共 ${version.boxes.length} 个`}>
         {version.boxes.map((_, region) => <button key={region} type="button" aria-label={`区域 ${region + 1}`}
