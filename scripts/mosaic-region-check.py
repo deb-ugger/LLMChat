@@ -69,6 +69,27 @@ class RegionGeometry(unittest.TestCase):
         np.testing.assert_array_equal(alpha[110-y:116-y, 190-x:195-x], 0)
         np.testing.assert_array_equal(generation[110-y:116-y, 190-x:195-x], False)
 
+    def test_contour_mask_stays_inside_boxes_and_protection(self):
+        source = texture((220, 160))
+        pixels = np.array(source)
+        pixels[52:55, 43:46, 3] = 0
+        source = Image.fromarray(pixels)
+        regions = [{"box": [40, 50, 60, 70]}, {"box": [65, 50, 85, 70]}]
+        settings = {**profile("illustrious"), "preserveContours": True, "keep": [[50, 60, 55, 65]]}
+        areas = worker.mosaic_redraw_areas(source, regions, settings)
+        for bounds, crop, generation, blend, _ in areas:
+            left, top, _, _ = bounds
+            allowed = np.zeros(generation.shape, bool)
+            for region in regions:
+                x, y, r, b = region["box"]
+                allowed[max(0,y-top):max(0,b-top), max(0,x-left):max(0,r-left)] = True
+            allowed[60-top:65-top, 50-left:55-left] = False
+            allowed &= np.asarray(crop.getchannel("A")) > 0
+            np.testing.assert_array_equal(generation, allowed)
+            np.testing.assert_array_equal(np.asarray(blend)[~allowed], 0)
+            self.assertEqual(np.asarray(blend)[50-top, 40-left], 128)
+            self.assertEqual(np.asarray(blend)[57-top, 48-left], 255)
+
     def test_protected_or_transparent_group_is_skipped(self):
         source = texture()
         regions = [{"box": [20, 20, 40, 40]}, {"box": [400, 100, 430, 130]}]
@@ -110,12 +131,11 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
         self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v4")
 
-    async def test_line_refinement_encodes_first_pass_and_uses_same_mask(self):
+    async def test_contour_recipe_keeps_guide_and_runs_one_pass(self):
+        settings = {**profile("illustrious"), "preserveContours": True, "seed": 923}
         source = texture()
-        settings = {**profile("illustrious"), "lineRefine": True,
-                    "lineRefineWeights": profile("2511-lightning")}
-        areas = worker.mosaic_redraw_areas(source, [{"box": [25, 30, 45, 50]}], settings)
-        first = Image.new("RGB", (1024, 768), (210, 70, 90))
+        regions = [{"box": [25, 30, 45, 50]}]
+        areas = worker.mosaic_redraw_areas(source, regions, settings)
         uploads = {}
 
         async def upload(image, filename=None):
@@ -123,149 +143,30 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             uploads[name] = image.copy()
             return name
 
-        graph, outputs = await worker.mosaic_refinement_graphs(areas, [worker.png(first)], settings, upload)
-        self.assertEqual(outputs, ["region_0_15"])
-        np.testing.assert_array_equal(uploads[graph["region_0_4"]["inputs"]["image"]], first)
-        sampler = graph["region_0_13"]["inputs"]
-        self.assertEqual((sampler["steps"], sampler["cfg"]), (4, 1))
-        self.assertEqual(sampler["latent_image"], ["region_0_19", 0])
-        self.assertEqual(graph["region_0_5"]["inputs"]["width"], 1024)
-        self.assertEqual(graph["region_0_6"]["inputs"]["image1"], ["region_0_5", 0])
-        self.assertEqual(graph["region_0_27"]["inputs"]["latent"], ["region_0_12", 0])
-        self.assertNotIn("region_0_16", graph)
-        self.assertFalse(any(n["class_type"] in ("CheckpointLoaderSimple", "INPAINT_ColorMatch") for n in graph.values()))
-        prompt = graph["region_0_6"]["inputs"]["prompt"]
-        self.assertIn("hard-edged cel shading", prompt)
-        self.assertNotIn("mosaic", prompt)
-        self.assertNotIn("reconstruct", prompt)
+        graph, _ = await worker.mosaic_region_graphs(source, areas, settings, 22, upload)
+        self.assertEqual([n["inputs"]["steps"] for n in graph.values() if n["class_type"] == "KSampler"], [22])
+        self.assertEqual(graph["region_0_13"]["inputs"]["seed"], 923)
+        self.assertEqual(graph["region_0_13"]["inputs"]["denoise"], .45)
+        self.assertEqual(graph["region_0_41"]["inputs"]["blur"], 9)
+        self.assertEqual(graph["region_0_35"]["inputs"]["end_percent"], 1)
+        self.assertFalse(any(n["class_type"] == "UnetLoaderGGUF" for n in graph.values()))
         mask = np.asarray(uploads[graph["region_0_17"]["inputs"]["image"]])[:, :, 0]
         _, _, generation, blend, _ = areas[0]
-        np.testing.assert_array_equal(mask[np.asarray(blend) == 255], 255)
         np.testing.assert_array_equal(mask[~generation], 0)
+        self.assertTrue(np.any((np.asarray(blend) > 0) & (np.asarray(blend) < 255)))
 
-    async def test_line_refinement_uses_separate_comfy_job_identifier(self):
-        recover = AsyncMock(side_effect=RuntimeError("fixture reached history lookup"))
-        with (
-            patch.object(worker, "validate_mosaic_weights"),
-            patch.object(worker, "ready", AsyncMock(return_value=[])),
-            patch.object(worker, "recover_image_graph", recover),
-        ):
-            for enabled, version in ((False, "v4"), (True, "v6-base")):
-                settings = {**profile("illustrious"), "lineRefine": enabled, "promptId": "fixture-job"}
-                data = {"directory": "fixture", "profile": settings, "regions": [{"box": [25, 30, 45, 50]}]}
-                with self.assertRaisesRegex(RuntimeError, "fixture reached history lookup"):
-                    await worker.repair_mosaic(texture(), data, 26 if enabled else 22, [])
-                expected = uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:illustrious-regions-{version}:fixture-job")
+    async def test_contour_and_legacy_use_different_recovery_ids(self):
+        recover = AsyncMock(side_effect=RuntimeError("fixture history lookup"))
+        with (patch.object(worker, "validate_mosaic_weights"),
+              patch.object(worker, "ready", AsyncMock(return_value=[])),
+              patch.object(worker, "recover_image_graph", recover)):
+            for enabled, key in ((False, "illustrious-regions-v4"), (True, "illustrious-contours-v7")):
+                settings = {**profile("illustrious"), "preserveContours": enabled, "promptId": "fixture-job"}
+                with self.assertRaisesRegex(RuntimeError, "fixture history lookup"):
+                    await worker.repair_mosaic(texture(), {"directory": "fixture", "profile": settings,
+                        "regions": [{"box": [25, 30, 45, 50]}]}, 22, [])
+                expected = uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{key}:fixture-job")
                 self.assertEqual(recover.call_args.args[1], str(expected))
-
-    async def test_line_refinement_runs_two_stages_and_recovers_first_on_retry(self):
-        source = texture((220, 160))
-        settings = {**profile("illustrious"), "lineRefine": True, "promptId": "fixture-job",
-                    "lineRefineWeights": profile("2511-lightning")}
-        data = {"directory": "fixture", "profile": settings,
-                "regions": [{"box": [40, 50, 50, 60]}, {"box": [170, 50, 180, 60]}]}
-        history, submissions, uploads = {}, [], {}
-        fail_edit = True
-
-        async def upload(session, image, **kwargs):
-            name = str(len(uploads)) + ".png"
-            uploads[name] = image.copy()
-            return name
-
-        async def recover(session, pid, output, label, times, cancel_path):
-            record = history.get(pid)
-            if record:
-                times.append(100)
-                return record[output], record
-            return None, None
-
-        async def run(session, graph, output, label, times, submitted, **kwargs):
-            nonlocal fail_edit
-            edit = any(n["class_type"] == "UnetLoaderGGUF" for n in graph.values())
-            submissions.append("edit" if edit else "base")
-            if edit and fail_edit:
-                fail_edit = False
-                raise RuntimeError("fixture Edit failure")
-            record = {}
-            for index in range(2):
-                if edit:
-                    inputs = graph[f"region_{index}_4"]["inputs"]
-                    first = uploads[inputs["image"]]
-                    self.assertEqual(first.getpixel((0, 0)), (100 + index, 60, 80))
-                    size = first.size
-                else:
-                    self.assertEqual(graph[f"region_{index}_13"]["inputs"]["steps"], 22)
-                    size = (768, 512)
-                record[f"region_{index}_15"] = worker.png(Image.new("RGB", size, (100 + index, 60, 80)))
-            record["15"] = record["region_0_15"]
-            history[kwargs["resume_id"]] = record
-            submitted.append(kwargs["resume_id"])
-            times.append(100)
-            return record[output]
-
-        async def read_image(session, record, output, times, **kwargs):
-            return record.get(output)
-
-        unload = AsyncMock()
-        with (
-            patch.object(worker, "validate_mosaic_weights"),
-            patch.object(worker, "ready", AsyncMock(return_value=[])),
-            patch.object(worker, "upload_image", upload),
-            patch.object(worker, "recover_image_graph", recover),
-            patch.object(worker, "run_image_graph", run),
-            patch.object(worker, "read_graph_history", AsyncMock(side_effect=lambda session, pid: history[pid])),
-            patch.object(worker, "graph_history_image", read_image),
-            patch.object(worker, "unload_mosaic_models", unload),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "fixture Edit failure"):
-                await worker.repair_mosaic(source, data, 26, [])
-            result = await worker.repair_mosaic(source, data, 26, [])
-            self.assertEqual(submissions, ["base", "edit", "edit"])
-            self.assertEqual(unload.await_count, 2)
-            times = []
-            repeated = await worker.repair_mosaic(source, data, 26, times)
-            self.assertEqual(submissions, ["base", "edit", "edit"])
-            self.assertEqual(times, [100, 100])
-            np.testing.assert_array_equal(result, repeated)
-            support = np.zeros((source.height, source.width), bool)
-            for bounds, _, _, blend, _ in worker.mosaic_redraw_areas(source, data["regions"], settings):
-                left, top, right, bottom = bounds
-                support[top:bottom, left:right] |= np.asarray(blend) > 0
-            np.testing.assert_array_equal(np.asarray(result)[~support], np.asarray(source)[~support])
-            np.testing.assert_array_equal(np.asarray(result)[:, :, 3], np.asarray(source)[:, :, 3])
-
-    async def test_unload_synchronizes_queue_before_edit_and_honors_cancel(self):
-        events = []
-
-        class Response:
-            async def __aenter__(self):
-                events.append("free")
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            def raise_for_status(self):
-                pass
-
-        class Session:
-            def post(self, url, **kwargs):
-                self.body = kwargs["json"]
-                return Response()
-
-        async def run(session, graph, *args, **kwargs):
-            events.append("barrier")
-            self.assertEqual([n["class_type"] for n in graph.values()], ["LoadImage", "PreviewImage"])
-
-        session = Session()
-        with patch.object(worker, "run_image_graph", run):
-            await worker.unload_mosaic_models(session, AsyncMock(return_value="tiny.png"), [], None)
-        self.assertEqual(events, ["free", "barrier"])
-        self.assertEqual(session.body, {"unload_models": True, "free_memory": True})
-        with patch.object(worker, "mosaic_cancelled", return_value=True):
-            with self.assertRaisesRegex(RuntimeError, "已取消"):
-                await worker.unload_mosaic_models(session, AsyncMock(), [], "cancel-marker")
-        self.assertEqual(events, ["free", "barrier"])
 
     async def test_illustrious_passes_reference_to_masked_style_adapter(self):
         source = texture()
@@ -327,20 +228,6 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "缺少本地权重") as caught:
                     worker.validate_mosaic_weights("fixture", {**settings, "referenceImage": "fixture"})
                 self.assertIn(missing, str(caught.exception))
-
-    def test_line_refinement_requires_edit_weights_and_lightning_lora(self):
-        settings = {**profile("illustrious"), "lineRefine": True,
-                    "lineRefineWeights": profile("2511-lightning")}
-        missing = Path("fixture/ComfyUI/models/loras") / worker.EDIT_LIGHTNING_LORA
-        with patch.object(Path, "is_file", lambda path: path != missing):
-            with self.assertRaisesRegex(ValueError, "Lightning-4steps"):
-                worker.validate_mosaic_weights("fixture", settings)
-        with self.assertRaisesRegex(ValueError, "权重配置"):
-            worker.validate_mosaic_weights("fixture", {**settings, "lineRefineWeights": {}})
-
-    async def test_two_stage_workflow_export_reports_required_execution_mode(self):
-        with self.assertRaisesRegex(ValueError, "分两次任务"):
-            await worker.prepare_mosaic_workflow(texture(), {"profile": {"lineRefine": True}}, 26)
 
     async def test_every_model_graph_has_independent_crops(self):
         source = texture()
@@ -408,7 +295,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_recovery_composition_and_missing_patch(self):
         source = texture((220, 160))
         original = np.asarray(source)
-        data = {"directory": "fixture", "profile": profile(), "promptId": "fixture-job",
+        data = {"directory": "fixture", "profile": {**profile("illustrious"), "preserveContours": True}, "promptId": "fixture-job",
                 "regions": [{"box": [40, 50, 50, 60]}, {"box": [95, 50, 105, 60]}]}
         history = {}
         images = {}
@@ -455,6 +342,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(worker.aiohttp, "ClientSession", return_value=Session()),
+            patch.object(worker, "validate_mosaic_weights"),
             patch.multiple(worker, ready=ready, upload_image=upload, recover_image_graph=recovered,
                            run_image_graph=run, read_graph_history=read_history, graph_history_image=read_image),
         ):
@@ -468,6 +356,11 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             for bounds, _, _, blend, _ in worker.mosaic_redraw_areas(source, data["regions"], data["profile"]):
                 left, top, right, bottom = bounds
                 support[top:bottom, left:right] |= np.asarray(blend) > 0
+            user_mask = np.zeros(original.shape[:2], bool)
+            for region in data["regions"]:
+                left, top, right, bottom = region["box"]
+                user_mask[top:bottom, left:right] = True
+            np.testing.assert_array_equal(repaired[~user_mask], original[~user_mask])
             np.testing.assert_array_equal(repaired[~support], original[~support])
             np.testing.assert_array_equal(repaired[:, :, 3], original[:, :, 3])
             repeated_times = []

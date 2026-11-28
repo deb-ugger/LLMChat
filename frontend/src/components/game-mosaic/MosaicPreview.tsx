@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { mosaicModelLabels, type MosaicModel } from "../../gameMosaic";
+import { mosaicModelLabels, type MosaicBox, type MosaicModel } from "../../gameMosaic";
 import { getFixedMenuPoint } from "../../viewportLayout";
 import { showAppNotice } from "../AppNotice";
 import { ImageCanvas } from "../ImageCanvas";
@@ -32,6 +32,50 @@ function MosaicResultImage({ src, alt }: { src: string; alt: string }) {
     <ImageCanvas className="game-mosaic-image-area" stageClassName="unity-image-stage game-mosaic-stage">
       <img src={src} alt={alt} draggable={false} />
     </ImageCanvas>
+  </div>;
+}
+
+function MosaicContourCrop({ source, version, box, index }: {
+  source: Blob; version: ResultVersion; box: MosaicBox; index: number;
+}) {
+  const originalCanvas = useRef<HTMLCanvasElement>(null);
+  const resultCanvas = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let disposed = false;
+    setError("");
+    void (async () => {
+      const original = await createImageBitmap(source);
+      try {
+        const result = await createImageBitmap(version.blob);
+        try {
+          if (disposed) return;
+          const left = Math.max(0, box[0] - 48);
+          const top = Math.max(0, box[1] - 48);
+          const width = Math.min(original.width, box[2] + 48) - left;
+          const height = Math.min(original.height, box[3] + 48) - top;
+          for (const [canvas, image] of [[originalCanvas.current, original], [resultCanvas.current, result]] as const) {
+            if (!canvas) continue;
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d")!;
+            context.drawImage(image, left, top, width, height, 0, 0, width, height);
+            context.strokeStyle = "#e5484d";
+            context.lineWidth = 1;
+            context.strokeRect(box[0] - left, box[1] - top, box[2] - box[0], box[3] - box[1]);
+          }
+        } finally { result.close(); }
+      } finally { original.close(); }
+    })().catch(error => { if (!disposed) setError("裁剪预览失败 · " + String(error)); });
+    return () => { disposed = true; };
+  }, [source, version, box]);
+  return <div aria-label={`区域 ${index + 1} 第一段裁剪对比`}>
+    <p className="hint">区域 {index + 1} · 检查红框内轮廓和遮挡，确认后采用</p>
+    <div className="unity-image-previews">
+      <div><p className="hint">原图裁剪</p><canvas ref={originalCanvas} aria-label="原图裁剪" style={{ width: "100%", height: "auto" }} /></div>
+      <div><p className="hint">第一段结果</p><canvas ref={resultCanvas} aria-label="第一段结果" style={{ width: "100%", height: "auto" }} /></div>
+    </div>
+    {error && <p className="game-mosaic-error" role="alert">{error}</p>}
   </div>;
 }
 
@@ -183,7 +227,7 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         <div className="game-mosaic-detail-row">
           <div key={active.id} className="game-mosaic-redraw-split" data-output-handled role="group" aria-label="重绘当前图">
             <button type="button" className="unity-btn unity-btn-primary" disabled={!!redrawReason}
-              data-tooltip={["使用左侧选定的 " + mosaicModelLabels[model] + " 重绘并保存当前图片", redrawReason || testTitle].filter(Boolean).join("\n")}
+              data-tooltip={[model === "illustrious-line-refine" ? "生成轮廓候选，检查裁剪后采用" : "使用左侧选定的 " + mosaicModelLabels[model] + " 重绘并保存当前图片", redrawReason || testTitle].filter(Boolean).join("\n")}
               onClick={() => onRedraw([model])}>重绘</button>
             <button type="button" className="unity-btn unity-btn-primary" aria-label="选择重绘工作流"
               disabled={!!redrawReason} data-tooltip={redrawReason} popoverTarget={redrawMenuId}>▾</button>
@@ -287,6 +331,12 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
         aria-label="预览图片操作" style={{ inset: "auto", margin: 0 }}>
         <button type="button" role="menuitem" onClick={() => void copyPreviewImage()}>复制图片</button>
       </div>
+      {!showSaved && preferredVersion?.model === "illustrious-line-refine" && original?.blob &&
+        <details open style={{ maxHeight: "40vh", overflow: "auto" }}>
+          <summary>第一段裁剪对比</summary>
+          {preferredVersion.boxes.map((box, index) => <MosaicContourCrop key={preferredVersion.id + ":" + index}
+            source={original.blob!} version={preferredVersion} box={box} index={index} />)}
+        </details>}
       {footer}
     </section>}
   </>;

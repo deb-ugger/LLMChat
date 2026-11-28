@@ -1014,13 +1014,13 @@ export function GameMosaicWorkbench({ settings, gamePath, images, backupMode, st
       resolveTargets: createMosaicTargetResolver(gamePath, plan.regionTargeting, rows, () => settings || api.getSettings()),
       onCandidate: async (image, version) => {
         if (redrawCancelRequested.current) throw new Error("重绘任务已取消");
-        if (plan.manualRedraw) await saveAdoptedRedraw(image, version.blob, signal, true);
+        if (plan.manualRedraw && version.model !== "illustrious-line-refine") await saveAdoptedRedraw(image, version.blob, signal, true);
         const current = candidateRows.current[image.id];
         const versions = current?.revision === image.sourceHash ? current.versions : [];
         const candidate = { revision: image.sourceHash, versions: [...versions.filter(item => item.id !== version.id), version] };
         await enqueueArchiveWrite(() => writeMosaicRedrawCandidates(gamePath, [[image.id, candidate]]));
         updateCandidates({ ...candidateRows.current, [image.id]: candidate });
-        if (!plan.manualRedraw && isPreviewing(image)) setPreferredResult(version.id);
+        if ((!plan.manualRedraw || version.model === "illustrious-line-refine") && isPreviewing(image)) setPreferredResult(version.id);
       },
     }), { id: "redraw", targets: plan.targets.map(target => target.image), total, completed: initial, summary, parameters: [
       ...plan.models.map((engine): BenchmarkParameter => ({

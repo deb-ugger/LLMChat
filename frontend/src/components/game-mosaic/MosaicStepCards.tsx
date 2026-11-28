@@ -1,7 +1,7 @@
 import { MosaicScreeningFields } from "./MosaicScreeningFields";
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import type { BenchmarkState } from "../../benchmark/benchmarkRunner";
-import { mosaicDefaultSteps, mosaicLineRefineSteps, mosaicModelChoices, mosaicModelLabels, mosaicRefineConcurrencyChoices, mosaicUsesFixedSteps, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicModelLabels, mosaicRefineConcurrencyChoices, mosaicUsesFixedSteps, type MosaicModel, type MosaicSettings } from "../../gameMosaic";
 import { gameDuration, type StepPerformance } from "../../gameModelPerformance";
 import { GameFlowCard, GameFlowNumberChip, GameFlowParameterGroup, GameFlowParameterValue, useGameFlowExpansion } from "../GameFlowCard";
 import { GameFlowPerformance } from "../GameFlowSequence";
@@ -278,7 +278,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
           </select></label>
           <div className="game-flow-chip-row">
             {model === "illustrious-line-refine" ? <GameFlowParameterValue label="步数"
-              value={`${mosaicDefaultSteps.illustrious} 步重绘 + ${mosaicLineRefineSteps} 步精修`} />
+              value={`${mosaicDefaultSteps.illustrious} 步重绘`} />
               : model !== "turbo" && model !== "2511-lightning" && <GameFlowNumberChip label="步数" min={1} max={100}
                 value={steps} disabled={busy || mosaicUsesFixedSteps(model)} onChange={steps => changePreferences({ steps })} />}
           </div>
