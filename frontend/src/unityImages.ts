@@ -282,8 +282,9 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
     recognitionGroups = [...groups.values()];
   }
   const cache = new Map<string, string>();
+  const translationKey = (image: UnityImage, text: string) => JSON.stringify([image.sourceHash || image.id, text]);
   let savedTranslations: Map<string, string[]> | undefined;
-  const findSavedTranslation = (text: string) => {
+  const findSavedTranslation = (text: string, image: UnityImage) => {
     if (services.reuseTranslations === false) return;
     if (!savedTranslations) {
       const index = new Map<string, string[]>();
@@ -294,36 +295,36 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         else index.set(source, [value.translation]);
       };
       // Read the input project so edits made by this run cannot become saved candidates.
-      for (const entry of project.entries) remember(entry.source, entry);
-      for (const image of project.images || []) for (const region of image.regions) remember(region.text, region);
+      for (const image of project.images || []) for (const region of image.regions) remember(translationKey(image, region.text), region);
       savedTranslations = index;
     }
-    const values = savedTranslations.get(text);
-    savedTranslations.delete(text);
-    // Keep the existing priority: the last valid saved translation wins.
+    const key = translationKey(image, text);
+    const values = savedTranslations.get(key);
+    savedTranslations.delete(key);
     if (!values) return;
-    for (let i = values.length - 1; i >= 0; --i) {
-      if (!validate(text, values[i])) return values[i];
-    }
+    const candidates = [...new Set(values.filter(value => !validate(text, value)))];
+    if (candidates.length > 1) throw new Error("同一原图的原文存在多个有效译名，请确认后再复用：" + text);
+    return candidates[0];
   };
   const pendingTranslations=new Map<string,Promise<string>>();
-  const translateText = (text: string) => {
-    const existing = cache.get(text);
+  const translateText = (text: string, image: UnityImage) => {
+    const key = translationKey(image, text);
+    const existing = cache.get(key);
     if (existing !== undefined) return Promise.resolve(existing);
-    const pending = pendingTranslations.get(text);
+    const pending = pendingTranslations.get(key);
     if (pending) return pending;
-    const saved = findSavedTranslation(text);
+    const saved = findSavedTranslation(text, image);
     if (saved !== undefined) {
-      cache.set(text, saved);
+      cache.set(key, saved);
       return Promise.resolve(saved);
     }
     const request = services.translate(text).then(value => {
       const error = validate(text, value);
       if (error) throw new Error(error);
-      cache.set(text, value);
+      cache.set(key, value);
       return value;
-    }).finally(() => pendingTranslations.delete(text));
-    pendingTranslations.set(text, request);
+    }).finally(() => pendingTranslations.delete(key));
+    pendingTranslations.set(key, request);
     return request;
   };
   let completed = images.filter(imageDone).length;
@@ -372,7 +373,7 @@ export async function processUnityImages(project: UnityProject, signal: AbortSig
         };
         report(`${image.name} · 翻译文字 ${regionNumber} / ${selectedRegions.length}`);
         try {
-          const translation = await translateText(region.text); signal.throwIfAborted();
+          const translation = await translateText(region.text, image); signal.throwIfAborted();
           region.translation = translation; region.translationTarget = target; region.error = "";
         } catch (error) {
           if (signal.aborted) throw error;

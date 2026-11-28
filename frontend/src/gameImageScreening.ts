@@ -77,8 +77,9 @@ export function needsGameImageRefinement(image: UnityImage, key: string) {
   const state = screening?.beforeRefine?.state ?? screening?.state;
   const changed = !imageRefinementKeyMatches(screening?.refineKey, key);
   const previousAutomaticReview = !!screening?.refineKey && !!screening.beforeRefine && changed;
+  const missed = state === "no-text" || state === "not-needed" && /^粗筛跳过 /.test(screening?.beforeRefine?.reason ?? screening?.reason ?? "");
   return !!image.sourceFile && !image.completed && !image.ocrCompleted && !imageManuallyExcluded(image) && !screening?.manualGroup &&
-    selectedScreeningState(state) && (screening?.state !== "review" || screening.reviewSelected !== false || previousAutomaticReview) &&
+    (selectedScreeningState(state) || missed) && (screening?.state !== "review" || screening.reviewSelected !== false || previousAutomaticReview) &&
     (changed || !!screening?.refineFailed);
 }
 
@@ -371,7 +372,7 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
   const counts = { candidate: 0, review: 0, "no-text": 0, "not-needed": 0, failed: 0 };
   let promoted = 0, removed = 0, changed = 0, unchanged = 0;
   const method = options.local ? "本地复筛" : "视觉模型复筛";
-  progress({ completed, total, detail: "正在复筛待复核和待正式识别的图片" });
+  progress({ completed, total, detail: "正在复筛候选图片并补查未发现文字的图片" });
   try {
     const results = await Promise.allSettled(Array.from({ length: Math.min(options.concurrency || 1, total) }, async (_, worker) => {
       while (next < total) {
@@ -384,11 +385,6 @@ export async function refineGameImages(images: UnityImage[], signal: AbortSignal
           const result = await recognizeBytes(image, blob, () => services.recognize(blob, worker));
           signal.throwIfAborted();
           const classification = classifyGameImage(image, result, { ...options, source: options.source ?? initial.source, target: options.target ?? initial.target });
-          if (options.local && classification.state === "review" && !result.presence &&
-              !result.lines.some(line => line.confidence >= (options.confidenceThreshold ?? 50) && /\p{L}/u.test(line.text))) {
-            classification.state = "no-text";
-            classification.reason = "复筛未识别到可信文字";
-          }
           screening = { ...initial, ...classification, reviewSelected: false, presence: result.presence, boxes: result.presence ? initial.boxes : result.detectedBoxes, reason: method + "：" + classification.reason,
             beforeRefine: { state: initial.state, reason: initial.reason, boxes: initial.boxes }, refineKey: options.refineKey };
         } catch (error) {

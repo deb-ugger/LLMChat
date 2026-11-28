@@ -4,7 +4,7 @@ import { API_BASE, type OcrMode, type Settings, type TranslateProvider } from ".
 import { gameTextMatchesSource, gameTextNeedsNoTranslation } from "./gameDisplayText";
 import { classifyGameImagePresence, gameImageTranslationProblem, recognizeGameImage, renderGameImage } from "./gameImageModel";
 import { recognizeLocalGameImage } from "./gameImageRecognitionInput";
-import { classifyImageText, clearGameImageRefinement, refineGameImages, screenGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, localGameImageScreeningLanes, type LocalRefineMode } from "./gameImageScreening";
+import { classifyImageText, clearGameImageRefinement, needsGameImageRefinement, refineGameImages, screenGameImages, createLocalImageRefiner, LOCAL_REFINE_MODELS, localGameImageScreeningLanes, type LocalRefineMode } from "./gameImageScreening";
 import { measureGameAsync, rememberBenchmarkExecution } from "./gameModelPerformance";
 import { translateGameWithOllama, prepareGameOllamaParallel, reportRefinementGpu, type OllamaOutput } from "./gameOllama";
 import { gameTaskPrompt, type GamePromptScene } from "./gamePrompts";
@@ -41,7 +41,7 @@ const failedRegion = (region: UnityImage["regions"][number]) => region.selected 
 
 export function imageBenchmarkRows(step: ImageBenchmarkStep, selected: UnityImage[]) {
   return selected.filter(image => !!image.sourceFile && unityImageParticipates(image) && (
-    step === "refine" ? ["candidate", "review"].includes(clearGameImageRefinement(image).screening?.state || "") :
+    step === "refine" ? needsGameImageRefinement(clearGameImageRefinement(image), "benchmark-refinement") :
     step === "imageTranslate" ? image.ocrCompleted && image.regions.some(region => region.selected) :
     step === "review" ? image.ocrCompleted && image.regions.some(failedRegion) :
     step === "render" ? image.ocrCompleted && image.regions.some(region => region.selected && !!region.translation.trim()) : true

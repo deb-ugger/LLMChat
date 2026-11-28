@@ -308,7 +308,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
   const refineConfidence = Number(stageModels.refineConfidence || "50");
   const refineLimits = imagePresenceThresholds(refineConfidence);
   const refineThresholdHint = `当前阈值 ${refineConfidence}%。文字存在概率${refineLimits.text === 50 ? "＞" : "≥"}${refineLimits.text}%判有字，${refineLimits.noText === 50 ? "＜" : "≤"}${refineLimits.noText}%判无字，其余待复核。`;
-  const refineKey = refineMethod === "off" ? undefined : JSON.stringify([refineMethod, refineConfidence, refineMethod === "llm" ? "text-probability-1024-1600-v2" : "local-evidence-v2",
+  const refineKey = refineMethod === "off" ? undefined : JSON.stringify([refineMethod, refineConfidence, refineMethod === "llm" ? "text-probability-negative-audit-v3" : "local-evidence-negative-audit-v3",
     refineMethod === "local" ? refineOcr.id : [refineModel, promptState.selection.refine || "builtin:refine"]]);
   const screen=async(controller:AbortController,resume=false)=>{if(stageModels.filter!==undefined&&!stageModels.filter)throw new Error("请选择筛选视觉模型");task.select({kind:"screen",options:{backend,strategy,mode,source,target,concurrency,provider,translationKind,translationModel,reviewModel,onlySourceLanguage,skipTargetLanguage}});const base=current.current;if(!base)return;
     const screeningLanes=stageModels.filter?modelConcurrency(promptState.scope,"screen",stageModels.filter):localGameImageScreeningLanes(concurrency);
@@ -1048,7 +1048,7 @@ export function GameImageWorkbench({ handle, gamePath, settings, backupMode, mos
               setStageModels(previous => ({ ...previous, refineConfidence: value === "" ? "" : String(Math.min(100, Math.max(0, Math.round(Number(value))))) }));
             }} />
         </label>}
-        <p className="hint">复筛「待复核」和「待正式识别」的图片。{refineMethod === "llm" && "只判断文字是否存在，先用 1024 尺寸，判断把握低时再以 1600 尺寸复查。"}</p>
+        <p className="hint">复筛候选及待复核图片，同时补查初筛未发现文字和按素材目录跳过的图片。手动排除的图片保留选择。{refineMethod === "llm" && "先以 1024 尺寸判断文字是否存在，把握低时再以 1600 尺寸复查。"}</p>
       </div>}
       {processingSettings && <>
         <GameFlowParameterGroup kind="models">{processingSettings.models}</GameFlowParameterGroup>
