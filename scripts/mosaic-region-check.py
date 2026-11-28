@@ -4,7 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+import uuid
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 from PIL import Image
@@ -108,6 +109,57 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
         self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v4")
+
+    async def test_illustrious_line_refinement_uses_v4_output_and_outside_tile(self):
+        source = texture()
+        reference = base64.b64encode(worker.png(source)).decode("ascii")
+
+        async def upload(image, filename=None):
+            return filename or "fixture.png"
+
+        for box, reference_image, first_output in (
+            ([25, 30, 45, 50], None, "14"),
+            ([25, 30, 45, 50], reference, "14"),
+            ([0, 0, source.width, source.height], None, "36"),
+        ):
+            settings = {**profile("illustrious"), "referenceImage": reference_image}
+            areas = worker.mosaic_redraw_areas(source, [{"box": box}], settings)
+            first, _ = await worker.mosaic_region_graphs(source, areas, settings, 22, upload)
+            refined, outputs = await worker.mosaic_region_graphs(source, areas, {**settings, "lineRefine": True}, 32, upload)
+            self.assertEqual(outputs, ["region_0_15"])
+            for key, node in first.items():
+                if node["class_type"] != "PreviewImage":
+                    self.assertEqual(refined[key], node)
+
+            passed_image = ["region_0_" + first_output, 0]
+            self.assertEqual(refined["region_0_57"]["inputs"]["pixels"], passed_image)
+            self.assertEqual(refined["region_0_61"]["inputs"]["reference"], passed_image)
+            self.assertEqual(refined["region_0_61"]["inputs"]["exclude_mask"], ["region_0_54", 0])
+            self.assertEqual(refined["region_0_55"]["inputs"]["image"], ["region_0_53", 0])
+            self.assertEqual(refined["region_0_53"]["inputs"]["mask"], ["region_0_45", 0])
+            self.assertEqual(refined["region_0_58"]["inputs"]["mask_optional"], ["region_0_54", 0])
+            self.assertEqual(refined["region_0_54"]["class_type"], "InvertMask")
+            self.assertEqual(refined["region_0_54"]["inputs"]["mask"], ["region_0_45", 0])
+            sampler = refined["region_0_59"]["inputs"]
+            self.assertEqual(sampler["model"], first["region_0_13"]["inputs"]["model"])
+            self.assertEqual((sampler["steps"], sampler["denoise"]), (10, .30))
+            self.assertNotIn("smooth surface", refined["region_0_51"]["inputs"]["text"])
+            self.assertEqual(refined["15"]["inputs"]["images"], ["region_0_61", 0])
+
+    async def test_line_refinement_uses_separate_comfy_job_identifier(self):
+        recover = AsyncMock(side_effect=RuntimeError("fixture reached history lookup"))
+        with (
+            patch.object(worker, "validate_mosaic_weights"),
+            patch.object(worker, "ready", AsyncMock(return_value=[])),
+            patch.object(worker, "recover_image_graph", recover),
+        ):
+            for enabled, version in ((False, "v4"), (True, "v5")):
+                settings = {**profile("illustrious"), "lineRefine": enabled, "promptId": "fixture-job"}
+                data = {"directory": "fixture", "profile": settings, "regions": [{"box": [25, 30, 45, 50]}]}
+                with self.assertRaisesRegex(RuntimeError, "fixture reached history lookup"):
+                    await worker.repair_mosaic(texture(), data, 32 if enabled else 22, [])
+                expected = uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:illustrious-regions-{version}:fixture-job")
+                self.assertEqual(recover.call_args.args[1], str(expected))
 
     async def test_illustrious_passes_reference_to_masked_style_adapter(self):
         source = texture()
@@ -216,7 +268,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 return False
 
         source = texture()
-        data = {"directory": "fixture", "profile": profile("illustrious"),
+        data = {"directory": "fixture", "profile": {**profile("illustrious"), "lineRefine": True},
                 "regions": [{"box": [25, 30, 45, 50]}, {"box": [440, 100, 470, 130]}]}
         with (
             patch.object(worker.aiohttp, "ClientSession", return_value=Session()),
@@ -224,16 +276,14 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             patch.object(worker, "upload_image", upload),
             patch.object(worker, "validate_mosaic_weights"),
         ):
-            graph = await worker.prepare_mosaic_workflow(source, data, 8)
+            graph = await worker.prepare_mosaic_workflow(source, data, 32)
         composites = [(key, node) for key, node in graph.items() if node["class_type"] == "ImageCompositeMasked"]
         self.assertEqual(composites[1][1]["inputs"]["destination"], [composites[0][0], 0])
         self.assertEqual(graph["15"]["inputs"]["images"], [composites[-1][0], 0])
         self.assertTrue(all(key.isdecimal() for key in graph))
         self.assertEqual([key for key, node in graph.items() if node["class_type"] == "PreviewImage"], ["15"])
-        tile_inputs = [node["inputs"]["image"][0] for node in graph.values()
-                       if node["class_type"] == "ACN_ControlNet++InputNode"]
-        self.assertEqual(len(tile_inputs), len(composites))
-        self.assertTrue(all(graph[key]["class_type"] == "INPAINT_MaskedBlur" for key in tile_inputs))
+        self.assertEqual([node["inputs"]["steps"] for node in graph.values() if node["class_type"] == "KSampler"],
+                         [22, 10, 22, 10])
 
     async def test_runtime_recovery_composition_and_missing_patch(self):
         source = texture((220, 160))

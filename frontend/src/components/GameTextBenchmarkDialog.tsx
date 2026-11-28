@@ -14,7 +14,7 @@ import { formalHistoryResults, formalRecordProject, formalRecordStep } from "../
 import { ImageSampleSetBrowser } from "./ImageSampleSetBrowser";
 import { defaultModelFilter, ModelFilterSelect, usePersistedModelFilter } from "./ModelFilterSelect";
 import { createMosaicRefinePresetConfigs, mosaicBenchmarkSteps, type MosaicBenchmarkStep } from "../gameMosaicBenchmark";
-import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, readMosaicSettings, type MosaicSettings } from "../gameMosaic";
+import { mosaicDefaultSteps, mosaicModelChoices, mosaicRefineConcurrencyChoices, mosaicUsesFixedSteps, readMosaicSettings, type MosaicSettings } from "../gameMosaic";
 import { LOCAL_REFINE_MODELS } from "../gameImageScreening";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
@@ -1025,7 +1025,7 @@ function BenchmarkConfigCards({ step, configs, setConfigs, readOnly, started, co
             }}>
               {mosaicModelChoices.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
             </select></label>
-            <label>步数<input type="number" min={1} max={100} value={config.mosaic.steps}
+            <label>步数<input type="number" min={1} max={100} value={config.mosaic.steps} disabled={mosaicUsesFixedSteps(config.mosaic.model)}
               onChange={event => changeMosaic(config.id, { steps: Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)))) })} /></label>
             <label>保护已识别文字<input type="checkbox" checked={config.mosaic.protect} onChange={event => changeMosaic(config.id, { protect: event.target.checked })} /></label>
           </>}

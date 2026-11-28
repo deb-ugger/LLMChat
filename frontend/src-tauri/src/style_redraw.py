@@ -581,6 +581,7 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
                         "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v4"}
+ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY = "illustrious-regions-v5"
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
                        "controlnet/controlnet-union-sdxl-1.0.safetensors")
@@ -659,6 +660,36 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
                            start_at=0.4, end_at=0.85, embeds_scaling="V only")
         graph["13"]["inputs"]["model"] = ["40", 0]
     return graph
+
+
+def add_illustrious_line_refinement(graph):
+    def node(kind, **inputs):
+        return {"class_type": kind, "inputs": inputs}
+
+    first_image = graph["15"]["inputs"]["images"]
+    first_sampler = graph["13"]["inputs"]
+    graph.update({
+        "51": node("CLIPTextEncode", clip=["30", 1],
+                   text="anime illustration, crisp ink outlines, defined linework, hard-edged highlights, "
+                        "line weight and cel shading matching the surrounding illustration, consistent colors and material"),
+        "52": node("CLIPTextEncode", clip=["30", 1],
+                   text="soft focus, blurred contours, airbrushed shading, pixelation, smeared colors, broken outlines, unrelated objects"),
+        # Exclude the covered source pixels from both the Tile image and its area of influence.
+        "53": node("INPAINT_MaskedFill", image=["5", 0], mask=["45", 0], fill="neutral", falloff=0),
+        "54": node("InvertMask", mask=["45", 0]),
+        "55": node("ACN_ControlNet++InputNode", image=["53", 0], control_type="tile"),
+        "56": node("ACN_ControlNet++LoaderAdvanced", plus_input=["55", 0], name=graph["33"]["inputs"]["name"]),
+        "57": node("InpaintModelConditioning", positive=["51", 0], negative=["52", 0], vae=["30", 2],
+                   pixels=first_image, mask=["5", 1], noise_mask=True),
+        "58": node("ACN_AdvancedControlNetApply_v2", positive=["57", 0], negative=["57", 1], control_net=["56", 0],
+                   image=["56", 1], mask_optional=["54", 0], strength=0.45, start_percent=0.0, end_percent=1.0),
+        "59": node("KSampler", **{**first_sampler, "steps": 10, "denoise": 0.30,
+                                  "positive": ["58", 0], "negative": ["58", 1], "latent_image": ["57", 2]}),
+        "60": node("VAEDecode", samples=["59", 0], vae=["30", 2]),
+        "61": node("INPAINT_ColorMatch", target=["60", 0], reference=first_image, exclude_mask=["54", 0], strength=1.0),
+    })
+    graph["59"]["_meta"] = {"title": "线条精修"}
+    graph["15"]["inputs"]["images"] = ["61", 0]
 
 
 def mosaic_target_prompt(profile):
@@ -790,6 +821,8 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
             # There are no original pixels for color matching when the guide covers the entire crop.
             del local["14"]
             local["15"]["inputs"]["images"] = ["36", 0]
+        if illustrious and profile.get("lineRefine"):
+            add_illustrious_line_refinement(local)
         left, top, _, _ = bounds
         local["4"] = {"class_type": "ImageCrop", "inputs": {
             "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
@@ -869,8 +902,9 @@ async def repair_mosaic(original, data, steps, workflow_times):
         argv = await ready(session, root, cancel_path, True)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
             prompt_id = profile.get("promptId")
-            # The versioned job ID excludes outputs from the previous union-crop workflow.
             workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
+            if profile["kind"] == "illustrious" and profile.get("lineRefine"):
+                workflow_key = ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY
             resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
             raw, history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
             patches = [raw] if raw is not None else []

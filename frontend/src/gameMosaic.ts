@@ -10,14 +10,23 @@ import type { UnityImage } from "./unityOffline";
 import type { MosaicTargetPart } from "./mosaicRegionTargets";
 
 export type MosaicBox = [left: number, top: number, right: number, bottom: number];
-export type MosaicModel = "2511" | "2511-lightning" | "turbo" | "diffusion-cream" | "illustrious";
+export type MosaicModel = "2511" | "2511-lightning" | "turbo" | "diffusion-cream" | "illustrious" | "illustrious-line-refine";
 export const mosaicModelLabels: Record<MosaicModel, string> = {
   illustrious: "Illustrious · 动漫局部修复",
+  "illustrious-line-refine": "Illustrious · 精修线条",
   "2511": "Qwen Image Edit 2511", "2511-lightning": "Qwen Image Edit 2511 · Lightning 4 步",
   turbo: "Qwen Image 2.1 Turbo", "diffusion-cream": "DiffusionCreamPy · 动漫局部修复",
 };
-export const mosaicModelChoices = (["illustrious", "turbo", "2511-lightning", "2511", "diffusion-cream"] as const).map(value => ({ value, label: mosaicModelLabels[value] }));
-export const mosaicDefaultSteps: Record<MosaicModel, number> = { illustrious: 22, turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28 };
+export const mosaicModelChoices = (["illustrious", "illustrious-line-refine", "turbo", "2511-lightning", "2511", "diffusion-cream"] as const)
+  .map(value => ({ value, label: mosaicModelLabels[value] }));
+const illustriousSteps = 22;
+export const mosaicLineRefineSteps = 10;
+export const mosaicDefaultSteps: Record<MosaicModel, number> = {
+  illustrious: illustriousSteps, "illustrious-line-refine": illustriousSteps + mosaicLineRefineSteps,
+  turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28,
+};
+export const isIllustriousMosaicModel = (model: MosaicModel) => model === "illustrious" || model === "illustrious-line-refine";
+export const mosaicUsesFixedSteps = (model: MosaicModel) => isIllustriousMosaicModel(model) || model === "2511-lightning";
 export const isMosaicModel = (value: unknown): value is MosaicModel =>
   mosaicModelChoices.some(choice => choice.value === value);
 export type MosaicScan = { boxes: MosaicBox[]; signature: number[]; review?: string; reviewBoxes?: MosaicBox[]; modelBoxes?: MosaicBox[]; quickExcluded?: boolean; presenceScore?: number; presenceThreshold?: number; localClear?: boolean };
@@ -76,7 +85,7 @@ export function gameDetectorFile(root: string, file?: File) {
 export function normalizeMosaicSettings(value?: Partial<Omit<MosaicSettings, "detector">> & { detector?: string }): MosaicSettings {
   const legacy = value?.detector === "lada" || value?.detector === "lada-accurate";
   const model = isMosaicModel(value?.model) ? value.model : defaultMosaicSettings.model;
-  const steps = model === "illustrious" || model === "2511-lightning" ? mosaicDefaultSteps[model] : value?.steps ?? mosaicDefaultSteps[model];
+  const steps = mosaicUsesFixedSteps(model) ? mosaicDefaultSteps[model] : value?.steps ?? mosaicDefaultSteps[model];
   return { ...defaultMosaicSettings, ...value, model, steps,
     detector: value?.detector === "grid" ? "grid" : "anime",
     screening: normalizeMosaicScreening(value?.screening),
@@ -224,7 +233,7 @@ export async function mosaicRedrawDirectory() {
 }
 
 async function mosaicWeights(directory: string, model: MosaicModel) {
-  if (model === "diffusion-cream" || model === "illustrious") return;
+  if (model === "diffusion-cream" || isIllustriousMosaicModel(model)) return;
   const fields = ["model", "clip", "vae"] as const;
   let saved: Partial<Weights> = {};
   try { saved = JSON.parse(localStorage.getItem("llmchat-redraw-profiles") || "{}")?.[model === "2511-lightning" ? "2511" : model] || {}; }
@@ -240,6 +249,10 @@ async function mosaicWeights(directory: string, model: MosaicModel) {
   return profile;
 }
 
+function mosaicRedrawProfile(model: MosaicModel) {
+  return model === "illustrious-line-refine" ? { kind: "illustrious", lineRefine: true } : { kind: model };
+}
+
 export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { name: string }): Promise<MosaicComfyWorkflow> {
   if (!isTauri()) throw new Error("移动到 ComfyUI 需要桌面端");
   const directory = await mosaicRedrawDirectory();
@@ -247,7 +260,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
   const graph = await invoke<MosaicComfyWorkflow["graph"]>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic-workflow", image: await encoded(input.source), progress: new Channel<string>(),
     regions: input.boxes.map(box => ({ box })),
-    profile: { ...weights, kind: input.model,
+    profile: { ...weights, ...mosaicRedrawProfile(input.model),
       referenceImage: input.reference && await encoded(input.reference),
       keep: input.keep, seed: input.seed, name: input.name, targetParts: input.targetParts },
   });
@@ -255,11 +268,16 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
   return { id: crypto.randomUUID(), name, path: "LLMChat - 去码/" + name, graph };
 }
 
+const mosaicWorkflowKeys: Record<MosaicModel, string> = {
+  "2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
+  turbo: "expanded-regions-v2", "diffusion-cream": "diffusion-cream-regions-v2",
+  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-regions-v5",
+};
+
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
   // Match the job identifier in repair_mosaic.
   const namespace = new Uint8Array([0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]);
-  const workflow = model === "2511-lightning" ? "aligned-edit-lightning-regions-v2" : model === "2511" ? "aligned-edit-regions-v2"
-    : model === "diffusion-cream" ? "diffusion-cream-regions-v2" : model === "illustrious" ? "illustrious-regions-v4" : "expanded-regions-v2";
+  const workflow = mosaicWorkflowKeys[model ?? "turbo"];
   const name = new TextEncoder().encode("urn:llmchat:mosaic:" + workflow + ":" + promptId);
   const input = new Uint8Array(namespace.length + name.length);
   input.set(namespace);
@@ -287,7 +305,7 @@ export async function redrawMosaic(input: MosaicRedrawInput & {
   const result = await invoke<{ image: string; workflowMs?: number }>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic", image, progress,
     regions: input.boxes.map(box => ({ box })),
-    profile: { ...weights, kind: input.model, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
+    profile: { ...weights, ...mosaicRedrawProfile(input.model), referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
       promptId: input.promptId, targetParts: input.targetParts },
   });
   recordGameWorkflowTiming(input.timingScope, result.workflowMs);

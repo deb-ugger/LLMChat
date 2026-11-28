@@ -1,5 +1,5 @@
 import { mosaicRunImageOutcome } from "../../benchmark/formalRunHistory";
-import { groupMosaicScenes, matchesMosaicDetectorKey, mosaicDefaultSteps, mosaicModelLabels, type MosaicBox, type MosaicScan } from "../../gameMosaic";
+import { groupMosaicScenes, isIllustriousMosaicModel, matchesMosaicDetectorKey, mosaicDefaultSteps, mosaicModelLabels, mosaicUsesFixedSteps, type MosaicBox, type MosaicScan } from "../../gameMosaic";
 import { mosaicInitialScreening, mosaicScreeningStatus, removeContainedMosaicBoxes, type MosaicInitialScreeningSnapshot } from "../../gameMosaicStatus";
 import { matchesMosaicReviewKey } from "../../gameMosaicRefine";
 import type { UnityImage } from "../../unityOffline";
@@ -448,7 +448,7 @@ export function canResumeMosaicRedraw(plan: RedrawPlan, usable: readonly UnityIm
 }
 
 export function mosaicRedrawStepCount(plan: Pick<RedrawPlan, "models" | "steps">, engine: RedrawPlan["models"][number]) {
-  if (engine === "illustrious" || engine === "2511-lightning") return mosaicDefaultSteps[engine];
+  if (mosaicUsesFixedSteps(engine)) return mosaicDefaultSteps[engine];
   return plan.models.length === 1 ? plan.steps : mosaicDefaultSteps[engine];
 }
 
@@ -614,7 +614,7 @@ export async function runAutomaticMosaic(plan: MosaicAutomaticPlan, signal: Abor
 
   const references = mosaicRedrawReferences(usable, rows);
   const readReference = createMosaicReferenceReader(readSaved, signal);
-  const useCompletedReferences = model === "illustrious";
+  const useCompletedReferences = isIllustriousMosaicModel(model);
   if (useCompletedReferences) {
     for (const image of selected) {
       const group = resultFor(rows, image).group || image.id;
