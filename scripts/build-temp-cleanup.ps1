@@ -30,6 +30,7 @@ function Invoke-BuildTempCleanup {
         deletedDirectories = 0L
         deletedLinks = 0L
         deletedBytes = 0L
+        preservedFiles = 0L
     }
     $remaining = [Collections.Generic.List[object]]::new()
 
@@ -48,6 +49,11 @@ function Invoke-BuildTempCleanup {
             $Item.Refresh()
             $attributes = $Item.Attributes
             if ([int]$attributes -eq -1) { throw 'The item was removed or its attributes could not be read.' }
+            if (!($attributes -band [IO.FileAttributes]::Directory) -and $Item.Name.StartsWith('codex-clipboard-', [StringComparison]::OrdinalIgnoreCase)) {
+                $state.preservedFiles++
+                $remaining.Add([pscustomobject]@{ path = $path; reason = 'Preserved Codex clipboard attachment'; preserved = $true })
+                return
+            }
             if ($attributes -band [IO.FileAttributes]::ReparsePoint) {
                 # Delete the link itself without entering its target.
                 $Item.Delete()
@@ -57,6 +63,10 @@ function Invoke-BuildTempCleanup {
             if ($attributes -band [IO.FileAttributes]::Directory) {
                 foreach ($child in ([IO.DirectoryInfo]$Item).GetFileSystemInfos()) {
                     Remove-BuildTempItem $child
+                }
+                if (([IO.DirectoryInfo]$Item).GetFileSystemInfos().Length) {
+                    $remaining.Add([pscustomobject]@{ path = $path; reason = 'Contains preserved or in-use temporary items' })
+                    return
                 }
                 $Item.Delete()
                 $state.deletedDirectories++
@@ -87,6 +97,7 @@ function Invoke-BuildTempCleanup {
         DeletedDirectories = $state.deletedDirectories
         DeletedLinks = $state.deletedLinks
         DeletedBytes = $state.deletedBytes
+        PreservedFiles = $state.preservedFiles
         RemainingCount = $remaining.Count
         ReportPath = $report
     }
