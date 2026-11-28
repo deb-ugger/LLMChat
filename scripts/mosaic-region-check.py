@@ -89,14 +89,21 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             resize = graph["5"]["inputs"]
             self.assertEqual((resize["width"], resize["height"]), expected_size)
             sampler = graph["13"]["inputs"]
-            for key, expected in {"steps": 22, "cfg": 5, "denoise": .93, "sampler_name": "euler",
+            for key, expected in {"steps": 22, "cfg": 5, "denoise": 1.0, "sampler_name": "euler",
                                   "scheduler": "karras", "model": ["46", 0]}.items():
                 self.assertEqual(sampler[key], expected)
             self.assertEqual(graph["30"]["inputs"]["ckpt_name"], "Illustrious-XL-v2.0.safetensors")
             self.assertEqual(graph["46"], {"class_type": "DifferentialDiffusion", "inputs": {"model": ["30", 0]}})
             self.assertEqual(graph["32"]["inputs"]["control_type"], "tile")
-            self.assertEqual(graph["32"]["inputs"]["image"], ["41", 0])
-            self.assertGreater(graph["41"]["inputs"]["falloff"], 0)
+            self.assertEqual(graph["32"]["inputs"]["image"], ["5", 0])
+            self.assertEqual(graph["34"]["inputs"]["pixels"], ["5", 0])
+            self.assertEqual(resize["image"], ["41", 0])
+            self.assertEqual(graph["41"], {"class_type": "INPAINT_MaskedFill", "inputs": {
+                "image": ["4", 0], "mask": ["47", 0], "fill": "neutral", "falloff": 0}})
+            self.assertEqual(graph["47"]["inputs"]["image"], ["43", 0])
+            self.assertEqual(graph["48"], {"class_type": "InvertMask", "inputs": {"mask": ["45", 0]}})
+            self.assertEqual(graph["35"]["inputs"]["mask_optional"], ["48", 0])
+            self.assertNotIn("INPAINT_MaskedBlur", {node["class_type"] for node in graph.values()})
             self.assertNotIn("31", graph)
             self.assertEqual(graph["33"]["inputs"]["name"], "controlnet-union-sdxl-1.0.safetensors")
             self.assertEqual(graph["35"]["inputs"]["strength"], .45)
@@ -104,7 +111,7 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(graph["34"]["inputs"]["noise_mask"])
             self.assertTrue(all(key not in graph for key in ("16", "37", "38", "39", "40")))
             self.assertTrue(all("Qwen" not in node["class_type"] for node in graph.values()))
-        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v2")
+        self.assertEqual(worker.MOSAIC_WORKFLOW_KEYS["illustrious"], "illustrious-regions-v3")
 
     async def test_illustrious_passes_reference_to_masked_style_adapter(self):
         source = texture()
@@ -135,17 +142,17 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(noise[~generation], 0)
         self.assertTrue(np.any((noise > 51) & (noise < 255)))
 
-    def test_illustrious_passes_target_parts_to_existing_prompt(self):
-        parts = ["male_external"]
-        settings = {**profile("illustrious"), "targetParts": parts}
+    def test_illustrious_prompt_describes_linework_and_omits_target_parts(self):
+        settings = profile("illustrious")
         size = (320, 480)
-        base_graph = worker.diffusion_cream_workflow("source.png", None, "mask.png", 8, 1, size, "core.png", "illustrious")
-        target = worker.mosaic_target_prompt(settings)
-        with patch.object(worker, "mosaic_target_prompt", wraps=worker.mosaic_target_prompt) as target_prompt:
-            graph = worker.mosaic_workflow("source.png", None, "mask.png", 8, settings, size, "core.png")
-        target_prompt.assert_called_once()
-        self.assertIs(target_prompt.call_args.args[0]["targetParts"], parts)
-        self.assertEqual(graph["6"]["inputs"]["text"], base_graph["6"]["inputs"]["text"] + target)
+        graph = worker.mosaic_workflow("source.png", None, "mask.png", 22, settings, size, "core.png")
+        tagged = worker.mosaic_workflow("source.png", None, "mask.png", 22,
+                                        {**settings, "targetParts": ["fixture-target"]}, size, "core.png")
+        prompt = graph["6"]["inputs"]["text"]
+        self.assertIn("crisp ink outlines", prompt)
+        self.assertIn("clean cel shading", prompt)
+        self.assertIn("preserve occlusion", prompt)
+        self.assertEqual(tagged["6"], graph["6"])
 
     async def test_missing_illustrious_weights_fail_before_comfy_start(self):
         settings = profile("illustrious")
@@ -188,6 +195,9 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
             if kind == "illustrious":
                 self.assertEqual(graph["region_0_13"]["inputs"]["steps"], 22)
                 self.assertEqual(graph["region_0_13"]["inputs"]["model"], ["region_0_46", 0])
+            if kind == "diffusion-cream":
+                self.assertEqual(graph["region_0_41"]["class_type"], "INPAINT_MaskedBlur")
+                self.assertNotIn("mask_optional", graph["region_0_35"]["inputs"])
             self.assertEqual(graph["region_0_4"]["class_type"], "ImageCrop")
             self.assertEqual(graph["region_1_4"]["inputs"]["x"], areas[1][0][0])
             for node in graph.values():
@@ -210,12 +220,13 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
                 return False
 
         source = texture()
-        data = {"directory": "fixture", "profile": profile(),
+        data = {"directory": "fixture", "profile": profile("illustrious"),
                 "regions": [{"box": [25, 30, 45, 50]}, {"box": [440, 100, 470, 130]}]}
         with (
             patch.object(worker.aiohttp, "ClientSession", return_value=Session()),
             patch.object(worker, "ready", ready),
             patch.object(worker, "upload_image", upload),
+            patch.object(worker, "validate_mosaic_weights"),
         ):
             graph = await worker.prepare_mosaic_workflow(source, data, 8)
         composites = [(key, node) for key, node in graph.items() if node["class_type"] == "ImageCompositeMasked"]
@@ -223,6 +234,10 @@ class RegionGraphs(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph["15"]["inputs"]["images"], [composites[-1][0], 0])
         self.assertTrue(all(key.isdecimal() for key in graph))
         self.assertEqual([key for key, node in graph.items() if node["class_type"] == "PreviewImage"], ["15"])
+        for node in graph.values():
+            if node["class_type"] == "ACN_AdvancedControlNetApply_v2":
+                mask_node, _ = node["inputs"]["mask_optional"]
+                self.assertEqual(graph[mask_node]["class_type"], "InvertMask")
 
     async def test_runtime_recovery_composition_and_missing_patch(self):
         source = texture((220, 160))
