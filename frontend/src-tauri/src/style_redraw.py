@@ -171,7 +171,7 @@ def workflow(upload, reference, translation, steps, matte, profile, edit_prompt=
     }
     if kind == "2511-lightning":
         graph["29"] = node("LoraLoaderModelOnly", model=["1", 0],
-                           lora_name="Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", strength_model=1.0)
+                           lora_name=EDIT_LIGHTNING_LORA, strength_model=1.0)
         graph["10"]["inputs"]["model"] = ["29", 0]
         graph["13"]["inputs"].update(steps=4, cfg=1.0)
     return graph
@@ -581,7 +581,8 @@ def edit_mosaic_size(crop_size):
 MOSAIC_WORKFLOW_KEYS = {"2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
                         "turbo": "expanded-regions-v2",
                         "diffusion-cream": "diffusion-cream-regions-v2", "illustrious": "illustrious-regions-v4"}
-ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY = "illustrious-regions-v5"
+ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY = "illustrious-regions-v6"
+EDIT_LIGHTNING_LORA = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 
 ILLUSTRIOUS_WEIGHTS = ("checkpoints/Illustrious-XL-v2.0.safetensors",
                        "controlnet/controlnet-union-sdxl-1.0.safetensors")
@@ -593,6 +594,16 @@ def validate_mosaic_weights(directory, profile):
     if profile["kind"] == "illustrious":
         models = Path(directory) / "ComfyUI/models"
         weights = ILLUSTRIOUS_WEIGHTS + SDXL_REFERENCE_WEIGHTS if profile.get("referenceImage") else ILLUSTRIOUS_WEIGHTS
+        if profile.get("lineRefine"):
+            edit = profile.get("lineRefineWeights", {})
+            for field in ("model", "clip", "vae"):
+                if not edit.get(field):
+                    raise ValueError("缺少精修线条的 Qwen Image Edit 权重配置")
+            for field, folders in (("model", ("diffusion_models", "unet")),
+                                   ("clip", ("text_encoders", "clip")), ("vae", ("vae",))):
+                if not any((models / folder / edit[field]).is_file() for folder in folders):
+                    raise ValueError("缺少精修线条的本地权重：" + edit[field])
+            weights += ("loras/" + EDIT_LIGHTNING_LORA,)
         missing = [name for name in weights if not (models / name).is_file()]
         if missing:
             raise ValueError("缺少本地权重：" + "、".join(missing))
@@ -662,34 +673,54 @@ def diffusion_cream_workflow(source_name, reference_name, mask_name, steps, seed
     return graph
 
 
-def add_illustrious_line_refinement(graph):
-    def node(kind, **inputs):
-        return {"class_type": kind, "inputs": inputs}
+def illustrious_line_refinement(source_name, mask_name, profile, crop_size):
+    edit = {**profile["lineRefineWeights"], "kind": "2511-lightning", "seed": profile.get("seed", 1)}
+    graph = mosaic_workflow(source_name, None, mask_name, 4, edit, crop_size)
+    width, height = (max(16, round(side / 16) * 16) for side in crop_size)
+    for key in ("5", "26"):
+        graph[key]["inputs"].update(width=width, height=height)
+    graph["6"]["inputs"]["prompt"] = (
+        "Refine the existing illustration inside the editable area of image 1. "
+        "Continue the surrounding ink lines with the same line weight. Add crisp ink outlines, "
+        "hard-edged cel shading and defined highlights consistent with the surrounding illustration. "
+        "Preserve the existing silhouettes, proportions, positions, occlusion boundaries, hues and materials. "
+        "Keep all pixels outside the editable area unchanged.")
+    return graph
 
-    first_image = graph["15"]["inputs"]["images"]
-    first_sampler = graph["13"]["inputs"]
-    graph.update({
-        "51": node("CLIPTextEncode", clip=["30", 1],
-                   text="anime illustration, crisp ink outlines, defined linework, hard-edged highlights, "
-                        "line weight and cel shading matching the surrounding illustration, consistent colors and material"),
-        "52": node("CLIPTextEncode", clip=["30", 1],
-                   text="soft focus, blurred contours, airbrushed shading, pixelation, smeared colors, broken outlines, unrelated objects"),
-        # Exclude the covered source pixels from both the Tile image and its area of influence.
-        "53": node("INPAINT_MaskedFill", image=["5", 0], mask=["45", 0], fill="neutral", falloff=0),
-        "54": node("InvertMask", mask=["45", 0]),
-        "55": node("ACN_ControlNet++InputNode", image=["53", 0], control_type="tile"),
-        "56": node("ACN_ControlNet++LoaderAdvanced", plus_input=["55", 0], name=graph["33"]["inputs"]["name"]),
-        "57": node("InpaintModelConditioning", positive=["51", 0], negative=["52", 0], vae=["30", 2],
-                   pixels=first_image, mask=["5", 1], noise_mask=True),
-        "58": node("ACN_AdvancedControlNetApply_v2", positive=["57", 0], negative=["57", 1], control_net=["56", 0],
-                   image=["56", 1], mask_optional=["54", 0], strength=0.45, start_percent=0.0, end_percent=1.0),
-        "59": node("KSampler", **{**first_sampler, "steps": 10, "denoise": 0.30,
-                                  "positive": ["58", 0], "negative": ["58", 1], "latent_image": ["57", 2]}),
-        "60": node("VAEDecode", samples=["59", 0], vae=["30", 2]),
-        "61": node("INPAINT_ColorMatch", target=["60", 0], reference=first_image, exclude_mask=["54", 0], strength=1.0),
-    })
-    graph["59"]["_meta"] = {"title": "线条精修"}
-    graph["15"]["inputs"]["images"] = ["61", 0]
+
+async def mosaic_refinement_graphs(areas, patches, profile, upload):
+    graph, outputs = {}, []
+    for index, ((_, _, generation, blend, _), raw) in enumerate(zip(areas, patches)):
+        with Image.open(io.BytesIO(raw)) as image:
+            # Retain the first pass resolution and its intact surrounding context.
+            source = image.convert("RGB")
+        source_name = await upload(source)
+        mask = np.where(generation, np.rint(51 + np.asarray(blend) * .8), 0).astype(np.uint8)
+        mask_name = await upload(Image.fromarray(mask).convert("RGB"))
+        local = illustrious_line_refinement(source_name, mask_name, profile, source.size)
+        prefix = f"region_{index}_"
+        graph.update(remap_mosaic_nodes(local, {key: prefix + key for key in local}))
+        outputs.append(prefix + "15")
+    graph["15"] = {"class_type": "PreviewImage", "inputs": {
+        "images": graph[outputs[0]]["inputs"]["images"]}}
+    return graph, outputs
+
+
+async def unload_mosaic_models(session, upload, prompt_ids, cancel_path, subfolder=None):
+    await check_mosaic_cancel(session, cancel_path)
+    emit("status", "正在卸载重绘模型，准备线条精修")
+    async with session.post(BASE + "/free", json={"unload_models": True, "free_memory": True},
+                            allow_redirects=False) as response:
+        response.raise_for_status()
+    # /free only sets worker flags. A model-free queue item ensures those flags are
+    # processed before the subsequent Edit task, including the task_done/history race.
+    name = await upload(Image.new("RGB", (1, 1)))
+    graph = {"4": {"class_type": "LoadImage", "inputs": {"image": name}},
+             "15": {"class_type": "PreviewImage", "inputs": {"images": ["4", 0]}}}
+    if subfolder:
+        graph["15"] = {"class_type": "SaveImage", "inputs": {
+            "images": ["4", 0], "filename_prefix": subfolder + "/model-switch"}}
+    await run_image_graph(session, graph, "15", "切换重绘模型", [], prompt_ids, cancel_path=cancel_path)
 
 
 def mosaic_target_prompt(profile):
@@ -821,8 +852,6 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
             # There are no original pixels for color matching when the guide covers the entire crop.
             del local["14"]
             local["15"]["inputs"]["images"] = ["36", 0]
-        if illustrious and profile.get("lineRefine"):
-            add_illustrious_line_refinement(local)
         left, top, _, _ = bounds
         local["4"] = {"class_type": "ImageCrop", "inputs": {
             "image": ["original", 0], "width": crop.width, "height": crop.height, "x": left, "y": top}}
@@ -839,6 +868,8 @@ async def mosaic_region_graphs(original, areas, profile, steps, upload):
 
 async def prepare_mosaic_workflow(original, data, steps):
     profile = data["profile"]
+    if profile.get("lineRefine"):
+        raise ValueError("精修线条需要分两次任务切换模型，请在图片去码页面运行。单遍工作流可选择 Illustrious · 动漫局部修复后移动到 ComfyUI")
     if profile["kind"] not in MOSAIC_WORKFLOW_KEYS:
         raise ValueError("请选择可用的去码重绘模型")
     validate_mosaic_weights(data["directory"], profile)
@@ -901,40 +932,52 @@ async def repair_mosaic(original, data, steps, workflow_times):
         cancel_path = data.get("cancelPath")
         argv = await ready(session, root, cancel_path, True)
         async with benchmark_redraw_storage(session, root, argv, profile.get("benchmark")) as (subfolder, prompt_ids):
-            prompt_id = profile.get("promptId")
-            workflow_key = MOSAIC_WORKFLOW_KEYS[profile["kind"]]
-            if profile["kind"] == "illustrious" and profile.get("lineRefine"):
-                workflow_key = ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY
-            resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
-            raw, history = await recover_image_graph(session, resume_id, "15", "蒙版重绘", workflow_times, cancel_path)
-            patches = [raw] if raw is not None else []
-            if raw is not None:
-                for index in range(1, len(areas)):
-                    await check_mosaic_cancel(session, cancel_path)
-                    extra = await graph_history_image(session, history, f"region_{index}_15", [], allow_missing=True)
-                    if extra is None:
-                        patches = []
-                        workflow_times.clear()
-                        break
-                    patches.append(extra)
-            if not patches:
-                async def upload(image, filename=None):
-                    return await upload_image(session, image, filename=filename, subfolder=subfolder)
+            async def upload(image, filename=None):
+                return await upload_image(session, image, filename=filename, subfolder=subfolder)
 
-                graph, outputs = await mosaic_region_graphs(original, areas, profile, steps, upload)
-                if subfolder:
-                    for output in ["15", *outputs]:
-                        graph[output] = {"class_type": "SaveImage", "inputs": {
-                            "images": graph[output]["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
-                submitted = prompt_ids if prompt_ids is not None else []
-                raw = await run_image_graph(session, graph, "15", "蒙版重绘", workflow_times, submitted,
-                                            resume_id=resume_id, old_history=history, cancel_path=cancel_path, trace=True)
-                patches = [raw]
-                if len(areas) > 1:
-                    history = await read_graph_history(session, submitted[-1])
-                    for output in outputs[1:]:
+            async def stage(workflow_key, label, first_patches=None):
+                prompt_id = profile.get("promptId")
+                resume_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:llmchat:mosaic:{workflow_key}:{prompt_id}")) if prompt_id else None
+                timing_start = len(workflow_times)
+                raw, history = await recover_image_graph(session, resume_id, "15", label, workflow_times, cancel_path)
+                patches = [raw] if raw is not None else []
+                if raw is not None:
+                    for index in range(1, len(areas)):
                         await check_mosaic_cancel(session, cancel_path)
-                        patches.append(await graph_history_image(session, history, output, []))
+                        extra = await graph_history_image(session, history, f"region_{index}_15", [], allow_missing=True)
+                        if extra is None:
+                            patches = []
+                            del workflow_times[timing_start:]
+                            break
+                        patches.append(extra)
+                if not patches:
+                    if first_patches is None:
+                        graph, outputs = await mosaic_region_graphs(original, areas, profile, steps, upload)
+                    else:
+                        await unload_mosaic_models(session, upload, prompt_ids, cancel_path, subfolder)
+                        graph, outputs = await mosaic_refinement_graphs(areas, first_patches, profile, upload)
+                    if subfolder:
+                        for output in ["15", *outputs]:
+                            graph[output] = {"class_type": "SaveImage", "inputs": {
+                                "images": graph[output]["inputs"]["images"], "filename_prefix": subfolder + "/" + output}}
+                    submitted = prompt_ids if prompt_ids is not None else []
+                    raw = await run_image_graph(session, graph, "15", label, workflow_times, submitted,
+                                                resume_id=resume_id, old_history=history, cancel_path=cancel_path, trace=True)
+                    patches = [raw]
+                    if len(areas) > 1:
+                        history = await read_graph_history(session, submitted[-1])
+                        for output in outputs[1:]:
+                            await check_mosaic_cancel(session, cancel_path)
+                            patches.append(await graph_history_image(session, history, output, []))
+                if prompt_ids is not None and resume_id and resume_id not in prompt_ids:
+                    prompt_ids.append(resume_id)
+                return patches
+
+            if profile["kind"] == "illustrious" and profile.get("lineRefine"):
+                first = await stage(ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY + "-base", "轮廓重绘")
+                patches = await stage(ILLUSTRIOUS_LINE_REFINE_WORKFLOW_KEY, "线条精修", first)
+            else:
+                patches = await stage(MOSAIC_WORKFLOW_KEYS[profile["kind"]], "蒙版重绘")
     result = original.copy()
     for raw, (bounds, crop, generation, blend, samples) in zip(patches, areas):
         with Image.open(io.BytesIO(raw)) as output:

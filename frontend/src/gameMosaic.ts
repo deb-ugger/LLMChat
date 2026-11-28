@@ -20,7 +20,7 @@ export const mosaicModelLabels: Record<MosaicModel, string> = {
 export const mosaicModelChoices = (["illustrious", "illustrious-line-refine", "turbo", "2511-lightning", "2511", "diffusion-cream"] as const)
   .map(value => ({ value, label: mosaicModelLabels[value] }));
 const illustriousSteps = 22;
-export const mosaicLineRefineSteps = 10;
+export const mosaicLineRefineSteps = 4;
 export const mosaicDefaultSteps: Record<MosaicModel, number> = {
   illustrious: illustriousSteps, "illustrious-line-refine": illustriousSteps + mosaicLineRefineSteps,
   turbo: 8, "2511": 20, "2511-lightning": 4, "diffusion-cream": 28,
@@ -255,6 +255,7 @@ function mosaicRedrawProfile(model: MosaicModel) {
 
 export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { name: string }): Promise<MosaicComfyWorkflow> {
   if (!isTauri()) throw new Error("移动到 ComfyUI 需要桌面端");
+  if (input.model === "illustrious-line-refine") throw new Error("精修线条需要分两次任务切换模型，请在图片去码页面运行。导出单遍工作流请选择 Illustrious · 动漫局部修复");
   const directory = await mosaicRedrawDirectory();
   const weights = await mosaicWeights(directory, input.model);
   const graph = await invoke<MosaicComfyWorkflow["graph"]>("run_style_redraw", {
@@ -271,7 +272,7 @@ export async function prepareMosaicComfyWorkflow(input: MosaicRedrawInput & { na
 const mosaicWorkflowKeys: Record<MosaicModel, string> = {
   "2511": "aligned-edit-regions-v2", "2511-lightning": "aligned-edit-lightning-regions-v2",
   turbo: "expanded-regions-v2", "diffusion-cream": "diffusion-cream-regions-v2",
-  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-regions-v5",
+  illustrious: "illustrious-regions-v4", "illustrious-line-refine": "illustrious-regions-v6",
 };
 
 export async function cancelMosaicRedraw(promptId: string, model?: MosaicModel) {
@@ -301,11 +302,13 @@ export async function redrawMosaic(input: MosaicRedrawInput & {
   const progress = new Channel<string>();
   progress.onmessage = detail => { if (!input.signal.aborted) input.progress(detail); };
   const weights = await mosaicWeights(directory, input.model);
+  const lineRefineWeights = input.model === "illustrious-line-refine" ? await mosaicWeights(directory, "2511-lightning") : undefined;
   input.signal.throwIfAborted();
   const result = await invoke<{ image: string; workflowMs?: number }>("run_style_redraw", {
     directory, steps: input.steps, mode: "mosaic", image, progress,
     regions: input.boxes.map(box => ({ box })),
-    profile: { ...weights, ...mosaicRedrawProfile(input.model), referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
+    profile: { ...weights, ...mosaicRedrawProfile(input.model),
+      lineRefineWeights, referenceImage, keep: input.keep, seed: input.seed, benchmark: input.benchmark,
       promptId: input.promptId, targetParts: input.targetParts },
   });
   recordGameWorkflowTiming(input.timingScope, result.workflowMs);
