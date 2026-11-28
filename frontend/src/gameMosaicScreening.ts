@@ -28,7 +28,7 @@ export function usesMosaicPresenceProbes(options?: Partial<MosaicScreening>) {
 }
 
 export const defaultMosaicScreening: Readonly<MosaicScreening> = {
-  localZoom: false, presenceThreshold: 0.47, boxThreshold: 0.25,
+  localZoom: true, presenceThreshold: 0.47, boxThreshold: 0.25,
 };
 export function normalizeMosaicScreening(value?: Partial<MosaicScreening>): MosaicScreening {
   const threshold = (value: number | undefined, fallback: number) =>

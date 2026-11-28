@@ -189,7 +189,7 @@ export function MosaicStepCards({ paneVisible, hiddenStyle, busy, aborting, acti
     <button type="button" className="unity-btn is-secondary" disabled={testing || actionsDisabled} title={testTitle}
           onClick={() => screen.start(true)}>重新筛选已勾选图片</button>;
   const customDetector = <>
-    <label><input type="checkbox" role="switch" checked={!!screen.detectorFile} disabled={busy}
+    <label data-tooltip="载入替代定位模型文件，检测效果取决于所选 ONNX 权重"><input type="checkbox" role="switch" checked={!!screen.detectorFile} disabled={busy}
       onChange={event => event.target.checked ? detectorInput.current?.click() : screen.useBuiltInDetector()} />自定义定位 ONNX</label>
     <input ref={detectorInput} type="file" accept=".onnx" hidden disabled={busy} onChange={event => {
       const file = event.target.files?.[0];

@@ -11,11 +11,11 @@ globalThis.localStorage = {
 };
 globalThis.window = { addEventListener() {}, removeEventListener() {}, dispatchEvent() {}, location: { hostname: "localhost" } };
 const result = await build({
-  stdin: { contents: `export * as presets from './gameModelPreset'; export * as prompts from './gamePrompts'; export {gameDefaultTextModel} from './gameModelPerformance';`, resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
+  stdin: { contents: `export * as presets from './gameModelPreset'; export * as prompts from './gamePrompts'; export * as screening from './gameMosaicScreening'; export {gameDefaultTextModel} from './gameModelPerformance';`, resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm", external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""' },
 });
-const { presets, prompts, gameDefaultTextModel } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
+const { presets, prompts, screening, gameDefaultTextModel } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
 const current = {
   text: { options: { source: "en", target: "en", kind: "engine", joinLines: true, wrapMode: "join", lineMode: "model", onlySourceLanguage: false, skipTargetLanguage: false, engines: [] }, roles: {} },
   images: { options: { mode: "english", concurrency: 1, strategy: "full", translation: { source: "en", target: "en", kind: "engine", provider: "bing", engines: [] } }, roles: {} },
@@ -144,3 +144,32 @@ presets.saveGameTestConfigurations("another-game", manuallyAdjusted);
 presets.refreshSavedGameTestConfigurations();
 assert.deepEqual(presets.readGameTestConfigurations("another-game"), manuallyAdjusted, "one-time refresh preserves subsequent edits");
 console.log("PASS all saved image configurations use the measured 4B layout model with single concurrency");
+
+assert.equal(screening.defaultMosaicScreening.localZoom, true);
+assert.equal(screening.normalizeMosaicScreening().localZoom, true);
+assert.equal(screening.normalizeMosaicScreening({ localZoom: false }).localZoom, false);
+assert.ok(screening.mosaicZoomRegions([0, 0, 640, 480],
+  [{ box: [200, 180, 230, 210], score: .1 }], .45, screening.normalizeMosaicScreening()).length > 0);
+assert.deepEqual(screening.mosaicZoomRegions([0, 0, 640, 480],
+  [{ box: [200, 180, 230, 210], score: .1 }], .45, screening.normalizeMosaicScreening({ localZoom: false })), []);
+storage.delete("llmchat-game-test-config-mosaic-quality-v1");
+const workflowKey = "llmchat-mosaic-settings:existing-game";
+const oldWorkflow = { detector: "anime", scope: "all", concurrency: 2, model: "turbo", steps: 8, protect: true,
+  screening: { localZoom: false, presenceThreshold: .37, boxThreshold: .18, modelConcurrency: 2 } };
+storage.set(workflowKey, JSON.stringify(oldWorkflow));
+const mosaicConfiguration = presets.readGameTestConfigurations("another-game")[0];
+mosaicConfiguration.value.images.options.mosaic = structuredClone(oldWorkflow);
+presets.saveGameTestConfigurations("quality-game", [mosaicConfiguration, textOnly]);
+presets.refreshSavedGameTestConfigurations();
+const expectedWorkflow = { ...oldWorkflow, screening: { ...oldWorkflow.screening, localZoom: true } };
+assert.deepEqual(JSON.parse(storage.get(workflowKey)), expectedWorkflow);
+const qualityConfiguration = presets.readGameTestConfigurations("quality-game");
+const expectedConfiguration = structuredClone(mosaicConfiguration);
+expectedConfiguration.value.images.options.mosaic = expectedWorkflow;
+assert.deepEqual(qualityConfiguration, [expectedConfiguration, textOnly]);
+const qualityBuiltins = presets.builtinGameTestConfigurations(mosaicConfiguration.value);
+assert.ok(qualityBuiltins.every(row => row.value.images.options.mosaic.screening.localZoom));
+storage.set(workflowKey, JSON.stringify(oldWorkflow));
+presets.refreshSavedGameTestConfigurations();
+assert.deepEqual(JSON.parse(storage.get(workflowKey)), oldWorkflow, "later manual zoom choices remain effective");
+console.log("PASS quality-first local zoom for defaults, all saved configurations and existing workspaces");

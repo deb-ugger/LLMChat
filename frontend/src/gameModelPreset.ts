@@ -206,7 +206,41 @@ function refreshSavedImageLayoutConfigurations() {
   localStorage.setItem(revision, "1");
 }
 
+function refreshSavedMosaicQualityConfigurations() {
+  const revision = "llmchat-game-test-config-mosaic-quality-v1";
+  if (localStorage.getItem(revision) !== null) return;
+  const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
+  for (const key of keys) {
+    const workflow = key?.startsWith("llmchat-mosaic-settings:");
+    if (!key || !workflow && !key.startsWith(configurationsPrefix)) continue;
+    let saved: unknown;
+    try { saved = JSON.parse(localStorage.getItem(key) || "null"); }
+    catch { continue; }
+    if (workflow) {
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) continue;
+      const settings = saved as Partial<import("./gameMosaic").MosaicSettings>;
+      if (settings.screening?.localZoom === true) continue;
+      localStorage.setItem(key, JSON.stringify({ ...settings, screening: { ...settings.screening, localZoom: true } }));
+    } else {
+      if (!Array.isArray(saved)) continue;
+      let changed = false;
+      const next = (saved as SavedGameTestConfiguration[]).map(row => {
+        const images = row?.value?.images;
+        const mosaic = images?.options?.mosaic;
+        if (!images || !mosaic || mosaic.screening?.localZoom === true) return row;
+        changed = true;
+        return { ...row, value: { ...row.value, images: { ...images, options: { ...images.options,
+          mosaic: { ...mosaic, screening: { ...mosaic.screening, localZoom: true } },
+        } } } };
+      });
+      if (changed) localStorage.setItem(key, JSON.stringify(next));
+    }
+  }
+  localStorage.setItem(revision, "1");
+}
+
 export function refreshSavedGameTestConfigurations() {
+  refreshSavedMosaicQualityConfigurations();
   refreshSavedImageLayoutConfigurations();
   const revision = "llmchat-game-test-config-semantics-v1";
   if (localStorage.getItem(revision) !== null) return;
