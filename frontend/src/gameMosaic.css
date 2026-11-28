@@ -365,6 +365,15 @@ input.game-mosaic-threshold[type="number"] {
 .game-mosaic-workbench .unity-image-previews:has(> .game-mosaic-result-version) {
   grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
 }
+.game-mosaic-workbench .unity-image-previews.has-contour-compare {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) minmax(200px, 0.95fr);
+}
+.game-mosaic-workbench .unity-image-previews.has-contour-compare > .game-mosaic-original-frame { grid-column: 1; grid-row: 1; }
+.game-mosaic-workbench .unity-image-previews.has-contour-compare > .game-mosaic-result-version { grid-column: 2; grid-row: 1; }
+.game-mosaic-workbench .unity-image-previews.has-contour-compare:has(> .game-mosaic-contour-compare[data-open="false"]) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
 
 .game-mosaic-workbench .unity-image-previews figure {
   display: flex;
@@ -385,10 +394,6 @@ input.game-mosaic-threshold[type="number"] {
   inline-size: min(100%, calc(100cqh * var(--mosaic-image-aspect)));
   aspect-ratio: var(--mosaic-image-aspect);
   background: repeating-conic-gradient(var(--bg-muted) 0% 25%, var(--bg-hover) 25% 50%) 0 0 / 20px 20px;
-}
-
-.game-mosaic-workbench .unity-image-previews:has(> .game-mosaic-result-version) > figure {
-  margin-block-end: calc(var(--control-size) + 6px);
 }
 
 .game-mosaic-workbench .unity-image-stage > img {
@@ -431,8 +436,97 @@ input.game-mosaic-threshold[type="number"] {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.game-mosaic-result-version { display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: end; min-width: 0; min-height: 0; gap: 6px; }
-.game-mosaic-result-version > figure { width: 100%; box-sizing: border-box; }
+.game-mosaic-result-version { position: relative; display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
+.game-mosaic-result-version > figure { width: 100%; height: 100%; box-sizing: border-box; }
+.game-mosaic-result-adopt { position: absolute; inset-block-start: 6px; inset-inline-end: 8px; z-index: 8; }
+.game-mosaic-original-frame, .game-mosaic-result-frame { position: relative; }
+.game-mosaic-original-frame > figcaption, .game-mosaic-result-frame > figcaption {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 8px;
+  z-index: 7;
+  margin: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg-panel) 90%, transparent);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  pointer-events: none;
+}
+.game-mosaic-contour-compare {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.game-mosaic-contour-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-block-size: 24px;
+  min-inline-size: 0;
+  padding: 2px 8px;
+  border-block-end: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+.game-mosaic-contour-toggle {
+  flex: none;
+  min-block-size: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.game-mosaic-contour-regions { display: flex; flex: 0 1 auto; gap: 3px; max-inline-size: 45%; min-inline-size: 0; overflow-x: auto; scrollbar-width: thin; }
+.game-mosaic-contour-regions > button {
+  flex: none;
+  min-block-size: 0;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.game-mosaic-contour-regions > button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.game-mosaic-contour-toolbar button:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+.game-mosaic-contour-sep { flex: none; opacity: .45; }
+.game-mosaic-contour-hint { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-mosaic-contour-body, .game-mosaic-contour-content { display: flex; flex-direction: column; flex: 1 1 0; min-block-size: 0; min-inline-size: 0; }
+.game-mosaic-contour-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1 1 0; min-block-size: 0; padding: 4px 8px 8px; }
+.game-mosaic-workbench .unity-image-previews .game-mosaic-contour-cell {
+  position: relative;
+  display: block;
+  container-type: size;
+  min-block-size: 0;
+  min-inline-size: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: repeating-conic-gradient(var(--bg-muted) 0% 25%, var(--bg-hover) 25% 50%) 0 0 / 14px 14px;
+}
+.game-mosaic-contour-cell > figcaption { position: absolute; inset: 4px auto auto 6px; z-index: 7; margin: 0; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--bg-panel) 90%, transparent); font-size: 10px; line-height: 1.3; color: var(--text); pointer-events: none; }
+.game-mosaic-workbench .unity-image-previews .game-mosaic-contour-cell > .unity-image-preview-surface { position: absolute; inset: 0; display: block; }
+.game-mosaic-contour-viewport { position: absolute; inset: 4px; display: grid; place-items: center; overflow: clip; cursor: grab; }
+.game-mosaic-contour-stage { inline-size: min(calc(100cqw - 8px), calc((100cqh - 8px) * var(--contour-crop-aspect))); aspect-ratio: var(--contour-crop-aspect); }
+.game-mosaic-contour-stage > canvas { position: absolute; inset: 0; display: block; inline-size: 100%; block-size: 100%; max-inline-size: 100%; max-block-size: 100%; object-fit: contain; }
+.game-mosaic-contour-content > .game-mosaic-error { flex: none; margin: 4px 8px; }
 .game-mosaic-workbench .unity-image-actions button[aria-pressed="true"] {
   color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
 }

@@ -41,6 +41,7 @@ function MosaicContourCrop({ source, version, box, index }: {
   const originalCanvas = useRef<HTMLCanvasElement>(null);
   const resultCanvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState("");
+  const [cropAspect, setCropAspect] = useState(1);
   useEffect(() => {
     let disposed = false;
     setError("");
@@ -64,19 +65,54 @@ function MosaicContourCrop({ source, version, box, index }: {
             context.lineWidth = 1;
             context.strokeRect(box[0] - left, box[1] - top, box[2] - box[0], box[3] - box[1]);
           }
+          setCropAspect(width / height);
         } finally { result.close(); }
       } finally { original.close(); }
     })().catch(error => { if (!disposed) setError("裁剪预览失败 · " + String(error)); });
     return () => { disposed = true; };
   }, [source, version, box]);
-  return <div aria-label={`区域 ${index + 1} 第一段裁剪对比`}>
-    <p className="hint">区域 {index + 1} · 检查红框内轮廓和遮挡，确认后采用</p>
-    <div className="unity-image-previews">
-      <div><p className="hint">原图裁剪</p><canvas ref={originalCanvas} aria-label="原图裁剪" style={{ width: "100%", height: "auto" }} /></div>
-      <div><p className="hint">第一段结果</p><canvas ref={resultCanvas} aria-label="第一段结果" style={{ width: "100%", height: "auto" }} /></div>
+  return <div className="game-mosaic-contour-content" aria-label={`区域 ${index + 1} 第一段裁剪对比`}
+    style={{ "--contour-crop-aspect": cropAspect } as CSSProperties}>
+    <div className="game-mosaic-contour-pair">
+      <GameImagePreviewFrame keyboardPane className="game-mosaic-contour-cell" caption="原图裁剪" aria-label="原图裁剪查看">
+        <ImageCanvas className="game-mosaic-contour-viewport" stageClassName="game-mosaic-contour-stage">
+          <canvas ref={originalCanvas} aria-label="原图裁剪" />
+        </ImageCanvas>
+      </GameImagePreviewFrame>
+      <GameImagePreviewFrame keyboardPane className="game-mosaic-contour-cell" caption="第一段结果" aria-label="第一段结果查看">
+        <ImageCanvas className="game-mosaic-contour-viewport" stageClassName="game-mosaic-contour-stage">
+          <canvas ref={resultCanvas} aria-label="第一段结果" />
+        </ImageCanvas>
+      </GameImagePreviewFrame>
     </div>
     {error && <p className="game-mosaic-error" role="alert">{error}</p>}
   </div>;
+}
+
+function MosaicContourCompare({ source, version, maskIndex }: { source: Blob; version: ResultVersion; maskIndex: number }) {
+  const [open, setOpen] = useState(true);
+  const [index, setIndex] = useState(maskIndex >= 0 && maskIndex < version.boxes.length ? maskIndex : 0);
+  const contentId = useId();
+  useEffect(() => {
+    if (maskIndex >= 0 && maskIndex < version.boxes.length) setIndex(maskIndex);
+  }, [maskIndex, version.boxes.length]);
+  const current = Math.min(index, version.boxes.length - 1);
+  return <section className="game-mosaic-contour-compare" data-open={open} aria-label="第一段裁剪对比">
+    <header className="game-mosaic-contour-toolbar">
+      <button type="button" className="game-mosaic-contour-toggle" aria-expanded={open} aria-controls={contentId}
+        aria-label={(open ? "收起" : "展开") + "第一段裁剪对比"} onClick={() => setOpen(!open)}>第一段裁剪对比</button>
+      <span className="game-mosaic-contour-sep" aria-hidden="true">·</span>
+      <div className="game-mosaic-contour-regions" role="group" aria-label={`当前区域 ${current + 1}，共 ${version.boxes.length} 个`}>
+        {version.boxes.map((_, region) => <button key={region} type="button" aria-label={`区域 ${region + 1}`}
+          aria-pressed={region === current} onClick={() => { setIndex(region); setOpen(true); }}>{region + 1}</button>)}
+      </div>
+      <span className="game-mosaic-contour-sep" aria-hidden="true">·</span>
+      <span className="game-mosaic-contour-hint">对照红框内轮廓与遮挡</span>
+    </header>
+    {open && <div id={contentId} className="game-mosaic-contour-body">
+      <MosaicContourCrop key={current} source={source} version={version} box={version.boxes[current]} index={current} />
+    </div>}
+  </section>;
 }
 
 function MosaicResultVersion({ version, imageName, disabledReason, replacing, asReference, onApprove, onOpen, onContextMenu }: {
@@ -88,11 +124,11 @@ function MosaicResultVersion({ version, imageName, disabledReason, replacing, as
   const modelName = mosaicModelLabels[version.model];
   const adoptLabel = asReference ? "采用为本组参考" : replacing ? "替换已采用图" : "采用此版";
   return <div className="game-mosaic-result-version">
-    <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined}
+    <GameImagePreviewFrame keyboardPane className="game-mosaic-result-frame" caption="去码结果" aria-label={modelName + " 去码结果"} onDoubleClick={url ? onOpen : undefined}
       onContextMenu={url ? onContextMenu : undefined} fallback={<p className="hint">正在读取图片…</p>}>
       {url && <MosaicResultImage src={url} alt={`${imageName} · ${modelName} 去码结果`} />}
     </GameImagePreviewFrame>
-    <button type="button" className="unity-btn" aria-label={adoptLabel + " · " + modelName}
+    <button type="button" className="unity-btn unity-btn-primary game-mosaic-result-adopt" aria-label={adoptLabel + " · " + modelName}
       disabled={!!disabledReason} title={disabledReason} data-tooltip={disabledReason}
       onClick={() => onApprove(version.blob)}>{adoptLabel}</button>
   </div>;
@@ -132,6 +168,9 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
   const confirmed = approved && approved.id === active?.id && approved.revision === active.sourceHash ? approved : undefined;
   const originalUrl = useImageBlobUrl(original?.blob);
   const savedUrl = useImageBlobUrl(showSaved ? confirmed?.blob : undefined);
+  const contourCompare = !showSaved && preferredVersion?.model === "illustrious-line-refine" && original?.blob && preferredVersion.boxes.length > 0
+    ? <MosaicContourCompare key={active?.id + ":" + preferredVersion.id} source={original.blob} version={preferredVersion}
+      maskIndex={activeBoxes.findIndex(box => selection.has(box))} /> : undefined;
   const openPreview = (id: string) => {
     if (editing || !active) return;
     setViewer(id === "original" ? { showResult: false } : { showResult: true, version: id });
@@ -274,9 +313,9 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
       </div>
       {notice}
       <div ref={previews} data-image-preview-dragging={draft || transformed ? "" : undefined}
-        className="unity-image-previews"
+        className={"unity-image-previews" + (contourCompare ? " has-contour-compare" : "")}
         style={{ "--mosaic-image-aspect": active.width / active.height } as CSSProperties}>
-        <GameImagePreviewFrame keyboardPane className="game-mosaic-original-frame" aria-label="原图编辑区"
+        <GameImagePreviewFrame keyboardPane className="game-mosaic-original-frame" caption={contourCompare ? "原图" : undefined} aria-label="原图编辑区"
           onContextMenu={originalUrl ? event => openCopyMenu(event, original?.blob) : undefined}
           onClick={event => {
             if (!(event.target as Element).closest(".game-mosaic-image-area, button")) deselectMask();
@@ -326,17 +365,12 @@ export function MosaicPreview({ active, activeResult, visibleCount, paneVisible,
             onContextMenu={event => openCopyMenu(event, preferredVersion.blob)}
             onOpen={editing ? undefined : () => openPreview(preferredVersion.id)} />
         ) : <GameImagePreviewFrame keyboardPane aria-label="去码结果" fallback={<p className="hint">尚未生成去码结果</p>} />}
+        {contourCompare}
       </div>
       <div key={active.id} ref={copyMenu} className="unity-gallery-menu" popover="auto" role="menu"
         aria-label="预览图片操作" style={{ inset: "auto", margin: 0 }}>
         <button type="button" role="menuitem" onClick={() => void copyPreviewImage()}>复制图片</button>
       </div>
-      {!showSaved && preferredVersion?.model === "illustrious-line-refine" && original?.blob &&
-        <details open style={{ maxHeight: "40vh", overflow: "auto" }}>
-          <summary>第一段裁剪对比</summary>
-          {preferredVersion.boxes.map((box, index) => <MosaicContourCrop key={preferredVersion.id + ":" + index}
-            source={original.blob!} version={preferredVersion} box={box} index={index} />)}
-        </details>}
       {footer}
     </section>}
   </>;
