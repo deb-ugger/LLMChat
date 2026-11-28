@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+Error.stackTraceLimit = 0;
 import { build, transform } from "esbuild";
 import { fileURLToPath } from "node:url";
 
@@ -16,13 +17,13 @@ const result = await build({
     export * as failures from './components/GameBatchResults';
     export * as session from './unityTranslationSession';
     export * as layout from './gameTextLayout';
-    export * as translation from './unityTranslation';
+    export * as translation from './unityTranslation'; export * as scenes from './gameTextScenes'; export * as glossary from './gameProjectGlossary'; export {reviewGameText} from './gameTextReview'; export * as dialogueContext from './gameTranslationContext'; export * as params from './gameTextParameters';
   `, resolveDir: fileURLToPath(new URL("../src", import.meta.url)), loader: "ts" },
   bundle: true, write: false, platform: "browser", format: "esm",
   external: ["fs", "path"],
   define: { "import.meta.env.VITE_API_BASE": '""' },
 });
-const { structure, display, project, prompts, output, filters, failures, session, layout, translation: translationModule } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
+const { structure, display, project, prompts, output, filters, failures, session, layout, translation: translationModule, scenes, glossary, reviewGameText, dialogueContext, params } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
 
 const source = "\\P[1]は穴に『\\P[1]の母乳』を流し込んだ";
 const wrong = "\\P[1]往洞口灌入『\\P[1]灌入『的母乳』";
@@ -45,9 +46,10 @@ const translation = await display.translateGameDisplayText(source, async input =
   calls.push(input);
   assert.equal(structure.gameBracketIssue(input), "", "never issue a half-quote translation request");
   if (calls.length === 1) return "错误的『译文";
-  const marker = input.match(/\{LLMCHAT_FORMAT_\d+\}/g)?.[0];
+  const markers = input.match(/\{LLMCHAT_FORMAT_\d+\}/g);
+  const marker = markers?.[1];
   assert.ok(marker, "retry quoted text together with its internal marker");
-  return `向洞口倒入『${marker}的母乳』`;
+  return `${markers[0]}向洞口倒入『${marker}的母乳』`;
 }, "zh-CN", "ja", new Map(), true);
 assert.equal(calls.length, 2);
 assert.equal(translation, "\\P[1]向洞口倒入『\\P[1]的母乳』");
@@ -179,7 +181,7 @@ assert.equal(project.isGameTextScreened(savedScreen), true);
 assert.equal(await runScreen(), true);
 assert.equal(savedScreen.entries.find(row => row.id === "done").selected, false);
 assert.ok(workspaceCode.includes("const screenComplete = screened;"));
-assert.ok(workspaceCode.includes('publish(resetGameTextScreening({ ...importing, entries }))'));
+assert.ok(workspaceCode.includes('publish(resetGameTextScreening({ ...importing, entries, sceneTranslations:'));
 assert.ok(!workspaceCode.includes("screened || textReady"));
 console.log("PASS actual screening transition, completed/empty/partial/error selection, rerun, legacy state invalidation and import reset");
 
@@ -230,7 +232,7 @@ const runMessages = [], savedBatches = [], liveFailures = [];
 const fixtureRows = ["一番目の説明", "二番目の説明", "三番目の説明", "四番目の説明"].map((source, index) => ({ ...entry, source, id: String(index + 1), translation: "" }));
 const runningProject = { ...initialProject, entries: fixtureRows, workflow: { screened: true, version: project.gameTextScreeningVersion, screenedIds: fixtureRows.map(row => row.id), skippedIds: [] } };
 const runtime = {
-  ...context, createTextRunErrors, gameTextSupplementIds: project.gameTextSupplementIds,
+  ...context, createTextRunErrors, reviewGameText, createGameScenePlan: scenes.createGameScenePlan, mergeGameGlossary: glossary.mergeGameGlossary, qualityPending: () => 0, gameTextSupplementIds: project.gameTextSupplementIds,
   models: [], screened: true, baseline: { current: JSON.parse(JSON.stringify(runningProject)) },
   current: { current: runningProject }, controller: { current: null }, writes: { current: Promise.resolve() }, optionWrite: { current: null }, work: { current: null }, queue: { current: null },
   options: { kind: "engine", target: "zh-CN", skipTargetLanguage: true, joinLines: false }, wrapMode: "source", gamePath: "fixture", engines: [], failureReasons: new Map(),
@@ -430,7 +432,7 @@ assert.equal(resetContext.saved.entries[1].translation, entry.translation, "clea
 assert.equal(resetContext.saved.workflow.freshTerms, true);
 
 const clearScreenStart = workspaceCode.indexOf("  const clearScreen = async");
-const clearScreenEnd = workspaceCode.indexOf("  const textReady =", clearScreenStart);
+const clearScreenEnd = workspaceCode.indexOf("  const pendingQuality =", clearScreenStart);
 const clearScreenCode = (await transform(workspaceCode.slice(clearScreenStart, clearScreenEnd), { loader: "ts", target: "es2022" })).code;
 const clearContext = { ...resetContext, current: { current: { ...initialProject, entries: [entry] } }, optionWrite: { current: null }, writes: { current: Promise.resolve() }, baseline: { current: null }, setImportIssues() {}, setImportReport() {} };
 clearContext.persist = async value => { clearContext.saved = JSON.parse(JSON.stringify(value)); };
@@ -451,3 +453,16 @@ assert.equal(await runTranslation(), true, runtime.progressFailure);
 assert.equal(runtime.finalFile.entries[0].translation, "你好", "write the complete file after the last result, not just incremental checkpoints");
 assert.equal(runtime.finalFile.workflow.freshTerms, false, "finish the fresh-term mode after all selected rows are complete");
 console.log("PASS actual clear removes terminology/provenance cache and completed runs refresh the complete translation file");
+
+const sceneSource=String.raw`\P[1]は大丈夫？`;
+runtime.options={kind:"llm",model:"fixture-model",target:"zh-CN",source:"ja",joinLines:true,wrapMode:"natural",includeContext:true};runtime.wrapMode="natural";
+runtime.current.current={...initialProject,entries:[{...entry,source:sceneSource,translation:"",dialoguePositions:[{page:0,line:1},{page:1,line:1}]}],dialoguePages:[{file:"Map001.json",event:1,page:0,commands:[0,2],lines:["受傷した人",sceneSource]},{file:"CommonEvents.json",event:2,page:0,commands:[0,2],lines:["準備した人",sceneSource]}],workflow:{screened:true,version:project.gameTextScreeningVersion,screenedIds:["1"]}};
+runtime.baseline.current=JSON.parse(JSON.stringify(runtime.current.current));
+runtime.gameDialogueReuseKey=dialogueContext.gameDialogueReuseKey;runtime.createGameTranslationContext=dialogueContext.createGameTranslationContext;runtime.gameTranslationRetry=dialogueContext.gameTranslationRetry;runtime.prepareGameTerms=async()=>({terms:new Map(),issues:new Map()});
+runtime.gameSystemMessageContext=params.gameSystemMessageContext;runtime.semanticGameParameter=params.semanticGameParameter;runtime.gameFormatTokens=display.gameFormatTokens;
+let primary=0,reviews=0;
+runtime.translateGameWithOllama=async input=>{primary++;return {ok:true,translation:input.replace("は大丈夫？","她还好吗？")};};
+runtime.requestGameModelJson=async(_settings,_model,prompt)=>{reviews++;assert.equal(primary,2,"review batches start after all primary translations finish");const data=JSON.parse(prompt.slice(prompt.indexOf('\n{"target"')+1));assert.equal(data.entries.length,2);return data.entries.map(value=>({id:value.id,verdict:"revise",reason:"结合当前事件区分语义",translation:value.context.some(item=>item.source.includes("受傷"))?String.raw`\P[1]伤得重吗？`:String.raw`\P[1]准备好了吗？`}));};
+assert.equal(await runTranslation(),true,runtime.progressFailure);assert.equal(primary,2);assert.equal(reviews,1);
+assert.deepEqual(new Set(runtime.finalFile.sceneTranslations.map(value=>value.translation)),new Set([String.raw`\P[1]伤得重吗？`,String.raw`\P[1]准备好了吗？`]));assert.ok(runtime.finalFile.sceneTranslations.every(value=>value.contextKnown&&value.semanticReview.state==="changed"));
+console.log("PASS actual workspace repeated-scene translation, batched semantic revision and full project persistence");

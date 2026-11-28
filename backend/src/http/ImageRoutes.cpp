@@ -29,6 +29,7 @@ void registerGameModelRoute(httplib::Server& svr, const ConfigStore& config_, Us
         try {
             const bool textScreening = req.path == "/api/game-text/model";
             const auto body = json::parse(req.body);
+            const bool textReview = textScreening && body.value("textSemanticReview", false);
             const auto id = body.at("taskId").get<std::string>();
             if (id.empty() || id.size() > 96) throw std::runtime_error("invalid taskId");
             LlmRequest request;
@@ -113,8 +114,8 @@ void registerGameModelRoute(httplib::Server& svr, const ConfigStore& config_, Us
             request_cancel::Scope cancellation(translationTasks, id, task);
             if (task->stopped()) { res.status = 499; res.set_content(errorJson("任务已取消").dump(), "application/json"); return; }
             auto event = UsageStore::makeEventSkeleton();
-            event.feature = textScreening ? "game_text_screening" : "game_image_model";
-            event.endpoint = textScreening ? "game-text/model" : "game-images/model"; event.channel = "llm"; event.model = request.model;
+            event.feature = textReview ? "unity" : textScreening ? "game_text_screening" : "game_image_model";
+            event.endpoint = textReview ? "game-text/review" : textScreening ? "game-text/model" : "game-images/model"; event.channel = "llm"; event.model = request.model;
             event.apiHost = UsageStore::hostFromApiUrl(request.apiUrl);
             event.vendor = UsageStore::vendorFromHostOrModel(event.apiHost, request.model, "");
             ScopedUsageLog usageLog(usage_, event);

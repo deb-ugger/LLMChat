@@ -1,0 +1,8 @@
+.game-text-entry-quality { flex-basis: 100%; }
+.game-text-entry-quality > button { font-size: .85em; }
+.game-action-confirm.game-text-scene-editor { width: min(800px, 92vw); }
+.game-text-scene-editor .game-confirm-details { max-height: 68vh; overflow: auto; }
+.game-text-scene-editor label { display: block; margin: 10px 0; }
+.game-text-scene-editor textarea, .game-text-scene-editor select { width: 100%; }
+.game-text-scene-editor pre, .game-scene-context p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; font: inherit; }
+.game-scene-context { border-inline-start: 3px solid var(--line); padding-left: 10px; opacity: .8; }

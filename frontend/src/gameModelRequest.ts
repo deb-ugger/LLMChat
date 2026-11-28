@@ -24,6 +24,7 @@ export async function requestGameModelJson(settings: Settings, model: string, pr
       const response = await fetch(`${API_BASE}/api/${endpoint}/model`, { method: "POST", signal,
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...connection, taskId, prompt, image, localModel,
           mosaicReview: execution?.role === "mosaic",
+          textSemanticReview: execution?.role === "textReview",
           imageClassification: execution?.imageClassification === true,
           groupedImageOcr: execution?.groupedImageOcr === true,
           imageLayout: execution?.role === "layout",

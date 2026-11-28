@@ -1,4 +1,5 @@
 import type { UnityEntry } from "./unityOffline";
+type TermEntry = UnityEntry & { rpgTerm?: boolean };
 import { gameTextNeedsNoTranslation, gameSpeakerNames, gameControlSignature, withoutGameSpeakerNames, gameFormatTokens, hasGameJapaneseText } from "./gameDisplayText";
 import { unityTranslationProblem } from "./unityTokens";
 import { GAME_RESOURCE_LABELS, isGameDialogue } from "./gameTranslationContext";
@@ -45,7 +46,7 @@ function openTermMemory(scope: string | undefined, target: string) {
 }
 
 /** Prepare a game-local, target-specific dictionary before concurrent dialogue requests. */
-export async function prepareGameTerms(selected: UnityEntry[], references: UnityEntry[], target: string, glossary: string | Term[] | undefined,
+export async function prepareGameTerms(selected: TermEntry[], references: TermEntry[], target: string, glossary: string | Term[] | undefined,
   translate: (name: string, context: string) => Promise<string>, signal: AbortSignal, progress?: (detail: string, completed: number, total: number) => void, memoryScope?: string, reuseReferences = true) {
   signal.throwIfAborted();
   progress?.("正在从插件姓名框和游戏数据库收集术语", 0, 0);
@@ -69,7 +70,7 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
     for (const entry of references) {
       const kind = entry.rpgTextKind;
       const term = entry.source.trim();
-      if (kind && kind !== "interface" && (selectedSources.has(entry.source) || term.length >= 2 && bodies.includes(term)))
+      if (kind && (kind !== "interface" || entry.rpgTerm) && (selectedSources.has(entry.source) || term.length >= 2 && bodies.includes(term)))
         add(term, `文本用途：${GAME_RESOURCE_LABELS[kind]}。只输出该术语的译名。`, kind === "character");
     }
   }
@@ -82,7 +83,7 @@ export async function prepareGameTerms(selected: UnityEntry[], references: Unity
   const votes = new Map<string, Map<string, { count: number; positions: string[] }>>();
   for (const entry of reuseReferences ? references : []) {
     if (entry.error || !entry.translation || entry.translationTarget && entry.translationTarget !== target) continue;
-    const term = entry.rpgTextKind && entry.rpgTextKind !== "interface" && !isGameDialogue(entry.source, entry);
+    const term = entry.rpgTextKind && (entry.rpgTextKind !== "interface" || entry.rpgTerm) && !isGameDialogue(entry.source, entry);
     const original = term ? [entry.source.trim()] : gameSpeakerNames(entry.source);
     if (!original.some(name => requested.has(name))) continue;
     if (gameControlSignature(entry.source) !== gameControlSignature(entry.translation) || unityTranslationProblem(withoutGameSpeakerNames(entry.source), withoutGameSpeakerNames(entry.translation))) continue;

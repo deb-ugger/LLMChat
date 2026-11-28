@@ -1,6 +1,7 @@
 import { unityTranslationTokens, unityTranslationProblem } from "./unityTokens";
 import type { UnityEntry } from "./unityOffline";
 import { gameBracketIssue, gameBracketProblem, restoreGameBracketStyle, splitGameTranslationSpans } from "./gameTextStructure";
+import { gameParameterContext, knownGameSystemTranslation, semanticGameParameter } from "./gameTextParameters";
 
 const controls = String.raw`\\(?:[A-Za-z]+(?:\[[^\]\r\n]*\]|<[^>\r\n]*>)?|[.!|^><{}$\\])`;
 const speaker = String.raw`\\(?:n[1-5]?|nc|nr|name|speaker)<([^>\r\n]*)>`;
@@ -45,6 +46,8 @@ const rpgSystemTranslations = new Map<string, [string, string]>([
 ]);
 
 export function translateRpgSystemMessage(entry: Pick<UnityEntry, "source" | "rpgSystemMessage"> | undefined, target: string) {
+  const known = knownGameSystemTranslation(entry, target);
+  if (known !== undefined) return known;
   if (!entry?.rpgSystemMessage || target !== "zh-CN") return undefined;
   const template = rpgSystemTranslations.get(entry.rpgSystemMessage.replace(/^(actor|enemy)(?=[A-Z])/, ""));
   if (!template || entry.source.trim().normalize("NFKC") !== template[0].normalize("NFKC")) return undefined;
@@ -191,9 +194,16 @@ function restoreModelFormatting(input: string, output: string) {
 }
 
 /** Keep the whole body and speaker together instead of translating tag-separated fragments. */
-export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string, retryReason?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true, preserveDialogueLines = false) {
+export async function translateGameDisplayText(source: string, translate: (text: string, originalContext?: string, retryReason?: string) => Promise<string>, target = "", sourceLanguage = "auto", terms: ReadonlyMap<string, string> = new Map(), skipTarget = true, preserveDialogueLines = false, preserveSemanticParameters = true) {
+  const confirmed = terms.get(source.trim());
+  if (confirmed !== undefined) return source.replace(/\S[\s\S]*\S|\S/, () => confirmed);
   const tokens: string[] = [];
-  const protect = (value: string) => `{LLMCHAT_FORMAT_${tokens.push(value) - 1}}`;
+  const semantic = new Set<number>();
+  const protect = (value: string, meaningful = false) => {
+    const index = tokens.push(value) - 1;
+    if (meaningful && preserveSemanticParameters) semantic.add(index);
+    return `{LLMCHAT_FORMAT_${index}}`;
+  };
   const keepTarget = !!target && skipTarget;
   if (!gameTextMatchesSource(source, sourceLanguage)) return source;
   if (keepTarget && gameTextNeedsNoTranslation(source, target)) return source;
@@ -203,11 +213,11 @@ export async function translateGameDisplayText(source: string, translate: (text:
   let offset = 0, prepared = "";
   for (const match of source.matchAll(speakers)) {
     const body = source.slice(offset, match.index);
-    prepared += !gameTextMatchesSource(body, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(body, target) ? protect(body) : body;
+    prepared += !gameTextMatchesSource(body, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(body, target) ? protect(body, /[\p{L}\p{N}]/u.test(body)) : body;
     prepared += match[0]; offset = match.index! + match[0].length;
   }
   const remaining = source.slice(offset);
-  prepared += !gameTextMatchesSource(remaining, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining) : remaining;
+  prepared += !gameTextMatchesSource(remaining, sourceLanguage) || keepTarget && gameTextNeedsNoTranslation(remaining, target) ? protect(remaining, /[\p{L}\p{N}]/u.test(remaining)) : remaining;
   const pattern = formats();
   const structure = preserveDialogueLines ? new RegExp(pattern.source + String.raw`|[\t \u3000]*(?:\r\n|\r|\n)[\t \u3000]*`, pattern.flags) : pattern;
   const text = prepared.replace(structure, (token: string) => {
@@ -220,11 +230,11 @@ export async function translateGameDisplayText(source: string, translate: (text:
       if (keepTarget && target.startsWith("zh") && gameTextNeedsNoTranslation(token, target)) return protect(token);
       return protect(token.slice(0, token.indexOf("<") + 1)) + name + protect(">");
     }
-    return protect(token);
+    return protect(token, !!semanticGameParameter(token));
   });
   // Keep delimiter fragments visible around protected controls.
   const screenedText = text.split(/(\{LLMCHAT_FORMAT_\d+\})/).map(part => /^\{LLMCHAT_FORMAT_\d+\}$/.test(part) || !keepTarget ||
-    !/[\p{L}\p{N}]/u.test(part) || gameBracketIssue(part) || !gameTextNeedsNoTranslation(part, target) ? part : protect(part)).join("");
+    !/[\p{L}\p{N}]/u.test(part) || gameBracketIssue(part) || !gameTextNeedsNoTranslation(part, target) ? part : protect(part, true)).join("");
   let termPattern = termPatterns.get(terms);
   if (termPattern === undefined) {
     const escaped = [...terms].filter(([from, to]) => from !== to).map(([from]) => from)
@@ -238,15 +248,20 @@ export async function translateGameDisplayText(source: string, translate: (text:
     if (/^\p{Script=Han}$/u.test(term) && part.trim() !== term) return term;
     const translation = terms.get(term)!;
     appliedTerms.set(term, translation);
-    return protect(translation);
+    return protect(translation, true);
   })).join("") : screenedText;
   const visibleText = protectedText.replace(/\{LLMCHAT_FORMAT_\d+\}/g, "");
-  // Deterministic edge controls and retained names never need model output.
-  const prefix = protectedText.match(/^(?:\s|\{LLMCHAT_FORMAT_\d+\})*/)?.[0] || "";
+  const markerIndex = (marker: string) => Number(marker.match(/\d+/)![0]);
+  const edgePrefix = protectedText.match(/^(?:\s|\{LLMCHAT_FORMAT_\d+\})*/)?.[0] || "";
+  const firstSemantic = [...edgePrefix.matchAll(/\{LLMCHAT_FORMAT_\d+\}/g)].find(match => semantic.has(markerIndex(match[0])));
+  // Only presentation controls can disappear from the model's sentence edges.
+  const prefix = firstSemantic ? edgePrefix.slice(0, firstSemantic.index) : edgePrefix;
   const rest = protectedText.slice(prefix.length);
-  const suffix = rest.match(/(?:\s|\{LLMCHAT_FORMAT_\d+\})*$/)?.[0] || "";
+  const edgeSuffix = rest.match(/(?:\s|\{LLMCHAT_FORMAT_\d+\})*$/)?.[0] || "";
+  const lastSemantic = [...edgeSuffix.matchAll(/\{LLMCHAT_FORMAT_\d+\}/g)].filter(match => semantic.has(markerIndex(match[0]))).at(-1);
+  const suffix = lastSemantic ? edgeSuffix.slice(lastSemantic.index! + lastSemantic[0].length) : edgeSuffix;
   const body = rest.slice(0, rest.length - suffix.length);
-  const referenceText = source.replace(new RegExp(speaker, "gi"), "（说话人：$1）").replace(formats(), "");
+  const referenceText = gameParameterContext(source, tokens, semantic);
   let result = protectedText;
   let retryReason = "";
   if (/\p{L}/u.test(visibleText)) {
@@ -279,7 +294,7 @@ export async function translateGameDisplayText(source: string, translate: (text:
   retryReason ||= JSON.stringify(result.match(markerPattern) || []) !== JSON.stringify(expectedMarkers) ?
     "译文中的格式标记丢失、重复或顺序错误" : problemWith(restoreMarkers(result));
   if (retryReason) {
-    const pieces = splitGameTranslationSpans(protectedText);
+    const pieces = semantic.size ? [protectedText] : splitGameTranslationSpans(protectedText);
     const translatedPieces: string[] = [];
     const retriedSpans = new Map<string, string>();
     for (const piece of pieces) {

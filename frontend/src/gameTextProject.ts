@@ -6,17 +6,20 @@ import type { UnityEntry } from "./unityOffline";
 import { applyUnityTranslationRows, readUnityTranslationRows, type TranslationRow, type UnityTranslationImportMode } from "./unityTranslationFiles";
 import { unityTranslationError } from "./unityOffline";
 import { hasTranslationPromptLeak, TRANSLATION_PROMPT_LEAK } from "./unityTokens";
+import type { GameSemanticEntry } from "./gameTextSemantics";
+import type { GameProjectTerm } from "./gameProjectGlossary";
+import type { GameSceneTranslation } from "./gameTextScenes";
 
-export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; screeningModel?: string; nameModel?: string; source: string; target: string; joinLines: boolean; includeContext?: boolean; wrapMode?: GameWrapMode; lineMode?: import("./unityLineLayout").UnityLineMode; lineModel?: string; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
+export type GameTextOptions = { kind: "llm" | "local" | "engine"; model: string; dialogueModel?: string; screeningModel?: string; nameModel?: string; reviewModel?: string; semanticReview?: boolean; sceneAware?: boolean; source: string; target: string; joinLines: boolean; includeContext?: boolean; wrapMode?: GameWrapMode; lineMode?: import("./unityLineLayout").UnityLineMode; lineModel?: string; skipTargetLanguage?: boolean; onlySourceLanguage?: boolean };
 export type DialogueRepair = "position" | "continuation" | "alignment" | "name";
 export const dialogueRepairLabels: Record<DialogueRepair, string> = { position: "定位参数", continuation: "句尾对齐", alignment: "缺少行首定位", name: "姓名框" };
 export type DialogueRepairPreview = { input: string; text: string };
-export type GameTextEntry = UnityEntry & { dialogueRepairs?: DialogueRepair[]; dialogueRepairPreview?: DialogueRepairPreview; importPartial?: { translation: string; unmatched: string[] }; translationResult?: { translation: string; target: string } };
+export type GameTextEntry = GameSemanticEntry & { dialogueRepairs?: DialogueRepair[]; dialogueRepairPreview?: DialogueRepairPreview; importPartial?: { translation: string; unmatched: string[] }; translationResult?: { translation: string; target: string } };
 export const gameTextImportPartial = (entry: UnityEntry) => {
   const partial = (entry as GameTextEntry).importPartial;
   return partial?.translation === entry.translation ? partial : undefined;
 };
-export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; supplementalIds?: string[]; version?: number; freshTerms?: boolean }; messageCore?: boolean; positionRepairs?: number };
+export type GameTextProject = { dialoguePages?: import("./gameTranslationContext").GameDialoguePage[]; glossary?: GameProjectTerm[]; sceneTranslations?: GameSceneTranslation[]; entries: GameTextEntry[]; sourcePath: string; translationPath: string; options: Partial<GameTextOptions>; workflow?: { screened: boolean; screenedIds?: string[]; skippedIds?: string[]; supplementalIds?: string[]; version?: number; freshTerms?: boolean }; messageCore?: boolean; positionRepairs?: number };
 
 export const gameTextScreeningVersion = 2;
 
@@ -59,11 +62,12 @@ export function restoreGameTextState(screened: boolean, selected: number, comple
   return interrupted ? "stopped" : "idle";
 }
 
-export function sameTextEdit(current: UnityEntry, saved: UnityEntry) {
+export function sameTextEdit(current: GameSemanticEntry, saved: GameSemanticEntry) {
   return current.selected === saved.selected && current.translation === saved.translation &&
     current.translationTarget === saved.translationTarget && current.layoutDraftTarget === saved.layoutDraftTarget &&
     current.screeningDraft === saved.screeningDraft && current.layoutDraft === saved.layoutDraft && current.error === saved.error &&
-    JSON.stringify(gameTextImportPartial(current)) === JSON.stringify(gameTextImportPartial(saved));
+    JSON.stringify(gameTextImportPartial(current)) === JSON.stringify(gameTextImportPartial(saved)) &&
+    JSON.stringify(current.semanticReview) === JSON.stringify(saved.semanticReview);
 }
 const messageCoreNames = /\\(?:nc|nr|n[1-5]?)<([^<>\r\n]*)>/gi;
 const explicitMessageCoreName = /\\nc<[^<>\\\r\n]+>(?=[\t \r\n]*$)/i;

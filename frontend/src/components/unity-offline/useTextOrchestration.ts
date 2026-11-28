@@ -206,7 +206,7 @@ export async function runTextTranslation(p: UnityProject, controller: AbortContr
       catch (error) { if (!controller.signal.aborted && signal.reason?.name === "TimeoutError") throw new Error(`${requestOptions.model || provider} 请求超过 ${seconds} 秒未响应`); if (provider === "llm" && !controller.signal.aborted) throw new Error(`${requestOptions.model || "大模型"}：${error instanceof Error ? error.message : String(error)}`); throw error; }
     };
     return translateGameDisplayText(text, request, options.skipTargetLanguage ? options.target : "", "auto", terminology,
-      !!options.skipTargetLanguage, preserveDialogue);
+      !!options.skipTargetLanguage, preserveDialogue, provider === "llm");
   };
   const measure = (text: string) => [...prepareUnityTranslationRequest(text, mergeLines)].length;
   const engineTargetCharacters = !layoutOnly && options.provider !== "llm" ? unityTranslationCharacters(selectedEntries, next.entries, unityTranslationError, text => prepareUnityTranslationRequest(text, mergeLines), mergeLines ? canReuseUnityStructuredDraft : undefined, unityTranslationContextKey).pendingCharacters : 0;

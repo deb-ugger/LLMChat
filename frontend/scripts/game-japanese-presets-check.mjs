@@ -32,7 +32,7 @@ for (const preset of all) {
   assert.equal(preset.value.text.options.lineModel, undefined);
 }
 assert.equal(JSON.stringify(current), original);
-const textScenes = ["textScreen", "text", "dialogue", "names", "line"];
+const textScenes = ["textScreen", "text", "dialogue", "names", "textReview", "line"];
 const imageScenes = ["screen", "refine", "recognize", "image", "review", "layout"];
 const catalog = prompts.gamePromptCatalog();
 assert.equal(new Set(catalog.map(row => row.id)).size, catalog.length);
@@ -101,7 +101,7 @@ assert.equal(applied.length, textScenes.length);
 assert.ok(applied.every(([scene, prompt]) => prompt === prompts.gameJapanesePromptId(scene, true)));
 console.log("PASS Japanese and R18 built-ins: all scene bindings, Japanese prompts, structure rules, models/concurrency, missing steps, source-language options, saved configuration refresh and role application");
 
-storage.delete("llmchat-game-test-config-natural-lines-v1");
+storage.delete("llmchat-game-test-config-semantics-v1");
 storage.set("llmchat-game-test-config-japanese-prompts-v2", "1");
 const oldDefaults = all.map(preset => {
   const saved = structuredClone(preset);

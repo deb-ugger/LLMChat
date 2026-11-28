@@ -1,5 +1,7 @@
 import type { TranslateOptions } from "./api";
 import type { UnityEntry } from "./unityOffline";
+import type { GameSemanticEntry } from "./gameTextSemantics";
+import { gameSystemMessageContext } from "./gameTextParameters";
 import { gameFormatTokens, gameSpeakerNames, gameTextHasSpeaker } from "./gameDisplayText";
 
 export const GAME_CONTEXT_HINT = "大模型可参考同一剧情分支或资源中的前后文。条数和每条长度可在「设置 → 游戏翻译」调整。";
@@ -33,7 +35,7 @@ export function gameTranslationRetry(context: Context | undefined, reason?: stri
   return reason ? { context: [...context || [], reference(`重译原因：${reason}。只翻译当前给出的正文片段，完整译为目标语言。括号、引用及其中的控制符是完整结构，保留成对边界、包围范围和标记顺序；不要因片段重译新增半边括号或重复动作。`)], llmBatch: false } : { context };
 }
 export const GAME_RESOURCE_LABELS = { character: "角色名", place: "地点名", skill: "技能名", item: "物品或装备名", interface: "游戏界面用语" } as const;
-export const isGameDialogue = (source: string, entry?: UnityEntry) => !!entry?.dialoguePosition || gameTextHasSpeaker(source);
+export const isGameDialogue = (source: string, entry?: GameSemanticEntry) => !!entry?.dialoguePosition || !!entry?.dialoguePositions?.length || gameTextHasSpeaker(source);
 
 function singleSpeaker(text: string) {
   const names = new Set(gameSpeakerNames(text).filter(name => name && !/[\\{}<>]/.test(name)));
@@ -44,7 +46,7 @@ function visibleReference(text: string, name?: string) {
   return (name ? `${name}：` : "") + text.replace(gameFormatTokens(), "").trim();
 }
 
-export type GameDialoguePage = { file: string; event: number; page: number; commands: number[]; lines: string[]; speakers?: Record<number, string> };
+export type GameDialoguePage = { file: string; event: number; page: number; commands: number[]; lines: string[]; slots?: string[]; speakers?: Record<number, string> };
 export function gameDialogueReuseKey(entry: UnityEntry) {
   const source = entry.source.replace(/\r\n?/g, "\n").normalize("NFC").trim();
   const position = entry.dialoguePosition;
@@ -52,23 +54,26 @@ export function gameDialogueReuseKey(entry: UnityEntry) {
     gameTextHasSpeaker(source) ? JSON.stringify(["dialogue", entry.id, source]) : source;
 }
 
-export function createGameTranslationContext(entries: UnityEntry[], includeNeighbors: boolean, dialoguePages?: GameDialoguePage[]) {
+export function createGameTranslationContext(entries: GameSemanticEntry[], includeNeighbors: boolean, dialoguePages?: GameDialoguePage[]) {
   const lengths = loadGameContextLengths();
   const previousLimit = lengths.previous ? lengths.previousCount : 0;
   const followingLimit = lengths.following ? lengths.followingCount : 0;
   const positions = includeNeighbors && (previousLimit || followingLimit) ? new Map(entries.map((entry, index) => [entry.id, index])) : undefined;
-  return (entry?: UnityEntry, nameContext?: string, originalContext?: string): Context | undefined => {
-    if (nameContext) return [reference(nameContext)];
+  return (entry?: GameSemanticEntry, nameContext?: string, originalContext?: string): Context | undefined => {
+    if (nameContext) return [reference(nameContext), ...(originalContext ? [reference(originalContext)] : [])];
     const context: Context = [];
     const positionInPage = entry?.dialoguePosition;
     const dialogue = positionInPage && dialoguePages?.[positionInPage.page];
     const tagName = entry && singleSpeaker(entry.source);
-    if (entry?.rpgTextKind || entry?.rpgSystemMessage) {
-      return [reference(entry.rpgTextContext || `文本用途：${entry.rpgTextKind ? GAME_RESOURCE_LABELS[entry.rpgTextKind] : "RPG 系统消息"}。`)];
-    }
     if (originalContext) context.push(reference(`当前条目的完整语境：${originalContext}`));
+    if (entry?.rpgTextKind || entry?.rpgSystemMessage) {
+      context.push(reference(entry.rpgTextContext || `文本用途：${entry.rpgTextKind ? GAME_RESOURCE_LABELS[entry.rpgTextKind] : "RPG 系统消息"}。`));
+      const parameters = gameSystemMessageContext(entry.rpgSystemMessage);
+      if (parameters) context.push(reference(parameters));
+    }
     if (dialogue && positionInPage && dialogue.lines[positionInPage.line] === entry?.source) {
       const line = positionInPage.line;
+      context.push(reference(`当前场景：${dialogue.file}，事件 ${dialogue.event}，事件页 ${dialogue.page + 1}，指令 ${dialogue.commands[line]}。`));
       const speakerAt = (index: number) => {
         const name = dialogue.speakers?.[index]?.trim();
         return singleSpeaker(dialogue.lines[index] || "") || (name && !/[\\{}<>]/.test(name) ? name : undefined);

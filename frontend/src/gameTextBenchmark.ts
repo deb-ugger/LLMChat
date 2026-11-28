@@ -20,6 +20,12 @@ import { loadLocalModelProfiles, resolveFeatureLlm } from "./modelPresets";
 import { buildUnityTranslateOptions, localTextRequestGroup, prepareUnityTranslationRequest } from "./unityTranslation";
 import { translateUnitySession } from "./unityTranslationSession";
 import type { UnityEntry, UnityProgress } from "./unityOffline";
+import { mergeGameGlossary, type GameProjectTerm } from "./gameProjectGlossary";
+import { createGameScenePlan } from "./gameTextScenes";
+import { reviewGameText } from "./gameTextReview";
+import { requestGameModelJson } from "./gameModelRequest";
+import { gameSystemMessageContext } from "./gameTextParameters";
+import { outstandingGameSemanticIssues, type GameSemanticEntry } from "./gameTextSemantics";
 
 export const benchmarkRoles = ["text", "dialogue", "names"] as const;
 type Role = typeof benchmarkRoles[number];
@@ -29,6 +35,7 @@ export type BenchmarkConfig = {
   mosaic?: MosaicBenchmarkSetup;
   imageMode?: OcrMode; imageStrategy?: "staged" | "full"; localLanes?: number; imageConfidence?: number; engines?: UnityEngineChoice[];
   prompts: GamePromptSelection; wrap: GameWrapMode; includeContext: boolean; skipTarget: boolean;
+  glossary?: GameProjectTerm[]; semanticReview?: boolean; sceneAware?: boolean; reviewModel?: string;
 };
 export type BenchmarkResult = {
   round: number; label: string; selected: number; translated: number; failed: number;
@@ -129,19 +136,24 @@ type Reporter = Parameters<typeof translateGameWithOllama>[3];
 
 async function runSample(config: BenchmarkConfig, workload: Workload, settings: Settings, scope: string,
   signal: AbortSignal, report: Reporter, progress: (value: UnityProgress) => void, onSample?: (sample: string) => void) {
-  const entries = workload.entries.map(entry => workload.selectedIds.has(entry.id)
-    ? { ...entry, selected: true, translation: "", error: "", layoutDraft: undefined, screeningDraft: undefined }
+  const entries: GameSemanticEntry[] = workload.entries.map(entry => workload.selectedIds.has(entry.id)
+    ? { ...entry, selected: true, translation: "", error: "", semanticReview: undefined, layoutDraft: undefined, screeningDraft: undefined }
     : { ...entry, selected: false });
-  const rows = entries.filter(entry => entry.selected);
+  const plan = createGameScenePlan({ entries, dialoguePages: workload.dialoguePages }, entries.filter(entry => entry.selected), config.target, !!config.models.text.id && config.sceneAware !== false);
+  const rows = plan.entries;
+  const reviewPrompts = { ...config.prompts };
+  rememberBenchmarkExecution(reviewPrompts, scope, "translate", 1);
+  let pendingReview = 0;
+  const glossary = mergeGameGlossary(settings.textGlossary, config.glossary || [], config.target);
   measureGameWork(scope, "processingMs", () => preserveTargetGameText(rows, config.target, config.source, config.skipTarget));
   const references = rows; // Reuse only content produced in this sample.
-  const context = createGameTranslationContext(entries, config.includeContext, workload.dialoguePages);
+  const context = createGameTranslationContext(rows, config.includeContext, workload.dialoguePages);
   const profiles = loadLocalModelProfiles();
   const models = Object.fromEntries(benchmarkRoles.map(role => {
     const selected = config.models[role].id ? config.models[role] : config.models.text;
     const resolved = buildUnityTranslateOptions(settings, "llm", config.source, config.target, selected.id, config.wrap !== "keep",
       !!profiles[selected.id], gameTaskPrompt(role, config.prompts, {source:config.source,target:config.target}), config.wrap);
-    return [role, { ...resolved, llmConcurrency: selected.lanes, performanceScope: scope, performanceStep: "translate" }];
+    return [role, { ...resolved, glossary, llmConcurrency: selected.lanes, performanceScope: scope, performanceStep: "translate" }];
   })) as Record<Role, ReturnType<typeof buildUnityTranslateOptions>>;
   const enabledEngines = config.models.text.id ? [] : (config.engines || []).filter(engine => engine.enabled && engineReady(parseEngineKeys(settings.translateEngineKeys), engine.id));
   if (!config.models.text.id && !enabledEngines.length) throw new Error("请启用可用的文本翻译引擎");
@@ -165,13 +177,14 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
         { ...model, ...gameTranslationRetry(context(entry, nameContext, reference), retryReason), ollamaReasoningOff: !!nameContext && canDisableOllamaNameThinking(model) }, report);
       if (!result.ok) throw new Error(result.error || result.code || "翻译请求失败");
       return result.translation;
-    }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue" && config.wrap !== "natural");
+    }, config.target, config.source, terms, config.skipTarget, !pool && role === "dialogue" && config.wrap !== "natural", !pool);
   };
   try {
-    const preparedTerms = await prepareGameTerms(rows, references, config.target, settings.textGlossary,
+    const preparedTerms = await prepareGameTerms(rows, references, config.target, glossary,
       (name, dialogue) => request(name, undefined, dialogue), signal,
       (detail, completed, total) => progress({ detail, completed, total, textStage: "names", model: models.names.model }));
     terms = preparedTerms.terms;
+    for (const entry of rows) { const term = glossary.find(term => term.src === entry.source.trim()); if (term) { entry.translation = term.dst; entry.translationTarget = config.target; entry.error = ""; } }
     await translateUnitySession(rows, new Map(), {
       signal, references, key: gameDialogueReuseKey, entryProblem: entry => gameTermProblem(entry.source, preparedTerms.issues), concurrency: pool ? Math.max(1, pool.concurrency) : Object.values(models).some(model => model.localModel) ? 8 : 16,
       timingScope: scope, requestGroup: pool ? undefined : localTextRequestGroup(models.text, models.dialogue), validate: gameTextProblem, persist: async () => {},
@@ -180,10 +193,17 @@ async function runSample(config: BenchmarkConfig, workload: Workload, settings: 
         wrapGameTextToSource(source, translated) : undefined,
       preserveLayout: config.wrap === "natural" ? undefined : !pool ? isGameDialogue : config.wrap === "keep" ? gameTextHasSpeaker : undefined, progress,
     });
+    if (!pool && config.semanticReview !== false) pendingReview = (await reviewGameText(rows, { target: config.target, terms: config.glossary || [], signal, includeFailures: true,
+      request: items => requestGameModelJson(settings, config.reviewModel || models.names.model || models.text.model || "", gameTaskPrompt("textReview", config.prompts, {source:config.source,target:config.target}) + "\n" + JSON.stringify({ glossary, entries: items.map(({id,entry,issues}) => ({id,source:entry.source,translation:entry.translation,issues,context:context(entry),parameters:gameSystemMessageContext(entry.rpgSystemMessage)})) }), signal, undefined, "game-text", report, { selection: reviewPrompts, role: "textReview" }),
+      validate: gameTextProblem, format: config.wrap === "natural" ? validateGameNaturalLines : config.wrap === "join" ? wrapGameTextToSource : undefined,
+      persist: async changes => { plan.merge(changes); }, progress: (completed,total,detail) => progress({ completed,total,detail }),
+    })).unresolved;
+    plan.finish();
   } finally { pool?.dispose(); }
   signal.throwIfAborted();
-  const failed = rows.filter(entry => entry.error || !entry.translation).length;
-  return { failed, translated: rows.length - failed };
+  const failedSources = new Set(rows.filter(entry => entry.error || !entry.translation || !pool && config.semanticReview !== false && outstandingGameSemanticIssues(entry, config.target, config.glossary).length).map(entry => entry.source));
+  const failed = entries.filter(entry => entry.selected && failedSources.has(entry.source)).length;
+  return { failed, translated: workload.selectedIds.size - failed, ...(pendingReview ? { summary: `语义复核有 ${pendingReview} 处待确认` } : {}) };
 }
 
 export type BenchmarkStepRunner = (config: BenchmarkConfig, settings: Settings, scope: string, record?: RecordImageBenchmarkOutcome, runId?: string,

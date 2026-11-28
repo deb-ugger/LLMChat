@@ -18,7 +18,7 @@ const testModels = {
 export type GameTestRole = { model?: string; prompt: string; concurrency: number };
 export type GameTestRoles = Partial<Record<GamePromptScene, GameTestRole>>;
 export type GameTestPart<T> = { options: T; roles: GameTestRoles };
-export type GameTestTextOptions = Omit<GameTextOptions, "model" | "screeningModel" | "dialogueModel" | "nameModel"> & {
+export type GameTestTextOptions = Omit<GameTextOptions, "model" | "screeningModel" | "dialogueModel" | "nameModel" | "reviewModel"> & {
   engines: UnityEngineChoice[]; lineMode?: UnityLineMode;
 };
 export type GameTestImageOptions = {
@@ -93,6 +93,7 @@ export async function prepareGameTestModels(value: GameTestConfiguration, availa
   if (text) {
     roles.push(text.roles.textScreen);
     if (text.options.kind !== "engine") roles.push(text.roles.text, text.roles.dialogue, text.roles.names);
+    if (text.options.kind !== "engine" && text.options.semanticReview !== false) roles.push(text.roles.textReview);
     if (text.options.joinLines && text.options.wrapMode !== "natural" && text.options.lineMode === "model") roles.push(text.roles.line);
   }
   if (images) {
@@ -134,6 +135,8 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   const text = value.text;
   text.options.kind = "llm";
   text.options.includeContext = true;
+  text.options.semanticReview = true;
+  text.options.sceneAware = true;
   text.options.wrapMode = "natural";
   text.options.joinLines = true;
   text.options.lineMode = "local";
@@ -142,6 +145,7 @@ export function defaultGameTestConfiguration(current: GameTestConfiguration): Ga
   for (const scene of ["text", "dialogue"] as const)
     setRole(text.roles, scene, normal, gameDefaultTextModel.concurrency);
   setRole(text.roles, "names", modelId(testModels.qwen));
+  setRole(text.roles, "textReview", modelId(testModels.qwen));
   const images = value.images;
   if (!images) return value;
   if (images.options.mosaic) images.options.mosaic = { ...defaultMosaicSettings };
@@ -175,7 +179,7 @@ export function japaneseGameTestConfiguration(current: GameTestConfiguration, r1
 }
 
 export function refreshSavedGameTestConfigurations() {
-  const revision = "llmchat-game-test-config-natural-lines-v1";
+  const revision = "llmchat-game-test-config-semantics-v1";
   if (localStorage.getItem(revision) !== null) return;
   const updateCustomPrompts = localStorage.getItem("llmchat-game-test-config-japanese-prompts-v2") === null;
   const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));

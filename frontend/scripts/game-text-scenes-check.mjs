@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import { build, transform } from "esbuild";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+Error.stackTraceLimit = 0;
+globalThis.localStorage = { getItem:()=>null };
+const bundle=await build({stdin:{contents:`export * from './gameTextScenes'; export {createGameTranslationContext,gameDialogueReuseKey,isGameDialogue} from './gameTranslationContext'; export * as display from './gameDisplayText'; export {gameTextProblem} from './gameTextProject'; export {translateUnitySession} from './unityTranslationSession'; export {reviewGameText} from './gameTextReview'; export {outstandingGameSemanticIssues} from './gameTextSemantics'; export {mergeGameGlossary} from './gameProjectGlossary'; export {gameSystemMessageContext} from './gameTextParameters';`,resolveDir:fileURLToPath(new URL("../src",import.meta.url)),loader:"ts"},bundle:true,write:false,platform:"browser",format:"esm",define:{"import.meta.env.VITE_API_BASE":'""'}});
+const scenes=await import("data:text/javascript;base64,"+Buffer.from(bundle.outputFiles[0].text).toString("base64"));
+const source="大丈夫？", row={id:"1",source,translation:"没事吧？",error:"",selected:true,translationTarget:"zh-CN",dialoguePositions:[{page:0,line:1},{page:1,line:1}]};
+const project={entries:[row],dialoguePages:[{file:"Map001.json",event:1,page:0,commands:[1,3],lines:["受傷した人",source]}, {file:"CommonEvents.json",event:5,page:0,commands:[0,2],lines:["準備が終わった",source]}]};
+const plan=scenes.createGameScenePlan(project,[row],"zh-CN");
+assert.equal(plan.entries.length,2); assert.equal(project.sceneTranslations.length,2); assert.ok(project.sceneTranslations.every(value=>!value.contextKnown),"materialize unresolved scene scopes before first request/checkpoint");
+assert.notEqual(scenes.gameDialogueReuseKey(plan.entries[0]),scenes.gameDialogueReuseKey(plan.entries[1]));
+const context=scenes.createGameTranslationContext(plan.entries,true,project.dialoguePages);
+assert.ok(context(plan.entries[0]).some(value=>value.source.includes("受傷")));assert.ok(!context(plan.entries[0]).some(value=>value.source.includes("準備")));
+Object.assign(plan.entries[0],{translation:"伤得重吗？",sceneContextPending:false});plan.merge([plan.entries[0]]);
+assert.equal(project.sceneTranslations.find(value=>value.file==="Map001.json").translation,"伤得重吗？");assert.equal(project.sceneTranslations.find(value=>value.file==="CommonEvents.json").contextKnown,false);
+const resumed=scenes.createGameScenePlan(project,[row],"zh-CN");assert.equal(resumed.entries[0].translation,"伤得重吗？");assert.equal(resumed.entries[0].sceneContextPending,false);assert.equal(resumed.entries[1].sceneContextPending,true);
+Object.assign(resumed.entries[1],{translation:"准备好了吗？",sceneContextPending:false});resumed.merge([resumed.entries[1]]);resumed.finish();
+assert.deepEqual(new Set(project.sceneTranslations.map(value=>value.translation)),new Set(["伤得重吗？","准备好了吗？"]));
+const wrong={...project,dialoguePages:[{...project.dialoguePages[0],lines:["受傷", "別の原文"]},project.dialoguePages[1]]};assert.throws(()=>scenes.createGameScenePlan(wrong,[row],"zh-CN"),/不一致/);
+scenes.createGameScenePlan(project,[row],"zh-CN",false);assert.equal(project.sceneTranslations.length,0);
+console.log("PASS scene scopes, independent context/reuse keys, pending-safe checkpoint initialization, partial resume and per-position translations");
+
+const moduleCode=await readFile(new URL('../src/gameTextBenchmark.ts',import.meta.url),'utf8');
+const code=(await transform(moduleCode.slice(moduleCode.indexOf('async function runSample('),moduleCode.indexOf('export type BenchmarkStepRunner')),{loader:'ts',target:'es2022'})).code;
+let primary=0,reviewed=0;
+const runtime={...scenes,...scenes.display,measureGameWork:(_scope,_metric,work)=>work(),rememberBenchmarkExecution(){},loadLocalModelProfiles:()=>({}),benchmarkRoles:['text','dialogue','names'],buildUnityTranslateOptions:(_settings,_provider,_src,_target,model)=>({model}),gameTaskPrompt:()=>"复核",prepareGameTerms:async()=>({terms:new Map(),issues:new Map()}),gameTermProblem:()=>'',prepareUnityTranslationRequest:text=>text,gameTranslationRetry:context=>({context}),canDisableOllamaNameThinking:()=>false,localTextRequestGroup:()=>undefined,
+ translateGameWithOllama:async(_input,_init,config)=>{primary++;assert.ok(config.context.some(value=>value.source.includes('当前场景')));return{ok:true,translation:'没事吧？'};},requestGameModelJson:async(_settings,_model,prompt)=>{reviewed++;const data=JSON.parse(prompt.slice(prompt.indexOf('\n')+1));return data.entries.map(value=>({id:value.id,verdict:'keep',reason:'场景含义对应'}));}};
+const runSample=new Function('runtime','with(runtime){'+code+';return runSample;}')(runtime);
+const benchmark=await runSample({models:{text:{id:'fixture',lanes:1},dialogue:{id:'',lanes:1},names:{id:'',lanes:1}},source:'ja',target:'zh-CN',wrap:'keep',prompts:{},skipTarget:true,includeContext:true},{entries:[{...row,source:'大丈夫ですか？'}],dialoguePages:project.dialoguePages.map(page=>({...page,lines:page.lines.map(line=>line===row.source?'大丈夫ですか？':line)})),selectedIds:new Set(['1'])},{},'fixture',new AbortController().signal,()=>{},()=>{});
+assert.deepEqual(benchmark,{failed:0,translated:1});assert.equal(primary,2);assert.equal(reviewed,1);console.log('PASS actual benchmark runner uses per-scene requests/review while counting the original selected sample once');

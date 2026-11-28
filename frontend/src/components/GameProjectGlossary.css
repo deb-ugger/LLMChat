@@ -1,0 +1,8 @@
+.game-action-confirm.game-project-glossary { width: min(760px, 92vw); }
+.game-project-glossary .game-confirm-details { max-height: 65vh; overflow: auto; }
+.game-glossary-add { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.game-glossary-add input { min-width: 0; flex: 1; }
+.game-glossary-list { margin-top: 16px; }
+.game-glossary-list h3 { font-size: 1em; }
+.game-glossary-list > div { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.game-glossary-list > div > span, .game-glossary-list > div > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }

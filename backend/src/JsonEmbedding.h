@@ -4,6 +4,7 @@
 #include "RpgMakerText.h"
 #include "RpgMessageCore.h"
 #include "GameTextProject.h"
+#include "RpgTextScenes.h"
 #include "GameFileOps.h"
 #include "WolfArchive.h"
 #include "GameResourceBackup.h"
@@ -30,6 +31,7 @@ class JsonEmbedding {
     using Path = std::filesystem::path;
     std::mutex mutex_, startMutex_; std::thread thread_; std::atomic<bool> stop_{false};
     json state_ = {{"state", "idle"}}, dictionary_; Path game_, input_, work_, tools_, sourceGame_;
+    rpgscenes::Dictionary sceneDictionary_; Path sceneInput_;
     std::filesystem::file_time_type inputTime_; uintmax_t inputSize_ = 0;
     size_t matched_ = 0, blocked_ = 0, examined_ = 0;
     bool exporting_ = false; Path rpgDirectory_; json jobRequest_, issues_ = json::array(); std::string context_;
@@ -55,11 +57,11 @@ class JsonEmbedding {
         std::sort(result.begin(), result.end()); return result;
     }
     using NameAliases = std::map<std::string, const std::string*>;
-    bool replace(std::string& source, const rpgmessage::MessageLayout* messageCore = nullptr, const NameAliases* aliases = nullptr) {
+    bool replace(std::string& source, const rpgmessage::MessageLayout* messageCore = nullptr, const NameAliases* aliases = nullptr, const std::string* sceneTranslation = nullptr) {
         if (source.empty()) return false; ++examined_;
         if (exporting_) { dictionary_[source] = ""; return false; }
         const auto it = dictionary_.find(source);
-        const std::string* translated = it == dictionary_.end() ? nullptr : &it->get_ref<const std::string&>();
+        const std::string* translated = sceneTranslation ? sceneTranslation : it == dictionary_.end() ? nullptr : &it->get_ref<const std::string&>();
         if (!translated && aliases && source.find('<') != std::string::npos) {
             const auto alias = aliases->find(rpgmessage::repairNameLineBreak(source));
             if (alias != aliases->end()) translated = alias->second;
@@ -205,7 +207,17 @@ class JsonEmbedding {
     }
     void inspect() {
         detail("读取翻译 JSON"); dictionary_ = readTranslationDictionary(input_);
-        if (dictionary_.empty() && (rpgDirectory_.empty() || !rpgmessage::enabled(game_))) throw std::runtime_error("译文 JSON 为空");
+        sceneDictionary_.clear(); sceneInput_.clear();
+        const auto ownDictionary = game_ / "LLMChat-JSON" / "text-translation.json";
+        if (!rpgDirectory_.empty() && std::filesystem::is_regular_file(ownDictionary) && std::filesystem::equivalent(input_, ownDictionary)) {
+            const auto scenes = game_ / "LLMChat-JSON" / "text-scenes.json";
+            if (std::filesystem::is_regular_file(scenes)) {
+                const auto data = json::parse(read(scenes));
+                if (!data.is_object() || data.value("version", 0) != 1 || !data.contains("entries")) throw std::runtime_error("场景译文文件格式无效");
+                sceneDictionary_.load(data["entries"]); sceneInput_ = scenes;
+            }
+        }
+        if (dictionary_.empty() && sceneDictionary_.empty() && (rpgDirectory_.empty() || !rpgmessage::enabled(game_))) throw std::runtime_error("译文 JSON 为空");
         inputTime_ = std::filesystem::last_write_time(input_); inputSize_ = std::filesystem::file_size(input_);
         if (unreal_) {
             detail("匹配 UE 本地化资源并检查占位符"); scanUnreal(false);
@@ -470,7 +482,7 @@ class JsonEmbedding {
     }
     void scanRpg(bool save) {
         matched_ = blocked_ = examined_ = 0; issues_=json::array(); const auto files = rpgFiles(sourceGame_ / rpgDirectory_); size_t completed = 0;
-        if (!save) originals_.clear();
+        if (!save) { originals_.clear(); if (!sceneInput_.empty()) remember(sceneInput_); }
         else {
             if (files != checkedRpgFiles_) throw std::runtime_error("数据库文件列表已改变，请重新检查");
             verifyInputs();
@@ -497,7 +509,15 @@ class JsonEmbedding {
             context_=file.filename().string(); auto value = json::parse(read(file)); const auto before = matched_;
             rpgtext::visit(file.filename().string(), value, [this](std::string& text) { return replace(text); },
                 [this, &layout, &aliases](std::string& text) { return replace(text, layout.enabled ? &layout : nullptr, layout.enabled ? &aliases : nullptr); },
-                [this, &layout](json& commands) { if (layout.enabled) matched_ += rpgmessage::repairNameFragments(commands); });
+                [this, &layout](json& commands) { if (layout.enabled) matched_ += rpgmessage::repairNameFragments(commands); },
+                [this, &layout, &aliases](int event, size_t page, size_t command, const std::string& slot, std::string& text) -> std::optional<bool> {
+                    if (exporting_) return std::nullopt;
+                    const auto* scene = sceneDictionary_.find(context_, event, page, command, slot);
+                    if (!scene) return std::nullopt;
+                    if (scene->source != text) throw std::runtime_error("场景对应的原文已改变，请重新翻译并检查：" + context_);
+                    if (!scene->usable) { ++blocked_; issues_.push_back({{"file", context_}, {"source", text}, {"reason", "场景译文未完成或待人工确认"}}); return false; }
+                    return replace(text, layout.enabled ? &layout : nullptr, layout.enabled ? &aliases : nullptr, &scene->translation);
+                });
             if (save && matched_ != before) {
                 const auto target = work_ / "patch" / rpgDirectory_ / file.filename(); write(target, value.dump());
                 if (json::parse(read(target)) != value) throw std::runtime_error("回写校验失败：" + file.filename().string());
@@ -509,7 +529,7 @@ class JsonEmbedding {
     }
     void extract() {
         checkStop();
-        dictionary_ = json::object(); exporting_ = true;
+        dictionary_ = json::object(); sceneDictionary_.clear(); sceneInput_.clear(); exporting_ = true;
         try {
             if (unreal_) scanUnreal(false);
             else { sourceGame_ = gamepatch::source(game_,rpgDirectory_,backups(game_)); if (rpgDirectory_.empty()) { prepareWolf(); scan(false); } else scanRpg(false); }

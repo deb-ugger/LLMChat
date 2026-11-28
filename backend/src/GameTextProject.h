@@ -3,6 +3,7 @@
 #include "TranslationPromptLeak.h"
 #include "RpgMessageCore.h"
 #include "RpgMakerText.h"
+#include "RpgTextScenes.h"
 #include "Utf8Path.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -83,7 +84,8 @@ inline Json checkpoint(const Json& request) {
     const auto batches = checkpoints(base);
     const auto sequence = batches.empty() ? 1 : batches.rbegin()->first + 1;
     Json batch = {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", entries}};
-    for (const auto* key : {"options", "workflow"}) if (request.contains(key)) batch[key] = request.at(key);
+    for (const auto* key : {"options", "workflow", "glossary", "replaceSceneTranslations"}) if (request.contains(key)) batch[key] = request.at(key);
+    if (request.contains("sceneTranslations")) batch["sceneTranslations"] = rpgscenes::records(request["sceneTranslations"]);
     write(base / "text-checkpoints" / (std::to_string(sequence) + ".json"), batch);
     return {{"ok", true}};
 }
@@ -113,9 +115,12 @@ inline void resetForScan(const fs::path& game) {
         auto value = fs::is_regular_file(file) ? read(file) : Json{{"entries", Json::array()}};
         for (auto& entry : value["entries"]) { entry["translation"] = ""; entry["error"] = ""; entry.erase("layoutDraft"); entry.erase("screeningDraft"); entry.erase("importPartial"); entry.erase("translationResult"); }
         if (!batches.empty()) value["checkpointSequence"] = batches.rbegin()->first;
+        value.erase("sceneTranslations");
+        for (auto& entry : value["entries"]) entry.erase("semanticReview");
         value["workflow"] = Json{{"screened", false}}; write(file, value);
     }
     write(base / "text-translation.json", Json::object());
+    write(base / "text-scenes.json", Json{{"version", 1}, {"entries", Json::array()}});
     write(base / "workflow.json", Json{{"textSkipped", false}, {"imagesSkipped", false}});
     compactCheckpoints(batches);
 }
@@ -155,7 +160,7 @@ inline std::set<std::string> linkedDialogueNames(const fs::path& directory) {
 
 struct DialogueContexts {
     Json pages = Json::array();
-    std::map<std::string, std::pair<size_t, size_t>> positions;
+    std::map<std::string, std::vector<std::pair<size_t, size_t>>> positions;
     std::set<std::string> repeated;
     std::set<std::string> mapNames;
 };
@@ -177,23 +182,28 @@ inline DialogueContexts collectDialogueContexts(const fs::path& directory, const
             if (originals.contains(title)) result.mapNames.insert(title);
         }
         rpgtext::visitDialoguePages(name, data, [&](int event, size_t page, const Json& commands) {
-            Json lines = Json::array(), indexes = Json::array(), speakers = Json::object();
+            Json lines = Json::array(), indexes = Json::array(), slots = Json::array(), speakers = Json::object();
             const auto flush = [&] {
                 if (lines.empty()) return;
                 result.pages.push_back({{"file", name}, {"event", event}, {"page", page},
-                                        {"commands", indexes}, {"lines", lines}});
+                                        {"commands", indexes}, {"lines", lines}, {"slots", slots}});
                 if (!speakers.empty()) result.pages.back()["speakers"] = std::move(speakers);
                 lines.clear();
                 indexes.clear();
+                slots.clear();
                 speakers = Json::object();
             };
-            const auto append = [&](size_t command, const std::string& text, const std::string& speaker = {}) {
+            const auto append = [&](size_t command, const std::string& text, const std::string& speaker = {}, const std::string& slot = "message") {
                 if (text.empty()) return;
-                if (originals.contains(text) && !result.positions.try_emplace(text, result.pages.size(), lines.size()).second)
-                    result.repeated.insert(text);
+                if (originals.contains(text)) {
+                    auto& positions = result.positions[text];
+                    positions.emplace_back(result.pages.size(), lines.size());
+                    if (positions.size() > 1) result.repeated.insert(text);
+                }
                 if (!speaker.empty()) speakers[std::to_string(lines.size())] = speaker;
                 lines.push_back(text);
                 indexes.push_back(command);
+                slots.push_back(slot);
             };
             for (size_t i = 0; i < commands.size(); ++i) {
                 const auto& item = commands[i];
@@ -213,14 +223,26 @@ inline DialogueContexts collectDialogueContexts(const fs::path& directory, const
                     }
                     append(command, message, speaker);
                 } else if (code == 102 && item.contains("parameters") && !item["parameters"].empty() && item["parameters"][0].is_array()) {
-                    for (const auto& choice : item["parameters"][0])
-                        if (choice.is_string()) append(i, choice.get_ref<const std::string&>());
+                    for (size_t option = 0; option < item["parameters"][0].size(); ++option) {
+                        const auto& choice = item["parameters"][0][option];
+                        if (choice.is_string()) append(i, choice.get_ref<const std::string&>(), {}, "choice/" + std::to_string(option));
+                    }
+                } else if (code == 402 && item.contains("parameters") && item["parameters"].size() > 1 && item["parameters"][1].is_string()) {
+                    append(i, item["parameters"][1].get_ref<const std::string&>(), {}, "branch");
+                } else if (code == 357 && item.contains("parameters") && item["parameters"].size() > 3 &&
+                           item["parameters"][0] == "DTextPicture" && item["parameters"][1] == "dText" && item["parameters"][3].is_object()) {
+                    for (const auto* field : {"text", "Text", "message", "Message", "label", "Label", "caption", "Caption"}) {
+                        const auto& args = item["parameters"][3];
+                        if (args.contains(field) && args[field].is_string()) append(i, args[field].get_ref<const std::string&>(), {}, std::string("plugin/") + field);
+                    }
+                } else if (code == 356 && item.contains("parameters") && !item["parameters"].empty() && item["parameters"][0].is_string()) {
+                    const auto text = item["parameters"][0].get<std::string>();
+                    if (text.starts_with("D_TEXT ")) { const auto end = text.find_last_of(' '); if (end > 7) append(i, text.substr(7, end - 7), {}, "legacy-picture"); }
                 }
             }
             flush();
         });
     }
-    for (const auto& text : result.repeated) result.positions.erase(text);
     return result;
 }
 
@@ -241,6 +263,7 @@ inline Json load(const Json& request) {
     const auto dialogue = collectDialogueContexts(contextData, originals);
     std::map<std::string, std::string> systemMessages;
     std::map<std::string, std::string> textKinds, textContexts;
+    std::set<std::string> literalTerms;
     const auto addKind = [&](const std::string& text, const std::string& kind) {
         if (!originals.contains(text)) return;
         const auto [entry, inserted] = textKinds.try_emplace(text, kind);
@@ -251,7 +274,10 @@ inline Json load(const Json& request) {
                                    {"Items.json", "item"}, {"Weapons.json", "item"}, {"Armors.json", "item"}}) {
         const auto file = contextData / name;
         if (!fs::is_regular_file(file)) continue;
-        for (const auto& record : read(file)) if (record.is_object()) addKind(record.value("name", ""), kind);
+        for (const auto& record : read(file)) if (record.is_object()) { const auto name = record.value("name", ""); addKind(name, kind); literalTerms.insert(name); }
+    }
+    if (fs::is_regular_file(contextData / "States.json")) for (const auto& record : read(contextData / "States.json")) if (record.is_object()) {
+        const auto name = record.value("name", ""); addKind(name, "interface"); literalTerms.insert(name); textContexts[name] = "文本用途：状态名称。使用简短一致的状态译名。";
     }
     const auto systemFile = contextData / "System.json";
     if (fs::is_regular_file(systemFile)) {
@@ -268,8 +294,20 @@ inline Json load(const Json& request) {
                 const auto& label = labels[index].get_ref<const std::string&>();
                 if (label.empty()) continue;
                 addKind(label, "interface");
+                if (std::string_view(field) == "basic" || std::string_view(field) == "params") literalTerms.insert(label);
+                if (std::string_view(field) == "params") textContexts[label] = "文本用途：角色属性名称。使用简短一致的属性译名。";
                 if (std::string_view(field) == "commands" && index == 16)
                     textContexts[label] = "装备菜单命令：自动选择属性最优的装备。";
+            }
+        }
+    }
+    if (fs::is_regular_file(systemFile)) {
+        const auto system = read(systemFile);
+        for (const auto* field : {"elements", "skillTypes", "weaponTypes", "armorTypes", "equipTypes"}) if (system.contains(field) && system[field].is_array()) {
+            for (const auto& value : system[field]) if (value.is_string()) {
+                const auto label = value.get<std::string>(); if (label.empty()) continue;
+                addKind(label, "interface"); literalTerms.insert(label);
+                textContexts[label] = std::string("文本用途：") + (std::string_view(field) == "elements" ? "元素名称" : "类型名称") + "。使用游戏中的正式名称，不自行改成华丽的近义词。";
             }
         }
     }
@@ -291,6 +329,9 @@ inline Json load(const Json& request) {
             if (originals.contains(key)) previous[key] = std::move(row);
         }
         if (batch.contains("options")) saved["options"] = std::move(batch["options"]);
+        if (batch.contains("glossary")) saved["glossary"] = batch["glossary"];
+        if (batch.contains("sceneTranslations")) saved["sceneTranslations"] = batch.value("replaceSceneTranslations", false)
+            ? rpgscenes::records(batch["sceneTranslations"]) : rpgscenes::merge(saved.value("sceneTranslations", Json::array()), batch["sceneTranslations"]);
         if (batch.contains("workflow")) {
             saved["workflow"] = std::move(batch["workflow"]);
             sameSource = true;
@@ -299,8 +340,13 @@ inline Json load(const Json& request) {
     size_t index = 0, positionRepairs = 0;
     for (auto it = originals.begin(); it != originals.end(); ++it) {
         Json row = {{"id", std::to_string(++index)}, {"source", it.key()}, {"translation", ""}, {"selected", true}, {"error", ""}, {"file", "MTool.json"}, {"container", ""}, {"objectId", std::to_string(index)}, {"locator", it.key()}, {"kind", "游戏文本"}};
-        if (const auto position = dialogue.positions.find(it.key()); position != dialogue.positions.end())
-            row["dialoguePosition"] = {{"page", position->second.first}, {"line", position->second.second}};
+        if (const auto position = dialogue.positions.find(it.key()); position != dialogue.positions.end()) {
+            if (position->second.size() == 1) row["dialoguePosition"] = {{"page", position->second.front().first}, {"line", position->second.front().second}};
+            else {
+                row["dialoguePositions"] = Json::array();
+                for (const auto& [page, line] : position->second) row["dialoguePositions"].push_back({{"page", page}, {"line", line}});
+            }
+        }
         else if (const auto message = systemMessages.find(it.key()); message != systemMessages.end() && !dialogue.repeated.contains(it.key()))
             row["rpgSystemMessage"] = message->second;
         else if (const auto kind = textKinds.find(it.key()); kind != textKinds.end() && !kind->second.empty() && !dialogue.repeated.contains(it.key())) {
@@ -308,7 +354,8 @@ inline Json load(const Json& request) {
             if (const auto context = textContexts.find(it.key()); context != textContexts.end()) row["rpgTextContext"] = context->second;
         }
         if (previous.contains(it.key())) for (const auto& key : {"translation", "selected", "error"}) row[key] = previous[it.key()].at(key);
-        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget", "importPartial", "translationResult"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
+        if (literalTerms.contains(it.key())) row["rpgTerm"] = true;
+        if (previous.contains(it.key())) for (const auto* key : {"screeningDraft", "layoutDraft", "translationTarget", "layoutDraftTarget", "importPartial", "translationResult", "semanticReview"}) if (previous[it.key()].contains(key)) row[key] = previous[it.key()][key];
         flagPromptLeak(row, it.key());
         if (messageCore) {
             Json repairs = Json::array();
@@ -337,7 +384,9 @@ inline Json load(const Json& request) {
         }
         rows.push_back(std::move(row));
     }
-    return {{"entries", rows}, {"dialoguePages", dialogue.pages}, {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}, {"workflow", sameSource ? saved.value("workflow", Json()) : Json{{"screened", false}}}, {"messageCore", messageCore}, {"positionRepairs", positionRepairs}};
+    return {{"entries", rows}, {"dialoguePages", dialogue.pages}, {"glossary", saved.value("glossary", Json::array())},
+            {"sceneTranslations", sameSource ? saved.value("sceneTranslations", Json::array()) : Json::array()},
+            {"sourcePath", utf8path::pathUtf8(path)}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}, {"options", saved.value("options", Json::object())}, {"workflow", sameSource ? saved.value("workflow", Json()) : Json{{"screened", false}}}, {"messageCore", messageCore}, {"positionRepairs", positionRepairs}};
 }
 inline Json save(const Json& request) {
     std::lock_guard lock(mutex);
@@ -347,6 +396,7 @@ inline Json save(const Json& request) {
     auto rows = request.at("entries");
     if (!rows.is_array() || rows.size() != originals.size()) throw std::runtime_error("工程条目与扫描文本数量不一致，请重新读取");
     Json translated = Json::object(); std::set<std::string> seen;
+    std::set<std::string> enabledSources;
     const auto target = request.value("options", Json::object()).value("target", "");
     std::set<std::string> retained;
     const auto workflow = request.value("workflow", Json::object());
@@ -356,12 +406,15 @@ inline Json save(const Json& request) {
     }
     for (auto& row : rows) {
         row.erase("dialoguePosition");
+        row.erase("dialoguePositions");
         row.erase("rpgSystemMessage");
         row.erase("rpgTextKind");
         row.erase("rpgTextContext");
+        row.erase("rpgTerm");
         row.erase("dialogueRepairPreview");
         row.erase("dialogueRepairs");
         const auto text = row.at("source").get<std::string>();
+        if (row.at("selected").get<bool>() || retained.contains(row.at("id").get<std::string>())) enabledSources.insert(text);
         if (!originals.contains(text) || !seen.insert(text).second) throw std::runtime_error("工程包含重复或不属于当前扫描的原文：" + text.substr(0, 120));
         flagPromptLeak(row, text);
         const auto value = row.at("translation").get<std::string>();
@@ -373,7 +426,26 @@ inline Json save(const Json& request) {
     // The source export and game resources are never overwritten by editing.
     const auto batches = checkpoints(base);
     const auto sequence = batches.empty() ? uint64_t{0} : batches.rbegin()->first;
-    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())}, {"workflow", request.value("workflow", Json())}, {"checkpointSequence", sequence}});
+    Json existing = Json::object();
+    if ((!request.contains("glossary") || !request.contains("sceneTranslations")) && fs::is_regular_file(base / "text-project.json")) existing = read(base / "text-project.json");
+    const auto glossary = request.value("glossary", existing.value("glossary", Json::array()));
+    if (!glossary.is_array()) throw std::runtime_error("工程正式词表格式无效");
+    std::set<std::pair<std::string, std::string>> termKeys;
+    for (const auto& term : glossary) {
+        if (!term.is_object() || !term.contains("src") || !term["src"].is_string() || !term.contains("dst") || !term["dst"].is_string() ||
+            !term.contains("target") || !term["target"].is_string() || term["src"].get_ref<const std::string&>().empty() || term["dst"].get_ref<const std::string&>().empty() ||
+            !termKeys.emplace(term["src"].get<std::string>(), term["target"].get<std::string>()).second) throw std::runtime_error("工程正式词表存在空词条或重复原词");
+    }
+    const auto scenes = rpgscenes::records(request.value("sceneTranslations", existing.value("sceneTranslations", Json::array())));
+    Json patchScenes = Json::array();
+    for (const auto& scene : scenes) {
+        const auto sourceText = scene.at("source").get<std::string>();
+        if (!originals.contains(sourceText)) throw std::runtime_error("场景译文包含不属于当前扫描的原文");
+        if (scene["target"] == target && enabledSources.contains(sourceText)) patchScenes.push_back(scene);
+    }
+    write(base / "text-project.json", {{"sourcePath", utf8path::pathUtf8(path)}, {"entries", rows}, {"options", request.value("options", Json::object())},
+          {"glossary", glossary}, {"sceneTranslations", scenes}, {"workflow", request.value("workflow", Json())}, {"checkpointSequence", sequence}});
+    write(base / "text-scenes.json", {{"version", 1}, {"target", target}, {"entries", patchScenes}});
     write(base / "text-translation.json", translated);
     compactCheckpoints(batches);
     return {{"ok", true}, {"translationPath", utf8path::pathUtf8(base / "text-translation.json")}};

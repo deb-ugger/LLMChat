@@ -106,7 +106,7 @@ export const gameDefaultTextModel = {
   concurrency: 4,
 };
 const imageRoles = new Set(["screen", "refine", "recognize", "image", "review", "layout"]);
-const steps: Record<string, string> = { textScreen: "screen", text: "translate", dialogue: "translate", names: "translate", line: "translate", screen: "filter", refine: "refine", recognize: "recognize", image: "translate", review: "review", layout: "render" };
+const steps: Record<string, string> = { textScreen: "screen", textReview: "translate", text: "translate", dialogue: "translate", names: "translate", line: "translate", screen: "filter", refine: "refine", recognize: "recognize", image: "translate", review: "review", layout: "render" };
 export function rememberPromptSelection(selection: object, scope: string) { selectionScopes.set(selection, scope); }
 export function modelConcurrency(scope: string, role: string, model: string) {
   const defaultLanes = role === "refine" && /^qwen3-vl:[48]b-instruct$/i.test(model) ||
